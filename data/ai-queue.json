@@ -1,0 +1,404 @@
+{
+  "job_1775926959940_kp0qq5rij": {
+    "id": "job_1775926959940_kp0qq5rij",
+    "examQuestionId": 1,
+    "studentId": 1,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775926959940,
+    "updatedAt": 1775926963591,
+    "result": {
+      "score": 7,
+      "feedback": "The candidate has provided a basic function that meets the minimal requirements of the question, which is to write a function. The function takes two parameters, a and b, and returns their sum. However, the function is very simple and does not handle potential errors, such as non-numeric inputs. Additionally, the function name 'test' is not descriptive and does not indicate what the function does. The candidate has met the 'Must-have' criteria but has not demonstrated any 'Nice-to-have' or 'Optional' skills, such as input validation, error handling, or code documentation. Overall, the answer is acceptable but lacks depth and robustness."
+    }
+  },
+  "job_1775926959940_wqlu4vxz3": {
+    "id": "job_1775926959940_wqlu4vxz3",
+    "examQuestionId": 2,
+    "studentId": 1,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775926959940,
+    "updatedAt": 1775926962495
+  },
+  "job_1775926959940_xsfvm5rq0": {
+    "id": "job_1775926959940_xsfvm5rq0",
+    "examQuestionId": 3,
+    "studentId": 1,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775926959940,
+    "updatedAt": 1775926962495
+  },
+  "job_1775926959949_jocfiumjt": {
+    "id": "job_1775926959949_jocfiumjt",
+    "examQuestionId": 4,
+    "studentId": 1,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775926959949,
+    "updatedAt": 1775926963529,
+    "result": {
+      "score": 2,
+      "feedback": "The answer provided is incomplete and incorrect. 'align:center' is not a valid CSS property to center a div. The correct way to center a div would be to use the 'margin' property with 'auto' values, such as 'margin: 0 auto;'. Alternatively, you could use flexbox or grid to center the div. A more complete answer would include an example of the HTML and CSS code required to center a div, such as '<div style=\"margin: 0 auto;\">Centered Div</div>'. The provided answer does not demonstrate a clear understanding of the topic."
+    }
+  },
+  "job_1775926959949_kmub0jksh": {
+    "id": "job_1775926959949_kmub0jksh",
+    "examQuestionId": 5,
+    "studentId": 1,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775926959949,
+    "updatedAt": 1775926962496
+  },
+  "job_1775926959949_kn5q079yx": {
+    "id": "job_1775926959949_kn5q079yx",
+    "examQuestionId": 6,
+    "studentId": 1,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775926959949,
+    "updatedAt": 1775926973293,
+    "result": {
+      "score": 6,
+      "feedback": "The answer demonstrates a basic understanding of the difference between div and span. The respondent correctly identifies that div is a block-level element that takes up full width, and span is an inline element that only takes up the space needed for its content. However, the answer lacks detail and clarity. A more comprehensive answer would explain the implications of using div versus span in different contexts, such as layout, styling, and accessibility. Additionally, the answer could benefit from more precise terminology, such as 'block-level element' instead of 'full width', and 'inline element' instead of 'just align content'. Overall, the answer meets the minimum requirements but does not provide a thorough understanding of the topic."
+    }
+  },
+  "job_1775926959950_7dm4p3mv1": {
+    "id": "job_1775926959950_7dm4p3mv1",
+    "examQuestionId": 7,
+    "studentId": 1,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775926959950,
+    "updatedAt": 1775926973322,
+    "result": {
+      "score": 6,
+      "feedback": "The answer provided, 'css media', is a relevant concept related to creating a responsive navigation bar. However, it lacks specificity and detail. A more comprehensive answer might include how to use CSS media queries to apply different styles based on screen size, such as adjusting the layout or hiding/showing elements. For example, a better answer could be: 'To create a responsive nav, you can use CSS media queries to apply different styles based on screen size. This can include changing the navigation layout from horizontal to vertical on smaller screens, or hiding certain navigation elements on mobile devices.' The provided answer demonstrates some understanding but does not fully address the question."
+    }
+  },
+  "job_1775926959950_m96cy3k9f": {
+    "id": "job_1775926959950_m96cy3k9f",
+    "examQuestionId": 8,
+    "studentId": 1,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775926959950,
+    "updatedAt": 1775926973275,
+    "result": {
+      "score": 7,
+      "feedback": "The answer provides a basic understanding of the difference between Primary Key (PK) and Foreign Key (FK). It correctly states that a PK is not null and unique, and that a FK can be null and have duplicate values. However, the answer lacks depth and does not provide any additional context or examples to support the explanation. To achieve a higher score, the candidate could have discussed the purpose of PK and FK in a database, provided examples of how they are used, or explained the implications of null and duplicate values in FK. Overall, the answer demonstrates a minimal understanding of the concept, meeting the 'Must-have' criteria but not exceeding it."
+    }
+  },
+  "job_1775926959950_rk9epaojr": {
+    "id": "job_1775926959950_rk9epaojr",
+    "examQuestionId": 9,
+    "studentId": 1,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775926959950,
+    "updatedAt": 1775926973242,
+    "result": {
+      "score": 0,
+      "feedback": "The answer does not provide any relevant information regarding SQL salary. It appears to be a clarification question rather than a response to the query. A suitable answer would have included information about the average salary range for SQL professionals, factors that influence SQL salary, or a general overview of SQL salary trends in the industry. As it stands, the response does not meet the minimum requirements outlined in the 'Must-have' section of the rubric."
+    }
+  },
+  "job_1775986703214_7s3mfrdyw": {
+    "id": "job_1775986703214_7s3mfrdyw",
+    "examQuestionId": 108,
+    "studentId": 8,
+    "status": "failed",
+    "attempts": 3,
+    "createdAt": 1775986703214,
+    "updatedAt": 1775986732966,
+    "error": "Groq API error: 401 - {\"error\":{\"message\":\"Invalid API Key\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}\n"
+  },
+  "job_1775986703215_3xovmzqtb": {
+    "id": "job_1775986703215_3xovmzqtb",
+    "examQuestionId": 109,
+    "studentId": 8,
+    "status": "failed",
+    "attempts": 3,
+    "createdAt": 1775986703215,
+    "updatedAt": 1775986733168,
+    "error": "Groq API error: 401 - {\"error\":{\"message\":\"Invalid API Key\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}\n"
+  },
+  "job_1775986703223_2bfxf1d3b": {
+    "id": "job_1775986703223_2bfxf1d3b",
+    "examQuestionId": 110,
+    "studentId": 8,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775986703223,
+    "updatedAt": 1775986712821
+  },
+  "job_1775986703223_vj40eps0f": {
+    "id": "job_1775986703223_vj40eps0f",
+    "examQuestionId": 111,
+    "studentId": 8,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775986703223,
+    "updatedAt": 1775986712822
+  },
+  "job_1775986703224_ujzkps0np": {
+    "id": "job_1775986703224_ujzkps0np",
+    "examQuestionId": 112,
+    "studentId": 8,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775986703224,
+    "updatedAt": 1775986712822
+  },
+  "job_1775986703224_0lgufewi1": {
+    "id": "job_1775986703224_0lgufewi1",
+    "examQuestionId": 113,
+    "studentId": 8,
+    "status": "failed",
+    "attempts": 3,
+    "createdAt": 1775986703224,
+    "updatedAt": 1775986742947,
+    "error": "Groq API error: 401 - {\"error\":{\"message\":\"Invalid API Key\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}\n"
+  },
+  "job_1775986703224_ua2hzrfd0": {
+    "id": "job_1775986703224_ua2hzrfd0",
+    "examQuestionId": 114,
+    "studentId": 8,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775986703224,
+    "updatedAt": 1775986722777
+  },
+  "job_1775986703224_5pa9guas8": {
+    "id": "job_1775986703224_5pa9guas8",
+    "examQuestionId": 115,
+    "studentId": 8,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775986703224,
+    "updatedAt": 1775986722777
+  },
+  "job_1775986703225_874f56a1j": {
+    "id": "job_1775986703225_874f56a1j",
+    "examQuestionId": 116,
+    "studentId": 8,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775986703225,
+    "updatedAt": 1775986732776
+  },
+  "job_1775986703225_orsfhc5y6": {
+    "id": "job_1775986703225_orsfhc5y6",
+    "examQuestionId": 117,
+    "studentId": 8,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775986703225,
+    "updatedAt": 1775986732777
+  },
+  "job_1775987094950_mvraw8enl": {
+    "id": "job_1775987094950_mvraw8enl",
+    "examQuestionId": 118,
+    "studentId": 9,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987094951,
+    "updatedAt": 1775987104249,
+    "result": {
+      "score": 4,
+      "feedback": "Đáp án chỉ mới đạt được một phần của yêu cầu cơ bản. Cụ thể, đáp án đã đề cập đến sự khác biệt cơ bản giữa == (so sánh địa chỉ) và .equals() (so sánh giá trị), nhưng chưa cung cấp ví dụ cụ thể với String và Object như yêu cầu. Ngoài ra, đáp án chưa đề cập đến các khía cạnh quan trọng khác như hashcode contract, cách override equals() đúng cách, cũng như so sánh với String pool và new String(). Để đạt được điểm cao hơn, cần cung cấp thêm các ví dụ và giải thích chi tiết về các khía cạnh này."
+    }
+  },
+  "job_1775987094951_kj0qgl3ns": {
+    "id": "job_1775987094951_kj0qgl3ns",
+    "examQuestionId": 119,
+    "studentId": 9,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987094951,
+    "updatedAt": 1775987104549,
+    "result": {
+      "score": 6,
+      "feedback": "Đáp án đã giải thích được Overloading và Overriding một cách cơ bản. Tuy nhiên, vẫn còn một số điểm cần cải thiện để đạt được điểm cao hơn. Về Overloading, đáp án đã đề cập đến việc các phương thức cùng tên nhưng khác số lượng tham số và kiểu dữ liệu, nhưng chưa rõ ràng về việc này xảy ra tại compile-time. Về Overriding, đáp án đã đề cập đến việc phương thức của lớp con ghi đè lên phương thức của lớp cha, nhưng chưa rõ ràng về việc này xảy ra tại runtime. Đáp án cũng chưa cung cấp ví dụ cụ thể cho cả hai khái niệm. Để đạt được điểm cao hơn, cần cung cấp ví dụ cụ thể và làm rõ hơn về các khái niệm này, cũng như đề cập đến access modifier khi override và @Override annotation."
+    }
+  },
+  "job_1775987094951_bgj9w3ann": {
+    "id": "job_1775987094951_bgj9w3ann",
+    "examQuestionId": 120,
+    "studentId": 9,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987094951,
+    "updatedAt": 1775987102884
+  },
+  "job_1775987094952_svzsee6d2": {
+    "id": "job_1775987094952_svzsee6d2",
+    "examQuestionId": 121,
+    "studentId": 9,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987094952,
+    "updatedAt": 1775987102884
+  },
+  "job_1775987094952_fp5ratrax": {
+    "id": "job_1775987094952_fp5ratrax",
+    "examQuestionId": 122,
+    "studentId": 9,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987094952,
+    "updatedAt": 1775987102884
+  },
+  "job_1775987094953_687916nuo": {
+    "id": "job_1775987094953_687916nuo",
+    "examQuestionId": 123,
+    "studentId": 9,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987094953,
+    "updatedAt": 1775987113971,
+    "result": {
+      "score": 6,
+      "feedback": "Đáp án đã đề cập đến một số điểm chính về sự khác biệt giữa abstract class và interface trong Java, bao gồm cả việc abstract class có thể có thuộc tính và phương thức cụ thể hoặc trừu tượng, cũng như interface không có thuộc tính và chỉ có thể định nghĩa hằng số và phương thức trừu tượng. Tuy nhiên, đáp án còn thiếu một số điểm quan trọng như việc abstract class có constructor, sự khác biệt về tính kế thừa (đơn kế thừa với abstract class và đa kế thừa với interface), cũng như không đề cập đến việc sử dụng default và static method trong interface (từ Java 8 trở lên) và private method trong interface (từ Java 9 trở lên). Để đạt được điểm cao hơn, cần cung cấp thông tin chi tiết và đầy đủ hơn về các điểm khác biệt và cách sử dụng phù hợp của abstract class và interface trong lập trình Java."
+    }
+  },
+  "job_1775987094953_algeshzfo": {
+    "id": "job_1775987094953_algeshzfo",
+    "examQuestionId": 124,
+    "studentId": 9,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987094953,
+    "updatedAt": 1775987112881
+  },
+  "job_1775987094953_hl6rkhkfy": {
+    "id": "job_1775987094953_hl6rkhkfy",
+    "examQuestionId": 125,
+    "studentId": 9,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987094953,
+    "updatedAt": 1775987112881
+  },
+  "job_1775987094954_d4viarbdb": {
+    "id": "job_1775987094954_d4viarbdb",
+    "examQuestionId": 126,
+    "studentId": 9,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987094954,
+    "updatedAt": 1775987112882
+  },
+  "job_1775987094954_31atlyi8m": {
+    "id": "job_1775987094954_31atlyi8m",
+    "examQuestionId": 127,
+    "studentId": 9,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987094954,
+    "updatedAt": 1775987112882
+  },
+  "job_1775987474035_azqydkc6b": {
+    "id": "job_1775987474035_azqydkc6b",
+    "examQuestionId": 128,
+    "studentId": 10,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987474035,
+    "updatedAt": 1775987477668
+  },
+  "job_1775987474036_ins1cx9ra": {
+    "id": "job_1775987474036_ins1cx9ra",
+    "examQuestionId": 129,
+    "studentId": 10,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987474036,
+    "updatedAt": 1775987477668
+  },
+  "job_1775987474044_emrvj0amr": {
+    "id": "job_1775987474044_emrvj0amr",
+    "examQuestionId": 130,
+    "studentId": 10,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987474044,
+    "updatedAt": 1775987477668
+  },
+  "job_1775987474045_2ojapj5i7": {
+    "id": "job_1775987474045_2ojapj5i7",
+    "examQuestionId": 131,
+    "studentId": 10,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987474045,
+    "updatedAt": 1775987477668
+  },
+  "job_1775987474046_3kdax1yd4": {
+    "id": "job_1775987474046_3kdax1yd4",
+    "examQuestionId": 132,
+    "studentId": 10,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987474046,
+    "updatedAt": 1775987479145,
+    "result": {
+      "score": 6,
+      "feedback": "Đáp án đã giải thích được Overloading và Overriding một cách cơ bản. Tuy nhiên, vẫn còn một số điểm cần cải thiện. Đối với Overloading, đáp án đã đề cập đến việc các phương thức cùng tên nhưng khác số lượng tham số và kiểu dữ liệu, nhưng chưa rõ ràng về việc này xảy ra tại compile-time. Đối với Overriding, đáp án đã đề cập đến việc phương thức của lớp con ghi đè lên phương thức của lớp cha, nhưng chưa rõ ràng về việc này xảy ra tại runtime. Đáp án cũng chưa cung cấp ví dụ cụ thể cho cả hai khái niệm. Về các điểm Nice-to-have và Optional, đáp án chưa đề cập đến access modifier khi override, @Override annotation, covariant return type, và static method không override được."
+    }
+  },
+  "job_1775987474047_kgzgldfh0": {
+    "id": "job_1775987474047_kgzgldfh0",
+    "examQuestionId": 133,
+    "studentId": 10,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987474047,
+    "updatedAt": 1775987487622
+  },
+  "job_1775987474048_sg1zxy3ff": {
+    "id": "job_1775987474048_sg1zxy3ff",
+    "examQuestionId": 134,
+    "studentId": 10,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987474048,
+    "updatedAt": 1775987488860,
+    "result": {
+      "score": 6,
+      "feedback": "Đáp án đã đề cập đến một số điểm chính về sự khác biệt giữa abstract class và interface trong Java, như abstract class có thể có thuộc tính và phương thức cụ thể hoặc trừu tượng, trong khi interface không có thuộc tính và chỉ có thể định nghĩa hằng số và phương thức trừu tượng. Tuy nhiên, đáp án còn thiếu một số chi tiết quan trọng như sự hiện diện của constructor trong abstract class, sự hỗ trợ đa kế thừa của interface, và các trường hợp sử dụng cụ thể cho từng khái niệm. Ngoài ra, đáp án không đề cập đến các tính năng mới của Java như default và static method trong interface (Java 8+), private method trong interface (Java 9+), và không so sánh với sealed class (Java 17). Để đạt được điểm cao hơn, cần cung cấp thông tin đầy đủ và chi tiết hơn về các chủ đề này."
+    }
+  },
+  "job_1775987474048_pp8z8y5rx": {
+    "id": "job_1775987474048_pp8z8y5rx",
+    "examQuestionId": 135,
+    "studentId": 10,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987474048,
+    "updatedAt": 1775987488862,
+    "result": {
+      "score": 4,
+      "feedback": "Đáp án chỉ mới đạt được một phần của yêu cầu cơ bản. Đáp án đúng rằng == so sánh địa chỉ (tham chiếu) và equals() so sánh giá trị (nội dung), nhưng chưa cung cấp ví dụ cụ thể với String và Object. Để đạt được điểm cao hơn, cần cung cấp ví dụ cụ thể và giải thích rõ ràng về sự khác biệt giữa == và equals() trong Java. Ví dụ, với String, == có thể trả về true nếu hai chuỗi được lấy từ String pool, nhưng với Object, == luôn so sánh địa chỉ. Ngoài ra, giải thích về hashcode contract và cách override equals() đúng cách cũng sẽ giúp tăng điểm."
+    }
+  },
+  "job_1775987474049_y3bxc490p": {
+    "id": "job_1775987474049_y3bxc490p",
+    "examQuestionId": 136,
+    "studentId": 10,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987474049,
+    "updatedAt": 1775987487625
+  },
+  "job_1775987474050_e567p3mwc": {
+    "id": "job_1775987474050_e567p3mwc",
+    "examQuestionId": 137,
+    "studentId": 10,
+    "status": "completed",
+    "attempts": 1,
+    "createdAt": 1775987474050,
+    "updatedAt": 1775987487626
+  }
+}
