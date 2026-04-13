@@ -289,8 +289,12 @@ router.post('/batches/:id/students/import', async (req, res) => {
         const batchResult = await db.query('SELECT blueprint FROM batches WHERE id = ?', [batchId]);
         const batch = batchResult.rows[0];
         console.log('[Import Students] batch:', batch);
-        const blueprint = batch?.blueprint ? (typeof batch.blueprint === 'string' ? JSON.parse(batch.blueprint) : batch.blueprint) : [];
-        console.log('[Import Students] blueprint:', blueprint);
+        if (!batch || !batch.blueprint) {
+            console.log('[Import Students] ERROR: Batch has no blueprint');
+            return res.status(400).json({ error: 'Batch has no blueprint. Please create a batch with blueprint first.' });
+        }
+        const blueprint = typeof batch.blueprint === 'string' ? JSON.parse(batch.blueprint) : batch.blueprint;
+        console.log('[Import Students] blueprint:', JSON.stringify(blueprint));
         for (const email of emails) {
             const code = generateCode();
             const studentResult = await db.query(`
@@ -311,6 +315,13 @@ router.post('/batches/:id/students/import', async (req, res) => {
                     const count = item[level.toLowerCase()];
                     console.log('[Import Students] module:', item.module, 'level:', level, 'count:', count);
                     if (count > 0) {
+                        // Check what exists in question_bank
+                        const checkResult = await db.query(`
+              SELECT module, level, COUNT(*) as cnt FROM question_bank 
+              WHERE module = ? AND level = ?
+              GROUP BY module, level
+            `, [item.module, level]);
+                        console.log('[Import Students] check question_bank:', checkResult.rows);
                         const availableResult = await db.query(`
               SELECT id FROM question_bank
               WHERE module = ? AND level = ?
