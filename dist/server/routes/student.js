@@ -81,8 +81,14 @@ router.post('/exam/start', async (req, res) => {
             return res.status(400).json({ error: 'Exam already submitted' });
         }
         if (student.status === 'in_progress') {
-            console.log('[startExam] Resume exam for student in_progress');
-            return res.json({ success: true, questions_count: 0, resume: true });
+            const existingQuestions = await db.query('SELECT COUNT(*) as count FROM exam_questions WHERE student_id = ?', [student_id]);
+            if (existingQuestions.rows[0].count === 0) {
+                console.log('[startExam] Resume but no questions, generating...');
+            }
+            else {
+                console.log('[startExam] Resume exam for student in_progress');
+                return res.json({ success: true, questions_count: 0, resume: true });
+            }
         }
         // Auto-reset: Xóa exam_questions cũ nếu status = pending (phòng trường hợp có dữ liệu cũ)
         if (student.status === 'pending') {

@@ -58,7 +58,12 @@ function StudentExam() {
         
         if (res.data.success) {
           setStarted(true);
-          loadQuestions();
+          
+          if (res.data.questions_count > 0) {
+            loadQuestions();
+          } else if (res.data.resume) {
+            setTimeout(() => loadQuestions(), 500);
+          }
         }
       } catch (error: any) {
         console.error('[Exam] Error:', error);
@@ -109,6 +114,13 @@ function StudentExam() {
     try {
       const res = await studentApi.getQuestions(parseInt(studentId!));
       const q = res.data;
+      
+      if (!q || q.length === 0) {
+        console.log('[Exam] loadQuestions: no questions, retrying...');
+        setTimeout(loadQuestions, 1000);
+        return;
+      }
+      
       setQuestions(q);
       const savedAnswers: { [key: number]: string } = {};
       q.forEach((question: Question) => {
