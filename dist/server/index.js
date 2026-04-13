@@ -113,6 +113,7 @@ process.on('SIGTERM', () => {
 });
 initDatabase()
     .then(() => console.log('Database initialized'))
+    .then(() => cache.init())
     .then(() => cache.processQueue(5))
     .then(() => console.log('Initial queue processed'))
     .catch(err => console.error('Init error:', err));

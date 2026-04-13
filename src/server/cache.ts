@@ -53,16 +53,25 @@ class FileCache {
   private queueFile: string;
 
   constructor() {
-    this.dataDir = path.join(process.cwd(), 'data');
-    this.queueFile = path.join(this.dataDir, 'ai-queue.json');
-    
     this.ensureDataDir();
+    // Call loadQueue - for async DB load we need to handle separately
     this.loadQueue();
     this.startFlushInterval();
     this.startQueueProcessor();
   }
 
+  async init(): Promise<void> {
+    // For production, load from database
+    if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+      await this.loadQueueFromDB();
+    }
+  }
+
   private ensureDataDir() {
+    // Skip on Vercel (read-only)
+    if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+      return;
+    }
     if (!fs.existsSync(this.dataDir)) {
       fs.mkdirSync(this.dataDir, { recursive: true });
     }
@@ -279,13 +288,35 @@ class FileCache {
     };
     
     this.queue.set(id, job);
-    this.saveQueue();
+    
+    // Save to database instead of file
+    this.saveQueueToDB(job);
     
     console.log(`[Queue] Added job ${id} for exam_question ${examQuestionId}`);
     return id;
   }
 
+  private async saveQueueToDB(job: QueueJob): Promise<void> {
+    try {
+      const { query } = await import('../server/db/postgres.js');
+      await query(
+        `INSERT INTO ai_queue (exam_question_id, student_id, status, attempts, created_at, updated_at) 
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT DO NOTHING`,
+        [job.examQuestionId, job.studentId, job.status, job.attempts, new Date(job.createdAt), new Date(job.updatedAt)]
+      );
+    } catch (err) {
+      console.error('[Queue] Failed to save to DB:', err);
+    }
+  }
+
   private loadQueue() {
+    // On Vercel/production, load from database instead of file
+    if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+      this.loadQueueFromDB();
+      return;
+    }
+    
     try {
       if (fs.existsSync(this.queueFile)) {
         const data = JSON.parse(fs.readFileSync(this.queueFile, 'utf-8'));
@@ -298,16 +329,39 @@ class FileCache {
       console.error('[Queue] Failed to load queue:', err);
     }
   }
-
-  private saveQueue(): void {
+  
+  private async loadQueueFromDB(): Promise<void> {
     try {
-      const data: Record<string, QueueJob> = {};
-      for (const [id, job] of this.queue) {
-        data[id] = job;
+      const { query } = await import('../server/db/postgres.js');
+      const result = await query('SELECT id, exam_question_id, student_id, status, attempts, created_at, updated_at FROM ai_queue WHERE status IN (?, ?)', ['pending', 'processing']);
+      
+      for (const row of result.rows) {
+        const id = `job_${row.id}`;
+        this.queue.set(id, {
+          id,
+          examQuestionId: row.exam_question_id,
+          studentId: row.student_id,
+          status: row.status,
+          attempts: row.attempts,
+          createdAt: new Date(row.created_at).getTime(),
+          updatedAt: new Date(row.updated_at).getTime()
+        });
       }
-      fs.writeFileSync(this.queueFile, JSON.stringify(data, null, 2));
+      console.log(`[Queue] Loaded ${this.queue.size} jobs from database`);
     } catch (err) {
-      console.error('[Queue] Failed to save queue:', err);
+      console.error('[Queue] Failed to load from DB:', err);
+    }
+  }
+
+  private async updateQueueInDB(job: QueueJob): Promise<void> {
+    try {
+      const { query } = await import('../server/db/postgres.js');
+      await query(
+        `UPDATE ai_queue SET status = ?, attempts = ?, updated_at = ? WHERE id = ?`,
+        [job.status, job.attempts, new Date(job.updatedAt), parseInt(job.id.replace('job_', ''))]
+      );
+    } catch (err) {
+      console.error('[Queue] Failed to update in DB:', err);
     }
   }
 
@@ -328,7 +382,7 @@ class FileCache {
         job.status = 'processing';
         job.attempts++;
         job.updatedAt = Date.now();
-        this.saveQueue();
+        await this.updateQueueInDB(job);
 
         const { query } = await import('../server/db/postgres.js');
         
@@ -349,7 +403,7 @@ class FileCache {
           await query(`UPDATE exam_questions SET ai_score = 0.0, ai_feedback = 'No answer provided' WHERE id = ?`, [job.examQuestionId]);
           job.status = 'completed';
           job.updatedAt = Date.now();
-          this.saveQueue();
+          await this.updateQueueInDB(job);
           return;
         }
 
@@ -378,6 +432,7 @@ Provide a JSON response with "score" (0-10) and "feedback" (detailed feedback):
           job.status = 'completed';
           job.result = { score: parsed.score, feedback: parsed.feedback };
           job.updatedAt = Date.now();
+          await this.updateQueueInDB(job);
           console.log(`[Queue] Job ${job.id} completed: Score ${parsed.score}`);
         } else {
           throw new Error('No JSON in AI response: ' + text.substring(0, 100));
@@ -396,10 +451,9 @@ Provide a JSON response with "score" (0-10) and "feedback" (detailed feedback):
         } else {
           job.status = 'pending';
           job.updatedAt = Date.now();
+          await this.updateQueueInDB(job);
         }
       }
-      
-      this.saveQueue();
     });
 
     await Promise.all(promises);
