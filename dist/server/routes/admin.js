@@ -9,6 +9,61 @@ const USE_SQLITE = !process.env.DATABASE_URL;
 console.log('[Admin] USE_SQLITE:', USE_SQLITE, 'NODE_ENV:', process.env.NODE_ENV);
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
+// Test endpoint to debug blueprint
+router.get('/test-blueprint/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        console.log('=== TEST BLUEPRINT ===');
+        console.log('batchId:', id);
+        const batchResult = await db.query('SELECT id, blueprint FROM batches WHERE id = ?', [parseInt(id)]);
+        const batch = batchResult.rows[0];
+        console.log('Batch found:', batch ? 'YES' : 'NO');
+        console.log('Blueprint raw:', batch?.blueprint);
+        console.log('Blueprint type:', typeof batch?.blueprint);
+        if (!batch) {
+            return res.json({ error: 'Batch not found' });
+        }
+        let blueprint;
+        try {
+            blueprint = typeof batch.blueprint === 'string' ? JSON.parse(batch.blueprint) : batch.blueprint;
+        }
+        catch (e) {
+            console.log('JSON parse error:', e);
+            blueprint = [];
+        }
+        console.log('Blueprint parsed:', JSON.stringify(blueprint));
+        // Check question_bank
+        const modulesResult = await db.query('SELECT DISTINCT module FROM question_bank');
+        console.log('Available modules:', modulesResult.rows.map(r => r.module));
+        for (const item of blueprint || []) {
+            const easy = item.easy || 0;
+            const medium = item.medium || 0;
+            const hard = item.hard || 0;
+            console.log(`Module ${item.module}: easy=${easy}, medium=${medium}, hard=${hard}`);
+            if (easy > 0) {
+                const r = await db.query('SELECT COUNT(*) as cnt FROM question_bank WHERE module = ? AND level = ?', [item.module, 'Easy']);
+                console.log(`  Easy: ${r.rows[0].cnt} available`);
+            }
+            if (medium > 0) {
+                const r = await db.query('SELECT COUNT(*) as cnt FROM question_bank WHERE module = ? AND level = ?', [item.module, 'Medium']);
+                console.log(`  Medium: ${r.rows[0].cnt} available`);
+            }
+            if (hard > 0) {
+                const r = await db.query('SELECT COUNT(*) as cnt FROM question_bank WHERE module = ? AND level = ?', [item.module, 'Hard']);
+                console.log(`  Hard: ${r.rows[0].cnt} available`);
+            }
+        }
+        res.json({
+            batch: batch?.id,
+            blueprint: blueprint,
+            availableModules: modulesResult.rows.map(r => r.module)
+        });
+    }
+    catch (error) {
+        console.log('Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
 function extractRubric(rubricStr) {
     if (!rubricStr)
         return { mustHave: '', niceToHave: '', optional: '' };
