@@ -276,7 +276,8 @@ class FileCache {
   }
 
   addToQueue(examQuestionId: number, studentId: number): string {
-    const id = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const dbId = Date.now();
+    const id = `job_${dbId}`;
     const job: QueueJob = {
       id,
       examQuestionId,
@@ -290,20 +291,20 @@ class FileCache {
     this.queue.set(id, job);
     
     // Save to database instead of file
-    this.saveQueueToDB(job);
+    this.saveQueueToDB(job, dbId);
     
     console.log(`[Queue] Added job ${id} for exam_question ${examQuestionId}`);
     return id;
   }
 
-  private async saveQueueToDB(job: QueueJob): Promise<void> {
+  private async saveQueueToDB(job: QueueJob, dbId: number): Promise<void> {
     try {
       const { query } = await import('../server/db/postgres.js');
       await query(
-        `INSERT INTO ai_queue (exam_question_id, student_id, status, attempts, created_at, updated_at) 
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT DO NOTHING`,
-        [job.examQuestionId, job.studentId, job.status, job.attempts, new Date(job.createdAt), new Date(job.updatedAt)]
+        `INSERT INTO ai_queue (id, exam_question_id, student_id, status, attempts, created_at, updated_at) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (id) DO NOTHING`,
+        [dbId, job.examQuestionId, job.studentId, job.status, job.attempts, new Date(job.createdAt), new Date(job.updatedAt)]
       );
     } catch (err) {
       console.error('[Queue] Failed to save to DB:', err);
@@ -333,7 +334,7 @@ class FileCache {
   private async loadQueueFromDB(): Promise<void> {
     try {
       const { query } = await import('../server/db/postgres.js');
-      const result = await query('SELECT id, exam_question_id, student_id, status, attempts, created_at, updated_at FROM ai_queue WHERE status IN (?, ?)', ['pending', 'processing']);
+      const result = await query('SELECT id, exam_question_id, student_id, status, attempts, created_at, updated_at FROM ai_queue WHERE status IN ($1, $2)', ['pending', 'processing']);
       
       for (const row of result.rows) {
         const id = `job_${row.id}`;
@@ -355,10 +356,11 @@ class FileCache {
 
   private async updateQueueInDB(job: QueueJob): Promise<void> {
     try {
+      const dbId = parseInt(job.id.replace('job_', ''));
       const { query } = await import('../server/db/postgres.js');
       await query(
-        `UPDATE ai_queue SET status = ?, attempts = ?, updated_at = ? WHERE id = ?`,
-        [job.status, job.attempts, new Date(job.updatedAt), parseInt(job.id.replace('job_', ''))]
+        `UPDATE ai_queue SET status = $1, attempts = $2, updated_at = $3 WHERE id = $4`,
+        [job.status, job.attempts, new Date(job.updatedAt), dbId]
       );
     } catch (err) {
       console.error('[Queue] Failed to update in DB:', err);
