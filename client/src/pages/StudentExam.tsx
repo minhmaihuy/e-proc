@@ -194,6 +194,14 @@ function StudentExam() {
 
   const currentQuestion = questions[currentIndex];
 
+  if (!currentQuestion) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+        <p className="loading">Loading questions...</p>
+      </div>
+    );
+  }
+
   return (
     <div style={{ minHeight: '100vh', background: 'var(--background)' }}>
       <div className="exam-timer" style={{ background: timeLeft < 300 ? 'var(--danger)' : 'var(--primary)' }}>
