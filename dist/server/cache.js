@@ -213,7 +213,8 @@ class FileCache {
         }, interval);
     }
     addToQueue(examQuestionId, studentId) {
-        const dbId = Date.now();
+        // Use smaller ID to avoid PostgreSQL integer overflow
+        const dbId = Date.now() % 10000000;
         const id = `job_${dbId}`;
         const job = {
             id,
