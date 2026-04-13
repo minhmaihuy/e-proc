@@ -413,11 +413,9 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
       blueprint = [];
     }
     
-    console.log('[Import Students] parsed blueprint:', JSON.stringify(blueprint));
-    console.log('[Import Students] blueprint is array:', Array.isArray(blueprint));
+    console.log('Parsed blueprint:', JSON.stringify(blueprint));
     
     if (!Array.isArray(blueprint) || blueprint.length === 0) {
-      console.log('[Import Students] ERROR: Blueprint is empty or not array');
       return res.status(400).json({ error: 'Blueprint is empty' });
     }
     
@@ -429,57 +427,48 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
         RETURNING id
       `, [batchId, email.trim(), code]);
       
-      console.log('[Import Students] studentResult:', studentResult);
       const studentId = studentResult.rows[0]?.id;
-      console.log('[Import Students] studentId:', studentId);
+      console.log('Student created:', studentId);
       
-      if (!studentId) {
-        console.log('[Import Students] ERROR: Could not get student ID');
-        continue;
-      }
+      if (!studentId) continue;
       
-      console.log('[Import Students] Processing blueprint items:', blueprint.length);
       const questionIds: string[] = [];
+      
       for (const item of blueprint) {
-        console.log('[Import Students] item:', JSON.stringify(item));
-        const easy = item.easy || item.Easy || 0;
-        const medium = item.medium || item.Medium || 0;
-        const hard = item.hard || item.Hard || 0;
-        console.log('[Import Students] easy:', easy, 'medium:', medium, 'hard:', hard);
+        const moduleName = (item.module || '').toLowerCase().trim();
+        const easy = item.easy || 0;
+        const medium = item.medium || 0;
+        const hard = item.hard || 0;
         
-        for (const level of ['Easy', 'Medium', 'Hard'] as const) {
-          const count = level === 'Easy' ? easy : level === 'Medium' ? medium : hard;
-          console.log('[Import Students] module:', item.module, 'level:', level, 'count:', count);
-          if (count > 0) {
-            // Check what exists in question_bank
-            const checkResult = await db.query(`
-              SELECT module, level, COUNT(*) as cnt FROM question_bank 
-              WHERE module = ? AND level = ?
-              GROUP BY module, level
-            `, [item.module, level]);
-            console.log('[Import Students] check question_bank:', checkResult.rows);
-            
-            const availableResult = await db.query(`
-              SELECT id FROM question_bank
-              WHERE module = ? AND level = ?
-              ORDER BY RANDOM()
-              LIMIT ?
-            `, [item.module, level, count]);
-            console.log('[Import Students] found questions:', availableResult.rows.length);
-            for (const q of availableResult.rows) {
-              questionIds.push(q.id);
-            }
-          }
+        console.log(`Processing: ${item.module} -> ${moduleName}, easy=${easy}, medium=${medium}, hard=${hard}`);
+        
+        // Easy
+        if (easy > 0) {
+          const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, 'easy', easy]);
+          console.log(`  Easy: found ${r.rows.length}`);
+          r.rows.forEach((q: any) => questionIds.push(q.id));
+        }
+        // Medium
+        if (medium > 0) {
+          const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, 'medium', medium]);
+          console.log(`  Medium: found ${r.rows.length}`);
+          r.rows.forEach((q: any) => questionIds.push(q.id));
+        }
+        // Hard
+        if (hard > 0) {
+          const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, 'hard', hard]);
+          console.log(`  Hard: found ${r.rows.length}`);
+          r.rows.forEach((q: any) => questionIds.push(q.id));
         }
       }
-      console.log('[Import Students] total questionIds:', questionIds.length);
       
+      console.log('Total questions:', questionIds.length);
+      
+      // Insert into exam_questions
       for (let i = 0; i < questionIds.length; i++) {
-        await db.query(`
-          INSERT INTO exam_questions (student_id, question_id, question_order)
-          VALUES (?, ?, ?)
-        `, [studentId, questionIds[i], i + 1]);
+        await db.query('INSERT INTO exam_questions (student_id, question_id, question_order) VALUES (?, ?, ?)', [studentId, questionIds[i], i + 1]);
       }
+      console.log('Inserted into exam_questions');
       
       students.push({ email: email.trim(), code });
     }
