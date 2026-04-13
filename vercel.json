@@ -1,15 +1,26 @@
 {
-  "outputDirectory": "client/dist",
-  "framework": null,
-  "buildCommand": null,
-  "installCommand": null,
+  "version": 2,
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/node"
+    }
+  ],
   "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/dist/server/index.js"
+    },
+    {
+      "src": "/assets/(.*)",
+      "dest": "/client/dist/assets/$1"
+    },
     {
       "handle": "filesystem"
     },
     {
       "src": "/(.*)",
-      "dest": "/index.html"
+      "dest": "/client/dist/index.html"
     }
   ]
 }
