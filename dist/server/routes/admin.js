@@ -5,7 +5,7 @@ import db from '../db/postgres.js';
 import { normalizeUnicode } from '../../utils/string.js';
 import dotenv from 'dotenv';
 dotenv.config();
-const USE_SQLITE = process.env.USE_SQLITE === 'true';
+const USE_SQLITE = !process.env.DATABASE_URL;
 console.log('[Admin] USE_SQLITE:', USE_SQLITE, 'NODE_ENV:', process.env.NODE_ENV);
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });

@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 dotenv.config();
-const USE_SQLITE = process.env.USE_SQLITE === 'true' || process.env.NODE_ENV !== 'production';
+const USE_SQLITE = !process.env.DATABASE_URL;
 console.log('[DB] Module loading...');
 console.log('[DB] Mode:', USE_SQLITE ? 'SQLite (local dev)' : 'PostgreSQL (production)');
 console.log('[DB] DATABASE_URL:', process.env.DATABASE_URL ? 'present' : 'MISSING');

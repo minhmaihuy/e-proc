@@ -7,7 +7,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const USE_SQLITE = process.env.USE_SQLITE === 'true';
+const USE_SQLITE = !process.env.DATABASE_URL;
 
 console.log('[Admin] USE_SQLITE:', USE_SQLITE, 'NODE_ENV:', process.env.NODE_ENV);
 
