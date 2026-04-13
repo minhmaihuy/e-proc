@@ -6,16 +6,18 @@
       "use": "@vercel/node"
     },
     {
-      "src": "client/dist",
+      "src": "client/dist/**",
       "use": "@vercel/static"
     }
   ],
-  "buildCommand": "npm run build",
-  "installCommand": "npm install",
   "routes": [
     {
       "src": "/api/(.*)",
       "dest": "dist/server/index.js"
+    },
+    {
+      "src": "/assets/(.*)",
+      "dest": "client/dist/assets/$1"
     },
     {
       "src": "/(.*)",
