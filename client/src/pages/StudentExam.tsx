@@ -56,10 +56,10 @@ function StudentExam() {
         
         console.log('[Exam] Start result:', res.data);
         
-        setStarted(true);
-        
-        // Always try to load questions after start
-        setTimeout(() => loadQuestions(), 500);
+        if (res.data.success) {
+          setStarted(true);
+          loadQuestions();
+        }
       } catch (error: any) {
         console.error('[Exam] Error:', error);
         alert('Error: ' + (error.response?.data?.error || error.message));
@@ -109,12 +109,6 @@ function StudentExam() {
     try {
       const res = await studentApi.getQuestions(parseInt(studentId!));
       const q = res.data;
-      
-      if (!q || q.length === 0) {
-        console.log('[Exam] loadQuestions: no questions, retrying...');
-        setTimeout(loadQuestions, 1000);
-        return;
-      }
       
       setQuestions(q);
       const savedAnswers: { [key: number]: string } = {};
