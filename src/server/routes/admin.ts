@@ -328,11 +328,17 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
     
     if (!batch || !batch.blueprint) {
       console.log('[Import Students] ERROR: Batch has no blueprint');
-      return res.status(400).json({ error: 'Batch has no blueprint. Please create a batch with blueprint first.' });
+      return res.status(400).json({ error: 'Batch has no blueprint' });
     }
     
     const blueprint = typeof batch.blueprint === 'string' ? JSON.parse(batch.blueprint) : batch.blueprint;
+    console.log('[Import Students] blueprint type:', typeof blueprint);
     console.log('[Import Students] blueprint:', JSON.stringify(blueprint));
+    
+    if (!Array.isArray(blueprint) || blueprint.length === 0) {
+      console.log('[Import Students] ERROR: Blueprint is empty array');
+      return res.status(400).json({ error: 'Blueprint is empty' });
+    }
     
     for (const email of emails) {
       const code = generateCode();
