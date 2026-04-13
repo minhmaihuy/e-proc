@@ -1,8 +1,6 @@
 {
   "version": 2,
-  "buildCommand": "echo 'Already built'",
   "outputDirectory": "client/dist",
-  "installCommand": "echo 'No install needed'",
   "routes": [
     {
       "handle": "filesystem"
