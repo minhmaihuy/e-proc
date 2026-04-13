@@ -322,9 +322,12 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
     const batchId = parseInt(id);
     const students: {email: string; code: string}[] = [];
     
-    const batchResult = await db.query('SELECT blueprint FROM batches WHERE id = ?', [batchId]);
+    console.log('[Import Students] batchId:', batchId);
+    const batchResult = await db.query('SELECT id, blueprint FROM batches WHERE id = ?', [batchId]);
     const batch = batchResult.rows[0];
-    console.log('[Import Students] batch:', batch);
+    console.log('[Import Students] raw batch:', JSON.stringify(batch));
+    console.log('[Import Students] blueprint field:', batch?.blueprint);
+    console.log('[Import Students] blueprint type:', typeof batch?.blueprint);
     
     if (!batch || !batch.blueprint) {
       console.log('[Import Students] ERROR: Batch has no blueprint');
@@ -357,10 +360,17 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
         continue;
       }
       
+      console.log('[Import Students] Processing blueprint items:', blueprint.length);
       const questionIds: string[] = [];
-    for (const item of blueprint) {
+      for (const item of blueprint) {
+        console.log('[Import Students] item:', JSON.stringify(item));
+        const easy = item.easy || item.Easy || 0;
+        const medium = item.medium || item.Medium || 0;
+        const hard = item.hard || item.Hard || 0;
+        console.log('[Import Students] easy:', easy, 'medium:', medium, 'hard:', hard);
+        
         for (const level of ['Easy', 'Medium', 'Hard'] as const) {
-          const count = item[level.toLowerCase() as 'easy' | 'medium' | 'hard'];
+          const count = level === 'Easy' ? easy : level === 'Medium' ? medium : hard;
           console.log('[Import Students] module:', item.module, 'level:', level, 'count:', count);
           if (count > 0) {
             // Check what exists in question_bank

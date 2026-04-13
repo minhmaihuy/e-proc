@@ -286,9 +286,12 @@ router.post('/batches/:id/students/import', async (req, res) => {
         };
         const batchId = parseInt(id);
         const students = [];
-        const batchResult = await db.query('SELECT blueprint FROM batches WHERE id = ?', [batchId]);
+        console.log('[Import Students] batchId:', batchId);
+        const batchResult = await db.query('SELECT id, blueprint FROM batches WHERE id = ?', [batchId]);
         const batch = batchResult.rows[0];
-        console.log('[Import Students] batch:', batch);
+        console.log('[Import Students] raw batch:', JSON.stringify(batch));
+        console.log('[Import Students] blueprint field:', batch?.blueprint);
+        console.log('[Import Students] blueprint type:', typeof batch?.blueprint);
         if (!batch || !batch.blueprint) {
             console.log('[Import Students] ERROR: Batch has no blueprint');
             return res.status(400).json({ error: 'Batch has no blueprint' });
@@ -314,10 +317,16 @@ router.post('/batches/:id/students/import', async (req, res) => {
                 console.log('[Import Students] ERROR: Could not get student ID');
                 continue;
             }
+            console.log('[Import Students] Processing blueprint items:', blueprint.length);
             const questionIds = [];
             for (const item of blueprint) {
+                console.log('[Import Students] item:', JSON.stringify(item));
+                const easy = item.easy || item.Easy || 0;
+                const medium = item.medium || item.Medium || 0;
+                const hard = item.hard || item.Hard || 0;
+                console.log('[Import Students] easy:', easy, 'medium:', medium, 'hard:', hard);
                 for (const level of ['Easy', 'Medium', 'Hard']) {
-                    const count = item[level.toLowerCase()];
+                    const count = level === 'Easy' ? easy : level === 'Medium' ? medium : hard;
                     console.log('[Import Students] module:', item.module, 'level:', level, 'count:', count);
                     if (count > 0) {
                         // Check what exists in question_bank
