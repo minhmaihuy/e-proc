@@ -273,6 +273,9 @@ router.post('/batches/:id/students/import', async (req, res) => {
     try {
         const { id } = req.params;
         const { emails } = req.body;
+        console.log('==== IMPORT STUDENTS START ====');
+        console.log('batchId:', id);
+        console.log('emails:', emails);
         if (!emails || !Array.isArray(emails)) {
             return res.status(400).json({ error: 'Invalid emails array' });
         }
@@ -286,12 +289,11 @@ router.post('/batches/:id/students/import', async (req, res) => {
         };
         const batchId = parseInt(id);
         const students = [];
-        console.log('[Import Students] batchId:', batchId);
+        console.log('Fetching batch...');
         const batchResult = await db.query('SELECT id, blueprint FROM batches WHERE id = ?', [batchId]);
         const batch = batchResult.rows[0];
-        console.log('[Import Students] raw batch:', JSON.stringify(batch));
-        console.log('[Import Students] blueprint field:', batch?.blueprint);
-        console.log('[Import Students] blueprint type raw:', typeof batch?.blueprint);
+        console.log('Batch found:', batch ? 'yes' : 'no');
+        console.log('Batch blueprint:', batch?.blueprint);
         if (!batch || !batch.blueprint) {
             console.log('[Import Students] ERROR: Batch has no blueprint');
             return res.status(400).json({ error: 'Batch has no blueprint' });
