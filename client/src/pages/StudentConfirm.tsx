@@ -17,7 +17,12 @@ function StudentConfirm() {
     }
   }, [studentId, email, navigate]);
 
-  const handleStartExam = () => {
+  const handleStartExam = async () => {
+    try {
+      await document.documentElement.requestFullscreen();
+    } catch (e) {
+      console.log('Fullscreen not supported or denied');
+    }
     localStorage.setItem('studentId', studentId.toString());
     localStorage.setItem('duration', duration.toString());
     navigate('/exam');

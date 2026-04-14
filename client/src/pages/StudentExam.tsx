@@ -38,6 +38,11 @@ function StudentExam() {
     const duration = parseInt(localStorage.getItem('duration') || '30');
     setTimeLeft(duration * 60);
 
+    // Request fullscreen when entering exam
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
+
     const initExam = async () => {
       console.log('[Exam] initExam called, studentId:', studentId);
       try {
