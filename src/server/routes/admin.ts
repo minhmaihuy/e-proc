@@ -330,7 +330,14 @@ router.put('/batches/:id', async (req: Request, res: Response) => {
 router.delete('/batches/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    await db.query('DELETE FROM batches WHERE id = ?', [parseInt(id)]);
+    const batchId = parseInt(id);
+    
+    // Delete cascade: exam_questions -> students -> batch
+    await db.query('DELETE FROM exam_questions WHERE student_id IN (SELECT id FROM students WHERE batch_id = ?)', [batchId]);
+    await db.query('DELETE FROM violations WHERE student_id IN (SELECT id FROM students WHERE batch_id = ?)', [batchId]);
+    await db.query('DELETE FROM students WHERE batch_id = ?', [batchId]);
+    await db.query('DELETE FROM batches WHERE id = ?', [batchId]);
+    
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
