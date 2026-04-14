@@ -104,7 +104,8 @@ function BatchManagement() {
   const updateBlueprint = (index: number, field: keyof BlueprintItem, value: any) => {
     console.log('updateBlueprint called:', index, field, value, 'current blueprint:', formData.blueprint);
     const newBlueprint = [...formData.blueprint];
-    newBlueprint[index] = { ...newBlueprint[index], [field]: Number(value) };
+    const convertedValue = field === 'module' ? value : Number(value);
+    newBlueprint[index] = { ...newBlueprint[index], [field]: convertedValue };
     setFormData(prev => ({ ...prev, blueprint: newBlueprint }));
   };
 
