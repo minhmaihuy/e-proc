@@ -51,7 +51,6 @@ async function initPostgres() {
       end_time TIMESTAMP NOT NULL,
       duration INTEGER NOT NULL,
       blueprint JSONB,
-      status TEXT DEFAULT 'draft',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -143,7 +142,6 @@ function initSqlite() {
         end_time DATETIME NOT NULL,
         duration INTEGER NOT NULL,
         blueprint TEXT,
-        status TEXT DEFAULT 'draft',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);

@@ -41,8 +41,7 @@ function BatchManagement() {
         start_time: editingBatch.start_time,
         end_time: editingBatch.end_time,
         duration: editingBatch.duration,
-        blueprint: editingBatch.blueprint,
-        status: editingBatch.status
+        blueprint: editingBatch.blueprint
       });
       loadBatches();
       setEditingBatch(null);
@@ -418,7 +417,6 @@ function BatchManagement() {
             <tr>
               <th>ID</th>
               <th>Name</th>
-              <th>Status</th>
               <th>Start Time</th>
               <th>End Time</th>
               <th>Duration</th>
@@ -430,16 +428,6 @@ function BatchManagement() {
               <tr key={batch.id}>
                 <td>{batch.id}</td>
                 <td>{batch.name}</td>
-                <td>
-                  <span style={{ 
-                    padding: '4px 8px', 
-                    borderRadius: 4, 
-                    background: batch.status === 'active' ? '#dcfce7' : '#f1f5f9',
-                    color: batch.status === 'active' ? '#166534' : '#64748b'
-                  }}>
-                    {batch.status}
-                  </span>
-                </td>
                 <td>{new Date(batch.start_time).toLocaleString()}</td>
                 <td>{new Date(batch.end_time).toLocaleString()}</td>
                 <td>{batch.duration} min</td>
@@ -481,7 +469,7 @@ function BatchManagement() {
               </tr>
             ))}
             {batches.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-light)' }}>No batches yet</td></tr>
+              <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-light)' }}>No batches yet</td></tr>
             )}
           </tbody>
         </table>
@@ -533,18 +521,7 @@ function BatchManagement() {
             />
           </div>
 
-          <div className="form-group">
-            <label>Status</label>
-            <select 
-              value={editingBatch.status}
-              onChange={e => setEditingBatch({...editingBatch, status: e.target.value})}
-            >
-              <option value="draft">Draft</option>
-              <option value="active">Active</option>
-            </select>
-          </div>
-
-          <h4 style={{ marginTop: 20 }}>Blueprint</h4>
+          
           {modules.length === 0 ? (
             <p className="error">No modules available</p>
           ) : (

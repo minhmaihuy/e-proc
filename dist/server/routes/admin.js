@@ -220,14 +220,14 @@ router.post('/batches', async (req, res) => {
         let result;
         if (USE_SQLITE) {
             result = await db.query(`
-        INSERT INTO batches (name, start_time, end_time, duration, blueprint, status)
-        VALUES (?, ?, ?, ?, ?, 'draft')
+        INSERT INTO batches (name, start_time, end_time, duration, blueprint)
+        VALUES (?, ?, ?, ?, ?)
       `, [name, start_time, end_time, duration, blueprintJson]);
         }
         else {
             result = await db.query(`
-        INSERT INTO batches (name, start_time, end_time, duration, blueprint, status)
-        VALUES ($1, $2, $3, $4, $5, 'draft')
+        INSERT INTO batches (name, start_time, end_time, duration, blueprint)
+        VALUES ($1, $2, $3, $4, $5)
       `, [name, start_time, end_time, duration, blueprintJson]);
         }
         console.log('[CreateBatch] Success, id:', result.lastInsertRowid);
@@ -278,11 +278,11 @@ router.get('/batches/:id', async (req, res) => {
 router.put('/batches/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, start_time, end_time, duration, blueprint, status } = req.body;
+        const { name, start_time, end_time, duration, blueprint } = req.body;
         await db.query(`
-      UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, status = ?
+      UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?
       WHERE id = ?
-    `, [name, start_time, end_time, duration, JSON.stringify(blueprint), status || 'draft', parseInt(id)]);
+    `, [name, start_time, end_time, duration, JSON.stringify(blueprint), parseInt(id)]);
         res.json({ success: true });
     }
     catch (error) {
