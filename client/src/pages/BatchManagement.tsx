@@ -162,8 +162,13 @@ function BatchManagement() {
 
       const res = await adminApi.importStudents(selectedBatchId, emailList);
       
+      const skipped = res.data.skippedEmails;
+      if (skipped && skipped.length > 0) {
+        alert(`Đã skip ${skipped.length} email trùng:\n${skipped.join('\n')}`);
+      }
+      
       setInviteResult({
-        success: emailList.length,
+        success: res.data.count,
         emails: res.data.students
       });
       

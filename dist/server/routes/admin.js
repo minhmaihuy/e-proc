@@ -387,7 +387,22 @@ router.post('/batches/:id/students/import', async (req, res) => {
         if (!Array.isArray(blueprint) || blueprint.length === 0) {
             return res.status(400).json({ error: 'Blueprint is empty' });
         }
-        for (const email of emails) {
+        const existingResult = await db.query('SELECT LOWER(email) as email FROM students WHERE batch_id = ?', [batchId]);
+        const existingEmailSet = new Set(existingResult.rows.map((r) => r.email));
+        const skippedEmails = [];
+        const validEmails = emails.filter((email) => {
+            const emailLower = email.trim().toLowerCase();
+            if (existingEmailSet.has(emailLower)) {
+                skippedEmails.push(email);
+                return false;
+            }
+            existingEmailSet.add(emailLower);
+            return true;
+        });
+        if (skippedEmails.length > 0) {
+            console.log('[Import] Skipped duplicate emails:', skippedEmails);
+        }
+        for (const email of validEmails) {
             const code = generateCode();
             const studentResult = await db.query(`
         INSERT INTO students (batch_id, email, access_code, status)
@@ -432,7 +447,12 @@ router.post('/batches/:id/students/import', async (req, res) => {
             console.log('Inserted into exam_questions');
             students.push({ email: email.trim(), code });
         }
-        res.json({ success: true, count: emails.length, students });
+        res.json({
+            success: true,
+            count: validEmails.length,
+            students,
+            skippedEmails: skippedEmails.length > 0 ? skippedEmails : undefined
+        });
     }
     catch (error) {
         res.status(500).json({ error: error.message });

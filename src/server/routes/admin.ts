@@ -440,7 +440,29 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
       return res.status(400).json({ error: 'Blueprint is empty' });
     }
     
-    for (const email of emails) {
+    const existingResult = await db.query(
+      'SELECT LOWER(email) as email FROM students WHERE batch_id = ?', 
+      [batchId]
+    );
+    const existingEmailSet = new Set(existingResult.rows.map((r: any) => r.email));
+
+    const skippedEmails: string[] = [];
+
+    const validEmails = emails.filter((email: string) => {
+      const emailLower = email.trim().toLowerCase();
+      if (existingEmailSet.has(emailLower)) {
+        skippedEmails.push(email);
+        return false;
+      }
+      existingEmailSet.add(emailLower);
+      return true;
+    });
+
+    if (skippedEmails.length > 0) {
+      console.log('[Import] Skipped duplicate emails:', skippedEmails);
+    }
+
+    for (const email of validEmails) {
       const code = generateCode();
       const studentResult = await db.query(`
         INSERT INTO students (batch_id, email, access_code, status)
@@ -494,7 +516,12 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
       students.push({ email: email.trim(), code });
     }
 
-    res.json({ success: true, count: emails.length, students });
+    res.json({ 
+      success: true, 
+      count: validEmails.length, 
+      students,
+      skippedEmails: skippedEmails.length > 0 ? skippedEmails : undefined
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
