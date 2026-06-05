@@ -37,6 +37,8 @@ function BatchManagement() {
   const handleEditBatch = (batch: any) => {
     setEditingBatch({
       ...batch,
+      start_time: formatToLocalDatetime(batch.start_time),
+      end_time: formatToLocalDatetime(batch.end_time),
       blueprint: typeof batch.blueprint === 'string' ? JSON.parse(batch.blueprint) : (batch.blueprint || [])
     });
   };
@@ -508,7 +510,7 @@ function BatchManagement() {
               <label>Start Time</label>
               <input 
                 type="datetime-local" 
-                value={formatToLocalDatetime(editingBatch.start_time)} 
+                value={editingBatch.start_time || ''} 
                 onChange={e => setEditingBatch({...editingBatch, start_time: e.target.value})}
                 required 
               />
@@ -517,7 +519,7 @@ function BatchManagement() {
               <label>End Time</label>
               <input 
                 type="datetime-local" 
-                value={formatToLocalDatetime(editingBatch.end_time)} 
+                value={editingBatch.end_time || ''} 
                 onChange={e => setEditingBatch({...editingBatch, end_time: e.target.value})}
                 required 
               />
