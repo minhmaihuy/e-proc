@@ -25,6 +25,15 @@ function BatchManagement() {
   const [editingBatch, setEditingBatch] = useState<any>(null);
   const [selectedBatchId, setSelectedBatchId] = useState<number | null>(null);
   const [emails, setEmails] = useState('');
+  const formatToLocalDatetime = (utcString: string): string => {
+    if (!utcString) return '';
+    const date = new Date(utcString);
+    if (isNaN(date.getTime())) return '';
+    const offset = date.getTimezoneOffset();
+    const localDate = new Date(date.getTime() - offset * 60 * 1000);
+    return localDate.toISOString().slice(0, 16);
+  };
+
   const handleEditBatch = (batch: any) => {
     setEditingBatch({
       ...batch,
@@ -499,7 +508,7 @@ function BatchManagement() {
               <label>Start Time</label>
               <input 
                 type="datetime-local" 
-                value={editingBatch.start_time?.slice(0, 16)} 
+                value={formatToLocalDatetime(editingBatch.start_time)} 
                 onChange={e => setEditingBatch({...editingBatch, start_time: e.target.value})}
                 required 
               />
@@ -508,7 +517,7 @@ function BatchManagement() {
               <label>End Time</label>
               <input 
                 type="datetime-local" 
-                value={editingBatch.end_time?.slice(0, 16)} 
+                value={formatToLocalDatetime(editingBatch.end_time)} 
                 onChange={e => setEditingBatch({...editingBatch, end_time: e.target.value})}
                 required 
               />

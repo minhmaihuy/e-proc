@@ -1,14 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# EC2 User Data — Bootstrap E-Audit Platform
-# With RDS PostgreSQL + S3 Backup
+# EC2 User Data — Bootstrap E-Audit Platform (IPv4)
+# With RDS PostgreSQL + S3 Backup + Auto-Deploy
 # =============================================================================
 set -euo pipefail
 
 exec > /var/log/userdata.log 2>&1
 echo "=== E-Audit UserData Start: $(date) ==="
 
-# --- System Update ---
+# =============================================================================
+# STEP 1: System Update & Core Packages
+# =============================================================================
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get upgrade -y
@@ -17,8 +19,8 @@ apt-get upgrade -y
 echo ">>> Installing Node.js 18..."
 curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
 apt-get install -y nodejs
-node --version
-npm --version
+echo "Node.js version: $(node --version)"
+echo "NPM version: $(npm --version)"
 
 # --- Install Nginx ---
 echo ">>> Installing Nginx..."
@@ -41,19 +43,24 @@ apt-get install -y git build-essential
 echo ">>> Installing PostgreSQL client..."
 apt-get install -y postgresql-client-16 || apt-get install -y postgresql-client
 
-# --- Install AWS CLI ---
+# --- Install AWS CLI with Fallbacks ---
 echo ">>> Installing AWS CLI..."
-if apt-get install -y awscli; then
+if apt-get install -y awscli 2>/dev/null; then
     echo "AWS CLI installed via apt"
 else
     echo ">>> apt failed, trying snap install for AWS CLI..."
-    if snap install aws-cli --classic; then
+    if snap install aws-cli --classic 2>/dev/null; then
         echo "AWS CLI installed via snap"
         ln -sf /snap/bin/aws /usr/bin/aws || true
     else
         echo ">>> snap failed, downloading official AWS CLI zip..."
         apt-get install -y unzip
-        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "x86_64" ]; then
+            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+        else
+            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"
+        fi
         unzip -q awscliv2.zip
         ./aws/install
         rm -rf awscliv2.zip aws
@@ -61,7 +68,11 @@ else
     fi
 fi
 
-# --- Add Swap (1GB) for Docker/heavy builds ---
+# =============================================================================
+# STEP 2: System Configuration
+# =============================================================================
+
+# --- Add Swap (1GB) ---
 echo ">>> Setting up 1GB swap..."
 if [ ! -f /swapfile ]; then
     fallocate -l 1G /swapfile
@@ -72,7 +83,7 @@ if [ ! -f /swapfile ]; then
     echo "    Swap enabled: 1GB"
 fi
 
-# --- Create app user & directory ---
+# --- Create app directory ---
 echo ">>> Setting up app directory..."
 mkdir -p /opt/eaudit
 chown ubuntu:ubuntu /opt/eaudit
@@ -90,7 +101,9 @@ ENVEOF
 chown ubuntu:ubuntu /opt/eaudit/.env
 chmod 600 /opt/eaudit/.env
 
-# --- Configure Nginx ---
+# =============================================================================
+# STEP 3: Configure Nginx
+# =============================================================================
 echo ">>> Configuring Nginx..."
 cat > /etc/nginx/sites-available/eaudit << 'NGINXEOF'
 server {
@@ -146,16 +159,18 @@ server {
 }
 NGINXEOF
 
-# Enable site
 ln -sf /etc/nginx/sites-available/eaudit /etc/nginx/sites-enabled/eaudit
 rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl restart nginx
 
-# --- Create DB backup script ---
+# =============================================================================
+# STEP 4: Create Helper Scripts
+# =============================================================================
+
+# --- DB Backup Script ---
 echo ">>> Creating backup script..."
 cat > /opt/eaudit/backup-db.sh << 'BACKUPEOF'
 #!/bin/bash
-# Daily PostgreSQL backup to S3
 set -euo pipefail
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -168,14 +183,10 @@ DB_USER="${db_username}"
 
 echo "[Backup] Starting: $TIMESTAMP"
 
-# Dump database (password from .env)
 export PGPASSWORD=$(grep DATABASE_URL /opt/eaudit/.env | sed 's/.*:\/\/[^:]*:\([^@]*\)@.*/\1/')
 pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" --no-owner --no-privileges | gzip > "$BACKUP_FILE"
 
-# Upload to S3
 aws s3 cp "$BACKUP_FILE" "s3://$S3_BUCKET/backups/$TIMESTAMP.sql.gz" --region ${aws_region}
-
-# Cleanup local file
 rm -f "$BACKUP_FILE"
 
 echo "[Backup] Complete: s3://$S3_BUCKET/backups/$TIMESTAMP.sql.gz"
@@ -183,7 +194,7 @@ BACKUPEOF
 chmod +x /opt/eaudit/backup-db.sh
 chown ubuntu:ubuntu /opt/eaudit/backup-db.sh
 
-# --- Create deploy script ---
+# --- Deploy Script ---
 echo ">>> Creating deploy script..."
 cat > /opt/eaudit/deploy.sh << 'DEPLOYEOF'
 #!/bin/bash
@@ -210,6 +221,56 @@ DEPLOYEOF
 chmod +x /opt/eaudit/deploy.sh
 chown ubuntu:ubuntu /opt/eaudit/deploy.sh
 
+# =============================================================================
+# STEP 5: Auto-Deploy Application
+# =============================================================================
+echo ">>> AUTO-DEPLOYING APPLICATION..."
+
+# Clone the repository
+echo ">>> Cloning repository..."
+cd /opt/eaudit
+su - ubuntu -c "cd /opt/eaudit && git clone https://github.com/minhmaihuy/e-proc.git app" || {
+    echo "ERROR: Failed to clone repository. Will retry once after 10 seconds..."
+    sleep 10
+    su - ubuntu -c "cd /opt/eaudit && git clone https://github.com/minhmaihuy/e-proc.git app"
+}
+
+# Copy .env to app directory
+cp /opt/eaudit/.env /opt/eaudit/app/.env
+chown ubuntu:ubuntu /opt/eaudit/app/.env
+
+# Install server dependencies & build
+echo ">>> Installing server dependencies..."
+cd /opt/eaudit/app
+su - ubuntu -c "cd /opt/eaudit/app && npm install"
+
+echo ">>> Building server..."
+su - ubuntu -c "cd /opt/eaudit/app && npm run build:server"
+
+# Install client dependencies & build
+echo ">>> Installing client dependencies..."
+su - ubuntu -c "cd /opt/eaudit/app/client && npm install"
+
+echo ">>> Building client..."
+su - ubuntu -c "cd /opt/eaudit/app/client && npm run build"
+
+# Start application with PM2
+echo ">>> Starting application with PM2..."
+su - ubuntu -c "cd /opt/eaudit/app && pm2 start dist/server/index.js --name eaudit --max-memory-restart 512M"
+su - ubuntu -c "pm2 save"
+
+# Wait for app to start
+echo ">>> Waiting for app to start..."
+sleep 5
+
+# Initialize database tables
+echo ">>> Initializing database tables..."
+curl -s -X POST http://localhost:${app_port}/api/init-tables || echo "WARNING: init-tables call failed (may need manual init)"
+
+# =============================================================================
+# STEP 6: PM2 Startup & Cron Jobs
+# =============================================================================
+
 # --- PM2 startup ---
 echo ">>> Configuring PM2 startup..."
 env PATH=$PATH:/usr/bin pm2 startup systemd -u ubuntu --hp /home/ubuntu
@@ -231,20 +292,28 @@ crontab -u ubuntu /tmp/eaudit-cron
 rm /tmp/eaudit-cron
 echo "    Cron jobs configured"
 
-# --- Configure UFW Firewall ---
+# =============================================================================
+# STEP 7: Firewall
+# =============================================================================
 echo ">>> Configuring firewall..."
 ufw allow OpenSSH
 ufw allow 'Nginx Full'
 ufw --force enable
 
-echo "=== E-Audit UserData Complete: $(date) ==="
+# =============================================================================
+# DONE!
+# =============================================================================
 echo ""
-echo ">>> Next steps:"
-echo ">>>   1. SSH: ssh ubuntu@<PUBLIC_IP>"
-echo ">>>   2. Clone: cd /opt/eaudit && git clone <REPO_URL> app"
-echo ">>>   3. Setup: cp /opt/eaudit/.env app/.env"
-echo ">>>   4. Build: cd app && npm ci && npm run build:server"
-echo ">>>   5. Client: cd client && npm ci && npm run build && cd .."
-echo ">>>   6. Start: pm2 start dist/server/index.js --name eaudit && pm2 save"
-echo ">>>   7. Init DB: curl -X POST http://localhost:3001/api/init-tables"
-echo ">>>   8. SSL: sudo certbot --nginx -d ${domain_name}${www_domain_name != "" ? " -d " : ""}${www_domain_name}"
+echo "=========================================="
+echo "=== E-Audit Deployment COMPLETE! ==="
+echo "=========================================="
+echo "=== Finished at: $(date) ==="
+echo ""
+echo ">>> App Status:"
+su - ubuntu -c "pm2 status" || true
+echo ""
+echo ">>> Health Check:"
+curl -s http://localhost:${app_port}/api/health || echo "(App may still be starting...)"
+echo ""
+echo ">>> Domain: ${domain_name}"
+echo ">>> SSL: Run 'sudo certbot --nginx -d ${domain_name}${www_domain_name != "" ? " -d " : ""}${www_domain_name}' to enable HTTPS"

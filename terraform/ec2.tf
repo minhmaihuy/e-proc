@@ -84,6 +84,6 @@ resource "aws_instance" "eaudit" {
   }
 
   lifecycle {
-    ignore_changes = [ami, user_data]
+    ignore_changes = [ami]
   }
 }

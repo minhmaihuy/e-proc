@@ -60,6 +60,14 @@ variable "db_password" {
   sensitive   = true
 }
 
+variable "ssh_password" {
+  description = "Password for the ubuntu user (used for EC2 Serial Console login)"
+  type        = string
+  sensitive   = true
+  default     = "\
+  " # Default password, change in terraform.tfvars
+}
+
 # --- App Secrets ---
 variable "gemini_api_key" {
   description = "Google Gemini API key for AI grading"

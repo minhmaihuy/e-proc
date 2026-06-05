@@ -16,8 +16,11 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 const toUTC = (gmt7Str: string): string => {
   if (!gmt7Str) return gmt7Str;
-  const d = new Date(gmt7Str);
-  d.setHours(d.getHours() - 7);
+  if (gmt7Str.includes('Z') || /[-+]\d{2}:?\d{2}$/.test(gmt7Str)) {
+    return new Date(gmt7Str).toISOString();
+  }
+  const formatted = gmt7Str.includes(':') ? gmt7Str : `${gmt7Str}:00`;
+  const d = new Date(`${formatted}+07:00`);
   return d.toISOString();
 };
 

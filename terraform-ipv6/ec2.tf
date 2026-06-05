@@ -125,6 +125,12 @@ resource "aws_instance" "eaudit" {
     encrypted             = true
   }
 
+  metadata_options {
+    http_endpoint        = "enabled"
+    http_protocol_ipv6   = "enabled"  # Enables IMDSv2 over IPv6!
+    http_tokens          = "required" # Enforce IMDSv2
+  }
+
   user_data = templatefile("${path.module}/userdata.sh", {
     database_url    = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.eaudit.endpoint}/${var.db_name}"
     gemini_api_key  = var.gemini_api_key
@@ -139,6 +145,7 @@ resource "aws_instance" "eaudit" {
     db_port         = aws_db_instance.eaudit.port
     db_name         = var.db_name
     db_username     = var.db_username
+    ssh_password    = var.ssh_password
   })
 
   depends_on = [aws_db_instance.eaudit]
@@ -148,6 +155,6 @@ resource "aws_instance" "eaudit" {
   }
 
   lifecycle {
-    ignore_changes = [ami, user_data]
+    ignore_changes = [ami]
   }
 }
