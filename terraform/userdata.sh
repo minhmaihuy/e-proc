@@ -205,13 +205,13 @@ cd /opt/eaudit/app
 git pull origin main
 
 echo ">>> Building client..."
-cd client && npm ci --production=false && npm run build && cd ..
+cd client && npm install && npm run build && cd ..
 
 echo ">>> Building server..."
-npm ci --production=false && npm run build:server
+npm install && npm run build:server
 
 echo ">>> Restarting app..."
-pm2 restart eaudit || pm2 start dist/server/index.js --name eaudit --env production --max-memory-restart 512M
+pm2 restart eaudit || pm2 start dist/server/server.js --name eaudit --env production --max-memory-restart 512M
 pm2 save
 
 sleep 3
@@ -256,7 +256,7 @@ su - ubuntu -c "cd /opt/eaudit/app/client && npm run build"
 
 # Start application with PM2
 echo ">>> Starting application with PM2..."
-su - ubuntu -c "cd /opt/eaudit/app && pm2 start dist/server/index.js --name eaudit --max-memory-restart 512M"
+su - ubuntu -c "cd /opt/eaudit/app && pm2 start dist/server/server.js --name eaudit --max-memory-restart 512M"
 su - ubuntu -c "pm2 save"
 
 # Wait for app to start
