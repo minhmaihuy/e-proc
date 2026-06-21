@@ -1,8 +1,5 @@
 import pg from 'pg';
 import Database from 'better-sqlite3';
-
-// Force node-postgres to parse TIMESTAMP (without timezone) as UTC
-pg.types.setTypeParser(1114, (stringValue) => new Date(stringValue + 'Z'));
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';

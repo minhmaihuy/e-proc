@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import DOMPurify from 'dompurify';
 import { studentApi } from '../services/api';
 
 const CLIPBOARD_VIOLATION_COOLDOWN_MS = 3000;
@@ -26,15 +27,19 @@ function StudentExam() {
   const [started, setStarted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [clipboardWarning, setClipboardWarning] = useState('');
+  const [violationWarningModal, setViolationWarningModal] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const clipboardCooldownRef = useRef<Record<string, number>>({});
   const clipboardWarningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const violationWarningModalTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const fullscreenExitTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const fullscreenAutoSubmitTriggeredRef = useRef(false);
+  const devtoolsViolationCooldownRef = useRef<number>(0);
   const startedRef = useRef(false);
   const lockedRef = useRef(false);
   const submittingRef = useRef(false);
+  const lastViolationTimeRef = useRef<number>(0);
   const navigate = useNavigate();
 
   const studentId = localStorage.getItem('studentId');
@@ -50,7 +55,7 @@ function StudentExam() {
 
     // Request fullscreen when entering exam
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
+      document.documentElement.requestFullscreen().catch(() => { });
     }
 
     const initExam = async () => {
@@ -112,7 +117,7 @@ function StudentExam() {
     setSubmitting(true);
     try {
       await studentApi.submit(parseInt(studentId!));
-      document.exitFullscreen().catch(() => {});
+      document.exitFullscreen().catch(() => { });
       navigate('/submit');
     } catch (error) {
       console.error(error);
@@ -121,29 +126,52 @@ function StudentExam() {
     }
   }, [navigate, studentId]);
 
-  const handleViolation = useCallback(async (type: string) => {
+  const handleViolation = useCallback(async (type: string): Promise<boolean> => {
+    const now = Date.now();
+    // Global cooldown: ignore multiple violations within 3 seconds
+    // This prevents copy+paste or alt+tab from counting as 2 violations instantly
+    if (now - lastViolationTimeRef.current < 3000) {
+      return false;
+    }
+    lastViolationTimeRef.current = now;
+
     try {
       const res = await studentApi.reportViolation(parseInt(studentId!), type);
       setViolationCount(res.data.total_violations);
       if (res.data.locked) {
         setLocked(true);
         clearFullscreenExitTimeout();
-        document.exitFullscreen().catch(() => {});
+        document.exitFullscreen().catch(() => { });
         alert('You have violated the exam rules. Your exam has been locked.');
         await handleSubmit(true);
+        return true;
       } else {
         const warningByType: Record<string, string> = {
           fullscreen_exit: 'You exited fullscreen',
           tab_switch: 'You switched tabs',
           copy_attempt: 'You attempted to copy text',
           cut_attempt: 'You attempted to cut text',
-          paste_attempt: 'You attempted to paste text'
+          paste_attempt: 'You attempted to paste text',
+          devtools_open: 'You attempted to open Developer Tools'
         };
         const warning = warningByType[type] || 'You violated the exam rules';
-        alert(`Warning: ${warning}. This is violation ${res.data.violation_count}. After 2 violations, your exam will be locked.`);
+
+        // Show the warning as a modal toast instead of an alert() so it doesn't break fullscreen
+        setViolationWarningModal(`Warning: ${warning}. This is violation ${res.data.violation_count}. After 2 violations, your exam will be locked.`);
+        if (violationWarningModalTimeoutRef.current) {
+          clearTimeout(violationWarningModalTimeoutRef.current);
+        }
+        violationWarningModalTimeoutRef.current = setTimeout(() => {
+          setViolationWarningModal('');
+        }, 5000);
+
+        // Reset cooldown after warning appears to prevent queued events from firing immediately
+        lastViolationTimeRef.current = Date.now();
+        return false;
       }
     } catch (error) {
       console.error(error);
+      return false;
     }
   }, [clearFullscreenExitTimeout, handleSubmit, studentId]);
 
@@ -172,11 +200,18 @@ function StudentExam() {
         if (fullscreenAutoSubmitTriggeredRef.current) return;
 
         fullscreenAutoSubmitTriggeredRef.current = true;
-        await handleViolation('fullscreen_exit');
+        const wasLocked = await handleViolation('fullscreen_exit');
 
-        if (!lockedRef.current && !submittingRef.current) {
-          alert('You were out of fullscreen for more than 5 seconds. Your exam will be submitted now.');
-          await handleSubmit(true);
+        if (wasLocked) return;
+
+        if (!document.fullscreenElement) {
+          fullscreenExitTimeoutRef.current = setTimeout(async () => {
+            fullscreenExitTimeoutRef.current = null;
+            if (!startedRef.current || lockedRef.current || submittingRef.current) return;
+            if (document.fullscreenElement) return;
+
+            await handleViolation('fullscreen_exit');
+          }, FULLSCREEN_EXIT_TIMEOUT_MS);
         }
       }, FULLSCREEN_EXIT_TIMEOUT_MS);
     };
@@ -196,6 +231,65 @@ function StudentExam() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [clearFullscreenExitTimeout, handleSubmit, handleViolation]);
+
+  const triggerDevtoolsViolation = useCallback(() => {
+    if (!startedRef.current || lockedRef.current || submittingRef.current) return;
+    const now = Date.now();
+    if (now - devtoolsViolationCooldownRef.current < 10000) return; // 10s cooldown
+    devtoolsViolationCooldownRef.current = now;
+    void handleViolation('devtools_open');
+  }, [handleViolation]);
+
+  // Chặn phím tắt mở DevTools và context menu
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!startedRef.current || lockedRef.current || submittingRef.current) return;
+
+      const isF12 = e.key === 'F12';
+      const isCtrlShiftI = e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i');
+      const isCtrlShiftJ = e.ctrlKey && e.shiftKey && (e.key === 'J' || e.key === 'j');
+      const isCtrlShiftC = e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c');
+      const isCtrlShiftK = e.ctrlKey && e.shiftKey && (e.key === 'K' || e.key === 'k');
+      const isCtrlU = e.ctrlKey && (e.key === 'u' || e.key === 'U');
+
+      // Intercept F11 to force HTML5 Fullscreen API
+      if (e.key === 'F11') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen().catch(() => { });
+        } else {
+          document.exitFullscreen().catch(() => { });
+        }
+        return;
+      }
+
+      if (isF12 || isCtrlShiftI || isCtrlShiftJ || isCtrlShiftC || isCtrlShiftK || isCtrlU) {
+        e.preventDefault();
+        e.stopPropagation();
+        triggerDevtoolsViolation();
+      }
+    };
+
+    const handleContextMenu = (e: MouseEvent) => {
+      if (startedRef.current && !lockedRef.current && !submittingRef.current) {
+        e.preventDefault();
+      }
+    };
+
+    // Dùng capture phase (true) để bắt trước khi browser xử lý
+    document.addEventListener('keydown', handleKeyDown, true);
+    document.addEventListener('contextmenu', handleContextMenu);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, true);
+      document.removeEventListener('contextmenu', handleContextMenu);
+    };
+  }, [triggerDevtoolsViolation]);
+
+  // Đã gỡ bỏ tính năng phát hiện DevTools qua kích thước cửa sổ vì tính năng này 
+  // không tương thích với quá trình chuyển đổi (transition) Fullscreen của trình duyệt,
+  // gây ra các báo cáo vi phạm giả mạo (false positives).
 
   useEffect(() => {
     if (locked || submitting) {
@@ -322,6 +416,21 @@ function StudentExam() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  // Sanitize HTML để chống XSS nhưng vẫn giữ lại các tag định dạng an toàn
+  const sanitizeQuestion = (html: string): string => {
+    return DOMPurify.sanitize(html, {
+      ALLOWED_TAGS: [
+        'br', 'p', 'strong', 'em', 'b', 'i', 'u',
+        'pre', 'code', 'ul', 'ol', 'li',
+        'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'span', 'div', 'blockquote',
+        'table', 'thead', 'tbody', 'tr', 'th', 'td'
+      ],
+      ALLOWED_ATTR: ['class', 'style'],
+      FORBID_ATTR: ['onerror', 'onclick', 'onload', 'onmouseover', 'onfocus', 'onblur'],
+    });
+  };
+
   if (loading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
@@ -362,9 +471,9 @@ function StudentExam() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <div>
             <h2>Question {currentIndex + 1} of {questions.length}</h2>
-            <p style={{ color: 'var(--text-light)', fontSize: 14 }}>
+            {/* <p style={{ color: 'var(--text-light)', fontSize: 14 }}>
               {currentQuestion.module} - {currentQuestion.level} - {currentQuestion.type}
-            </p>
+            </p> */}
           </div>
           <button
             onClick={() => handleSubmit()}
@@ -388,7 +497,12 @@ function StudentExam() {
         )}
 
         <div className="card">
-          <h3 style={{ marginBottom: 20 }}>{currentQuestion.question_sample}</h3>
+          <div
+            className="question-content"
+            dangerouslySetInnerHTML={{
+              __html: sanitizeQuestion(currentQuestion.question_sample)
+            }}
+          />
           <div className="form-group">
             <label>Your Answer:</label>
             <textarea
@@ -461,6 +575,37 @@ function StudentExam() {
           </button>
         </div>
       </div>
+
+      {/* Violation Warning Modal (Toast) */}
+      {violationWarningModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999
+        }}>
+          <div style={{
+            background: 'white',
+            padding: '30px',
+            borderRadius: '12px',
+            boxShadow: '0 10px 25px rgba(0,0,0,0.2)',
+            maxWidth: '500px',
+            textAlign: 'center',
+            border: '2px solid var(--danger)'
+          }}>
+            <h3 style={{ color: 'var(--danger)', marginBottom: '15px', fontSize: '24px' }}>⚠️ Exam Rule Violation</h3>
+            <p style={{ fontSize: '18px', lineHeight: '1.5', color: '#333' }}>
+              {violationWarningModal}
+            </p>
+            <p style={{ marginTop: '20px', color: 'var(--text-light)', fontSize: '14px' }}>
+              This warning will disappear automatically...
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

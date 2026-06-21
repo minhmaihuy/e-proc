@@ -2,6 +2,28 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { adminApi } from '../services/api';
 
+// Convert "YYYY-MM-DDTHH:mm" (treated as GMT+7 input) → UTC ISO string
+const localToUTC = (localStr: string): string => {
+  if (!localStr) return localStr;
+  // Append +07:00 so browser parses as GMT+7, then convert to UTC
+  return new Date(`${localStr}:00+07:00`).toISOString();
+};
+
+// Convert UTC ISO string → "YYYY-MM-DDTHH:mm" in GMT+7 (for datetime-local input)
+const utcToLocalInput = (utcStr: string): string => {
+  if (!utcStr) return '';
+  const date = new Date(utcStr);
+  // Shift to GMT+7
+  const gmt7 = new Date(date.getTime() + 7 * 60 * 60 * 1000);
+  return gmt7.toISOString().slice(0, 16);
+};
+
+// Format UTC ISO string → human-readable GMT+7 (for display in table)
+const formatGMT7 = (utcStr: string): string => {
+  if (!utcStr) return '';
+  return new Date(utcStr).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+};
+
 interface BlueprintItem {
   module: string;
   easy: number;
@@ -25,20 +47,12 @@ function BatchManagement() {
   const [editingBatch, setEditingBatch] = useState<any>(null);
   const [selectedBatchId, setSelectedBatchId] = useState<number | null>(null);
   const [emails, setEmails] = useState('');
-  const formatToLocalDatetime = (utcString: string): string => {
-    if (!utcString) return '';
-    const date = new Date(utcString);
-    if (isNaN(date.getTime())) return '';
-    const offset = date.getTimezoneOffset();
-    const localDate = new Date(date.getTime() - offset * 60 * 1000);
-    return localDate.toISOString().slice(0, 16);
-  };
-
   const handleEditBatch = (batch: any) => {
     setEditingBatch({
       ...batch,
-      start_time: formatToLocalDatetime(batch.start_time),
-      end_time: formatToLocalDatetime(batch.end_time),
+      // Convert UTC → GMT+7 local string so input shows correct time
+      start_time: utcToLocalInput(batch.start_time),
+      end_time: utcToLocalInput(batch.end_time),
       blueprint: typeof batch.blueprint === 'string' ? JSON.parse(batch.blueprint) : (batch.blueprint || [])
     });
   };
@@ -49,8 +63,9 @@ function BatchManagement() {
     try {
       await adminApi.updateBatch(editingBatch.id, {
         name: editingBatch.name,
-        start_time: editingBatch.start_time,
-        end_time: editingBatch.end_time,
+        // editingBatch.start_time is already in "YYYY-MM-DDTHH:mm" GMT+7 format → convert to UTC
+        start_time: localToUTC(editingBatch.start_time),
+        end_time: localToUTC(editingBatch.end_time),
         duration: editingBatch.duration,
         blueprint: editingBatch.blueprint
       });
@@ -143,7 +158,12 @@ function BatchManagement() {
 
     try {
       console.log('[BatchManagement] Submitting formData:', JSON.stringify(formData));
-      const res = await adminApi.createBatch(formData);
+      const res = await adminApi.createBatch({
+        ...formData,
+        // Convert datetime-local (GMT+7 input) → UTC ISO before sending to server
+        start_time: localToUTC(formData.start_time),
+        end_time: localToUTC(formData.end_time),
+      });
       console.log('[BatchManagement] Response:', res.data);
       const batchId = res.data.id;
       setShowForm(false);
@@ -444,8 +464,8 @@ function BatchManagement() {
               <tr key={batch.id}>
                 <td>{batch.id}</td>
                 <td>{batch.name}</td>
-                <td>{new Date(batch.start_time).toLocaleString()}</td>
-                <td>{new Date(batch.end_time).toLocaleString()}</td>
+                <td>{formatGMT7(batch.start_time)}</td>
+                <td>{formatGMT7(batch.end_time)}</td>
                 <td>{batch.duration} min</td>
                 <td>
                   <button 
