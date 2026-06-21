@@ -230,7 +230,7 @@ function BatchManagement() {
   return (
     <div className="container">
       <div className="header">
-        <h1>Batch Management</h1>
+        <h1>Batch Management (v1.1 - Timezone Fixed)</h1>
         <Link to="/admin/dashboard" className="btn btn-secondary">Back to Dashboard</Link>
       </div>
 
