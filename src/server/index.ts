@@ -67,23 +67,6 @@ app.get('/api/test-db', async (req, res) => {
   }
 });
 
-app.get('/api/test-timezone-parser', async (req, res) => {
-  try {
-    const { query } = await import('./db/postgres.js');
-    const result = await query("SELECT '2026-06-22 01:00:00'::timestamp as t");
-    const val = result.rows[0]?.t;
-    res.json({
-      raw: val,
-      type: typeof val,
-      isDate: val instanceof Date,
-      iso: val instanceof Date ? val.toISOString() : val
-    });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-
 app.post('/api/init-tables', async (req, res) => {
   try {
     const { initDatabase } = await import('./db/postgres.js');

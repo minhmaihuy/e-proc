@@ -6,11 +6,6 @@ import fs from 'fs';
 
 dotenv.config();
 
-// Override node-pg parser for TIMESTAMP (OID 1114) to return dates in UTC (append Z)
-pg.types.setTypeParser(1114, (strVal) => {
-  return strVal ? new Date(strVal + 'Z') : null;
-});
-
 const USE_SQLITE = !process.env.DATABASE_URL;
 
 console.log('[DB] Module loading...');
@@ -21,7 +16,6 @@ let pgPool: pg.Pool | null = null;
 let sqliteDb: Database.Database | null = null;
 
 const { Pool } = pg;
-
 
 async function initPostgres() {
   console.log('[DB] Attempting PostgreSQL connection...');
@@ -39,10 +33,7 @@ async function initPostgres() {
   });
 
   pgPool.on('error', (err) => console.error('[DB] Pool error:', err.message));
-  pgPool.on('connect', (client) => {
-    console.log('[DB] New PG connection');
-    client.query("SET timezone = 'UTC'").catch(err => console.error('[DB] Timezone error:', err.message));
-  });
+  pgPool.on('connect', () => console.log('[DB] New PG connection'));
 
   const client = await pgPool.connect();
   console.log('[DB] PostgreSQL connected!');
