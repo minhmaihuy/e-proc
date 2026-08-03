@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec > >(tee /var/log/eproc-bootstrap.log) 2>&1
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update -y
+apt-get install -y awscli ca-certificates curl git jq nginx
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt-get install -y nodejs
+npm install -g pm2
+
+install -d -m 0750 -o ubuntu -g ubuntu /opt/eproc
+aws secretsmanager get-secret-value \
+  --region '${aws_region}' \
+  --secret-id '${secret_arn}' \
+  --query SecretString \
+  --output text > /opt/eproc/runtime-secrets.json
+chmod 0600 /opt/eproc/runtime-secrets.json
+
+jq -r '
+  ["DATABASE_URL", "JWT_SECRET", "SESSION_SECRET", "GEMINI_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY"] as $allowed
+  | to_entries[]
+  | select(.key as $key | $allowed | index($key))
+  | "\(.key)=\(.value | tostring | gsub("[\\r\\n]"; ""))"
+' /opt/eproc/runtime-secrets.json > /opt/eproc/.env
+printf 'NODE_ENV=production\nPORT=${app_port}\nTENANT_SLUG=${tenant_slug}\n' >> /opt/eproc/.env
+printf 'PRACTICE_COMPILER_MODE=${compiler_mode}\nPRACTICE_COMPILER_LAMBDA_ARN=${compiler_lambda_arn}\nAWS_REGION=${aws_region}\n' >> /opt/eproc/.env
+chmod 0600 /opt/eproc/.env
+rm -f /opt/eproc/runtime-secrets.json
+
+su - ubuntu -c "git clone --branch '${repository_ref}' --single-branch '${repository_url}' /opt/eproc/app"
+cp /opt/eproc/.env /opt/eproc/app/.env
+chown -R ubuntu:ubuntu /opt/eproc
+
+su - ubuntu -c 'cd /opt/eproc/app && npm ci && npm run build:server'
+su - ubuntu -c 'cd /opt/eproc/app/client && npm ci && npm run build'
+su - ubuntu -c 'cd /opt/eproc/app && pm2 start dist/server/server.js --name eproc --max-memory-restart 700M && pm2 save'
+
+cat > /etc/nginx/sites-available/eproc <<'NGINX'
+server {
+  listen 80 default_server;
+  server_name ${domain_name != "" ? domain_name : "_"};
+
+  add_header X-Frame-Options "SAMEORIGIN" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+  location /api/ {
+    proxy_pass http://127.0.0.1:${app_port};
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+
+  location / {
+    root /opt/eproc/app/client/dist;
+    try_files $uri $uri/ /index.html;
+  }
+}
+NGINX
+
+rm -f /etc/nginx/sites-enabled/default
+ln -sf /etc/nginx/sites-available/eproc /etc/nginx/sites-enabled/eproc
+nginx -t
+systemctl restart nginx

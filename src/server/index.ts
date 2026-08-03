@@ -4,6 +4,7 @@ import session from 'express-session';
 import dotenv from 'dotenv';
 import { initDatabase } from './db/postgres.js';
 import adminRoutes from './routes/admin.js';
+import tenantRoutes from './routes/tenants.js';
 import studentRoutes from './routes/student.js';
 import { cache } from './cache.js';
 import rateLimit from 'express-rate-limit';
@@ -15,6 +16,11 @@ dotenv.config();
 if (!process.env.JWT_SECRET) {
   console.error('FATAL ERROR: JWT_SECRET is not set in environment variables.');
   console.error('Please add JWT_SECRET to your .env file and restart the server.');
+  process.exit(1);
+}
+
+if (process.env.NODE_ENV === 'production' && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) {
+  console.error('FATAL ERROR: SESSION_SECRET must contain at least 32 characters in production.');
   process.exit(1);
 }
 
@@ -48,6 +54,13 @@ app.use(
 );
 app.use((req, res, next) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'SAMEORIGIN');
+  res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.set('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
+  if (process.env.NODE_ENV === 'production') {
+    res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   next();
 });
 app.use(express.json({ limit: '10mb' }));
@@ -56,12 +69,20 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(rateLimit({ windowMs: 60000, max: 200 }));
 
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'secret',
+  secret: process.env.SESSION_SECRET || 'local-development-session-secret',
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: process.env.NODE_ENV === 'production', maxAge: 24 * 60 * 60 * 1000 }
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: 24 * 60 * 60 * 1000,
+  }
 }));
 
+// Tenant routes are mounted first because tenant_admin accounts are intentionally
+// blocked from the legacy platform-admin router after authentication.
+app.use('/api/admin/tenants', tenantRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/student', studentRoutes);
 

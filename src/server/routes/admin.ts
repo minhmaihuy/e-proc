@@ -8,7 +8,7 @@ import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
-import { authMiddleware, requireSuperAdmin } from '../middleware/auth.js';
+import { authMiddleware, requirePlatformAdmin, requireSuperAdmin } from '../middleware/auth.js';
 
 dotenv.config();
 
@@ -68,15 +68,16 @@ router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
 
     const expiresIn = '24h';
     const role = user.role || 'admin';
+    const tenantId = user.tenant_id ? Number(user.tenant_id) : null;
     const token = jwt.sign(
-      { id: user.id, username: user.username, role },
+      { id: user.id, username: user.username, role, tenantId },
       secret,
-      { expiresIn }
+      { algorithm: 'HS256', expiresIn }
     );
 
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     console.log('[Auth] Login success:', username, 'role:', role);
-    return res.json({ token, expiresAt, role });
+    return res.json({ token, expiresAt, role, tenantId });
   } catch (err: any) {
     console.error('[Auth] Login error:', err);
     return res.status(500).json({ error: 'Login failed' });
@@ -134,6 +135,10 @@ router.put('/change-password', async (req: Request, res: Response) => {
   }
 });
 
+// Tenant admins use only /api/admin/tenants/* and change-password. Existing exam,
+// question-bank and platform-management routes remain isolated to platform admins.
+router.use(requirePlatformAdmin);
+
 // =============================================
 // USER MANAGEMENT — Chỉ superadmin (require JWT + role superadmin)
 // =============================================
@@ -142,7 +147,7 @@ router.put('/change-password', async (req: Request, res: Response) => {
 router.get('/users', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const result = await db.query(
-      'SELECT id, username, role, created_at, updated_at FROM admin_users ORDER BY created_at ASC'
+      'SELECT id, username, role, created_at, updated_at FROM admin_users WHERE tenant_id IS NULL ORDER BY created_at ASC'
     );
     return res.json(result.rows);
   } catch (err: any) {
@@ -410,7 +415,12 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
       const normalizedModule = normalizeUnicode(module.toString());
       const questionPlain = stripHtml(question.toString());
 
-      const existing = await db.query('SELECT id FROM question_bank WHERE id = ?', [id]);
+      // Trùng lặp tính theo CẶP (id, question_group): hai bộ đề khác nhau được phép dùng
+      // chung mã ID mà không ghi đè nhau.
+      const existing = await db.query(
+        "SELECT id FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
+        [id, questionGroup]
+      );
 
       if (existing.rows.length > 0) {
         updated++;
@@ -429,7 +439,7 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
           INSERT INTO question_bank
           (id, type, level, module, question_group, question_sample, question_plain, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
-          ON CONFLICT (id) DO UPDATE SET
+          ON CONFLICT (id, question_group) DO UPDATE SET
             type = EXCLUDED.type,
             level = EXCLUDED.level,
             module = EXCLUDED.module,
@@ -506,6 +516,10 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
       const level = get(row, 'Level')?.toString().trim();
       const module = (get(row, 'Topic') ?? get(row, 'Module'))?.toString();
       const question = get(row, 'Question Sample')?.toString();
+      // Bộ đề — cùng alias với import tự luận; để trống nếu file không có cột này
+      const questionGroup = (
+        get(row, 'QuestionGroup') ?? get(row, 'Question Set') ?? get(row, 'Bộ đề')
+      )?.toString().trim() || '';
 
       if (!id || !type || !level || !module || !question) {
         skipped++;
@@ -562,32 +576,39 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
       const normalizedModule = normalizeUnicode(module);
       const optionsJson = JSON.stringify(options);
       const correctJson = JSON.stringify(correct);
+      const questionPlain = stripHtml(question);
 
-      const existing = await db.query('SELECT id FROM question_bank WHERE id = $1', [id]);
+      // Trùng lặp tính theo CẶP (id, question_group) — xem giải thích ở import tự luận.
+      // Lưu ý: dùng '?' chứ không phải '$1' vì query này chạy chung cho cả SQLite lẫn Postgres.
+      const existing = await db.query(
+        "SELECT id FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
+        [id, questionGroup]
+      );
       if (existing.rows.length > 0) updated++; else imported++;
 
       // rubric_* là NOT NULL trong schema → điền '' cho câu quiz
       if (USE_SQLITE) {
         await db.query(`
           INSERT OR REPLACE INTO question_bank
-          (id, type, level, module, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at)
-          VALUES (?, ?, ?, ?, ?, '', '', '', ?, ?, ?, datetime('now'))
-        `, [id, type, level, normalizedModule, question, optionsJson, correctJson, score]);
+          (id, type, level, module, question_group, question_sample, question_plain, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, ?, datetime('now'))
+        `, [id, type, level, normalizedModule, questionGroup, question, questionPlain, optionsJson, correctJson, score]);
       } else {
         await db.query(`
           INSERT INTO question_bank
-          (id, type, level, module, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at)
-          VALUES ($1, $2, $3, $4, $5, '', '', '', $6, $7, $8, CURRENT_TIMESTAMP)
-          ON CONFLICT (id) DO UPDATE SET
+          (id, type, level, module, question_group, question_sample, question_plain, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, '', '', '', $8, $9, $10, CURRENT_TIMESTAMP)
+          ON CONFLICT (id, question_group) DO UPDATE SET
             type = EXCLUDED.type,
             level = EXCLUDED.level,
             module = EXCLUDED.module,
             question_sample = EXCLUDED.question_sample,
+            question_plain = EXCLUDED.question_plain,
             options = EXCLUDED.options,
             correct_answers = EXCLUDED.correct_answers,
             score = EXCLUDED.score,
             updated_at = CURRENT_TIMESTAMP
-        `, [id, type, level, normalizedModule, question, optionsJson, correctJson, score]);
+        `, [id, type, level, normalizedModule, questionGroup, question, questionPlain, optionsJson, correctJson, score]);
       }
     }
 
@@ -804,14 +825,28 @@ router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'No question IDs provided' });
     }
 
-    if (USE_SQLITE) {
-      const placeholders = ids.map(() => '?').join(', ');
-      await db.query(`DELETE FROM question_bank WHERE id IN (${placeholders})`, ids);
-    } else {
-      await db.query(`DELETE FROM question_bank WHERE id = ANY($1::text[])`, [ids]);
+    // Câu hỏi được định danh bằng CẶP (id, question_group) → client gửi "id|||group".
+    // Chuỗi không có "|||" là định dạng cũ (chỉ id): xóa mọi group mang id đó, giữ
+    // nguyên hành vi trước đây cho client cũ.
+    let deleted = 0;
+    for (const raw of ids) {
+      const key = String(raw);
+      const sep = key.indexOf('|||');
+      if (sep === -1) {
+        const r = await db.query('DELETE FROM question_bank WHERE id = ?', [key]);
+        deleted += r.rowCount ?? 0;
+      } else {
+        const qId = key.slice(0, sep);
+        const qGroup = key.slice(sep + 3);
+        const r = await db.query(
+          "DELETE FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
+          [qId, qGroup]
+        );
+        deleted += r.rowCount ?? 0;
+      }
     }
 
-    res.json({ success: true, deleted: ids.length });
+    res.json({ success: true, deleted });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -820,7 +855,17 @@ router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
 router.delete('/questions/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    await db.query('DELETE FROM question_bank WHERE id = ?', [id]);
+    // ?group=<question_group> giới hạn xóa đúng bộ đề đó. Không truyền group → xóa mọi
+    // bộ đề có mã này (hành vi cũ, giữ cho client cũ).
+    const group = req.query.group;
+    if (group !== undefined) {
+      await db.query(
+        "DELETE FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
+        [id, String(group)]
+      );
+    } else {
+      await db.query('DELETE FROM question_bank WHERE id = ?', [id]);
+    }
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -1107,8 +1152,15 @@ router.post('/batches/:id/check-feasibility', async (req: Request, res: Response
   }
 });
 
-/** Randomly pick `count` question IDs matching module/level (+ optional type, question_group). */
-async function pickQuestionIds(opts: { module: string; level: string; type?: string; questionGroup?: string; count: number }): Promise<string[]> {
+/** Một câu hỏi đã chọn — định danh bằng cặp (id, question_group). */
+interface PickedQuestion { id: string; questionGroup: string }
+
+/**
+ * Randomly pick `count` questions matching module/level (+ optional type, question_group).
+ * Trả về CẶP (id, question_group) vì id một mình không còn định danh được câu hỏi —
+ * hai bộ đề khác nhau được phép dùng chung mã ID.
+ */
+async function pickQuestionIds(opts: { module: string; level: string; type?: string; questionGroup?: string; count: number }): Promise<PickedQuestion[]> {
   const { module, level, type, questionGroup, count } = opts;
   if (count <= 0) return [];
 
@@ -1125,10 +1177,11 @@ async function pickQuestionIds(opts: { module: string; level: string; type?: str
   params.push(count);
 
   const r = await db.query(
-    `SELECT id FROM question_bank WHERE ${conditions.join(' AND ')} ORDER BY RANDOM() LIMIT ?`,
+    `SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank
+     WHERE ${conditions.join(' AND ')} ORDER BY RANDOM() LIMIT ?`,
     params
   );
-  return r.rows.map((q: any) => q.id);
+  return r.rows.map((q: any) => ({ id: q.id, questionGroup: q.question_group || '' }));
 }
 
 router.post('/batches/:id/students/import', async (req: Request, res: Response) => {
@@ -1247,7 +1300,7 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
         continue;
       }
 
-      const questionIds: string[] = [];
+      const picked: PickedQuestion[] = [];
 
       // Parse blueprint supporting both legacy (array) and new ({ blueprintMode, items }) formats
       const { blueprintMode, items: blueprintItems } = parseBlueprintCompat(blueprint);
@@ -1264,17 +1317,21 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
         console.log(`Processing ${blueprintMode === 'type' ? `${module}/${type}` : module}${questionGroup ? ` (${questionGroup})` : ''}, easy=${easy}, medium=${medium}, hard=${hard}`);
 
         for (const [level, count] of [['easy', easy], ['medium', medium], ['hard', hard]] as const) {
-          const ids = await pickQuestionIds({ module, level, type, questionGroup, count });
-          console.log(`  ${level}: found ${ids.length}`);
-          questionIds.push(...ids);
+          const found = await pickQuestionIds({ module, level, type, questionGroup, count });
+          console.log(`  ${level}: found ${found.length}`);
+          picked.push(...found);
         }
       }
       
-      console.log('Total questions:', questionIds.length);
+      console.log('Total questions:', picked.length);
       
-      // Insert into exam_questions
-      for (let i = 0; i < questionIds.length; i++) {
-        await db.query('INSERT INTO exam_questions (student_id, question_id, question_order) VALUES (?, ?, ?)', [studentId, questionIds[i], i + 1]);
+      // Insert into exam_questions — lưu kèm question_group để xác định đúng câu hỏi
+      // khi hai bộ đề dùng chung mã ID.
+      for (let i = 0; i < picked.length; i++) {
+        await db.query(
+          'INSERT INTO exam_questions (student_id, question_id, question_group, question_order) VALUES (?, ?, ?, ?)',
+          [studentId, picked[i].id, picked[i].questionGroup, i + 1]
+        );
       }
       console.log('Inserted into exam_questions');
       
@@ -1380,6 +1437,7 @@ router.get('/batches/:id/results', async (req: Request, res: Response) => {
         SELECT eq.*, q.type, q.level, q.module, q.question_sample, q.rubric_must_have, q.rubric_nice_to_have, q.rubric_optional
         FROM exam_questions eq
         JOIN question_bank q ON eq.question_id = q.id
+          AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
         WHERE eq.student_id = ?
         ORDER BY eq.question_order
       `, [student.id]);
@@ -1551,6 +1609,7 @@ router.get('/batches/:id/results/export', async (req: Request, res: Response) =>
           q.rubric_must_have, q.rubric_nice_to_have, q.rubric_optional
         FROM exam_questions eq
         JOIN question_bank q ON eq.question_id = q.id
+          AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
         WHERE eq.student_id = ?
         ORDER BY eq.question_order
       `, [student.id]);

@@ -68,6 +68,31 @@ async function initPostgres() {
     await client.query(`ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS question_plain TEXT`);
   } catch (_) { /* already exists */ }
 
+  // Migration: khóa chính (id, question_group) thay cho id đơn lẻ.
+  // Lý do: hai bộ đề khác nhau (question_group) hoàn toàn có thể dùng chung mã ID
+  // (vd CH6-E-01 có ở cả CPP_EMB_PRINT_IOT lẫn CPP_EMB_AUTOSAR). Khi khóa chỉ trên id,
+  // import bộ thứ hai sẽ GHI ĐÈ toàn bộ câu của bộ thứ nhất.
+  try {
+    await client.query(`UPDATE question_bank SET question_group = '' WHERE question_group IS NULL`);
+    await client.query(`ALTER TABLE question_bank ALTER COLUMN question_group SET DEFAULT ''`);
+    await client.query(`ALTER TABLE question_bank ALTER COLUMN question_group SET NOT NULL`);
+
+    const pk = await client.query(`
+      SELECT a.attname
+      FROM pg_index i
+      JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+      WHERE i.indrelid = 'question_bank'::regclass AND i.indisprimary
+    `);
+    const pkCols = pk.rows.map((r: any) => r.attname).sort();
+    if (!(pkCols.length === 2 && pkCols[0] === 'id' && pkCols[1] === 'question_group')) {
+      console.log('[DB] question_bank PK:', pkCols, '→ đổi sang (id, question_group)');
+      await client.query(`ALTER TABLE question_bank DROP CONSTRAINT IF EXISTS question_bank_pkey`);
+      await client.query(`ALTER TABLE question_bank ADD PRIMARY KEY (id, question_group)`);
+    }
+  } catch (err) {
+    console.error('[DB] question_bank composite PK migration error:', err);
+  }
+
   // Migration: cập nhật CHECK constraint type cho DB cũ
   // Dùng transaction atomic: check exists → chỉ drop+add nếu constraint chưa đúng
   try {
@@ -238,6 +263,13 @@ await client.query(`
   try {
     await client.query('ALTER TABLE exam_questions ADD COLUMN IF NOT EXISTS option_order TEXT');
   } catch (_) { /* already exists */ }
+
+  // Migration: question_id một mình không còn xác định được câu hỏi sau khi question_bank
+  // đổi sang khóa (id, question_group) → lưu kèm group của câu đã gán cho học viên.
+  try {
+    await client.query(`ALTER TABLE exam_questions ADD COLUMN IF NOT EXISTS question_group TEXT DEFAULT ''`);
+    await client.query(`UPDATE exam_questions SET question_group = '' WHERE question_group IS NULL`);
+  } catch (_) { /* already exists */ }
   console.log('[DB] exam_questions ready');
   
   await client.query(`
@@ -293,6 +325,7 @@ await client.query(`
       username VARCHAR(100) UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'admin',
+      tenant_id INTEGER,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -300,8 +333,77 @@ await client.query(`
   // Migration: thêm cột role cho DB cũ (user cũ mặc định 'admin' để không mất quyền)
   try {
     await client.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'admin'`);
+    await client.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS tenant_id INTEGER`);
   } catch (_) { /* already exists */ }
   console.log('[DB] admin_users ready');
+
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS tenants (
+      id SERIAL PRIMARY KEY,
+      slug VARCHAR(31) UNIQUE NOT NULL,
+      name VARCHAR(160) NOT NULL,
+      contact_email VARCHAR(254) NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      aws_region VARCHAR(32) NOT NULL DEFAULT 'ap-southeast-1',
+      instance_type VARCHAR(32) NOT NULL DEFAULT 't3.micro',
+      root_volume_size INTEGER NOT NULL DEFAULT 12,
+      compiler_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      compiler_memory_mb INTEGER NOT NULL DEFAULT 512,
+      compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15,
+      compiler_concurrency INTEGER NOT NULL DEFAULT 2,
+      compiler_lambda_arn TEXT,
+      domain_name VARCHAR(253) NOT NULL DEFAULT '',
+      route53_zone_id VARCHAR(64) NOT NULL DEFAULT '',
+      secret_arn TEXT NOT NULL DEFAULT '',
+      repository_url TEXT NOT NULL DEFAULT 'https://github.com/minhmaihuy/e-proc.git',
+      repository_ref VARCHAR(100) NOT NULL DEFAULT 'main',
+      provision_status VARCHAR(20) NOT NULL DEFAULT 'not_started',
+      terraform_state_key TEXT,
+      instance_id VARCHAR(64),
+      public_ip VARCHAR(64),
+      app_url TEXT,
+      last_error TEXT,
+      approved_by INTEGER,
+      approved_at TIMESTAMP,
+      created_by INTEGER NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+  await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_memory_mb INTEGER NOT NULL DEFAULT 512`);
+  await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15`);
+  await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_concurrency INTEGER NOT NULL DEFAULT 2`);
+  await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_lambda_arn TEXT`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status)`);
+
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS tenant_provision_jobs (
+      id SERIAL PRIMARY KEY,
+      tenant_id INTEGER NOT NULL,
+      action VARCHAR(16) NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'queued',
+      requested_by INTEGER NOT NULL,
+      log_output TEXT,
+      started_at TIMESTAMP,
+      finished_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_tenant_jobs_tenant ON tenant_provision_jobs(tenant_id, created_at DESC)`);
+
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS tenant_audit_events (
+      id SERIAL PRIMARY KEY,
+      tenant_id INTEGER NOT NULL,
+      actor_id INTEGER NOT NULL,
+      action VARCHAR(64) NOT NULL,
+      detail TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_tenant_audit_tenant ON tenant_audit_events(tenant_id, created_at DESC)`);
+  console.log('[DB] multi-tenant control-plane tables ready');
 
   client.release();
   console.log('[DB] All PostgreSQL tables initialized');
@@ -347,6 +449,48 @@ function initSqlite() {
     }
     if (!qbColNames.includes('question_plain')) {
       sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN question_plain TEXT');
+    }
+
+    // Migration: khóa chính (id, question_group) thay cho id đơn lẻ — xem giải thích ở nhánh Postgres.
+    // SQLite không đổi được PK bằng ALTER → phải dựng bảng mới rồi copy dữ liệu sang.
+    const qbPkCols = (sqliteDb.prepare("PRAGMA table_info(question_bank)").all() as { name: string; pk: number }[])
+      .filter((c) => c.pk > 0)
+      .map((c) => c.name)
+      .sort();
+    if (!(qbPkCols.length === 2 && qbPkCols[0] === 'id' && qbPkCols[1] === 'question_group')) {
+      console.log('[DB] question_bank PK:', qbPkCols, '→ rebuild sang (id, question_group)');
+      const existingCols = (sqliteDb.prepare("PRAGMA table_info(question_bank)").all() as { name: string }[]).map(c => c.name);
+      const optional = ['options', 'correct_answers', 'score'].filter(c => existingCols.includes(c));
+      const copyCols = ['id', 'type', 'level', 'module', 'question_group', 'question_sample', 'question_plain',
+        'rubric_must_have', 'rubric_nice_to_have', 'rubric_optional', 'created_at', 'updated_at', ...optional];
+      sqliteDb.exec('DROP TABLE IF EXISTS question_bank_new');
+      sqliteDb.exec(`
+        CREATE TABLE question_bank_new (
+          id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          level TEXT NOT NULL,
+          module TEXT NOT NULL,
+          question_group TEXT NOT NULL DEFAULT '',
+          question_sample TEXT NOT NULL,
+          question_plain TEXT,
+          rubric_must_have TEXT NOT NULL,
+          rubric_nice_to_have TEXT NOT NULL,
+          rubric_optional TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          options TEXT,
+          correct_answers TEXT,
+          score REAL DEFAULT 1,
+          PRIMARY KEY (id, question_group)
+        )
+      `);
+      const selectCols = copyCols
+        .map(c => (c === 'question_group' ? "COALESCE(question_group, '') AS question_group" : c))
+        .join(', ');
+      sqliteDb.exec(`INSERT INTO question_bank_new (${copyCols.join(', ')}) SELECT ${selectCols} FROM question_bank`);
+      sqliteDb.exec('DROP TABLE question_bank');
+      sqliteDb.exec('ALTER TABLE question_bank_new RENAME TO question_bank');
+      console.log('[DB] question_bank rebuilt với PK (id, question_group)');
     }
 
     sqliteDb.exec(`
@@ -498,6 +642,7 @@ function initSqlite() {
         username TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         role TEXT NOT NULL DEFAULT 'admin',
+        tenant_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
@@ -506,6 +651,74 @@ function initSqlite() {
     if (!adminCols.map((c) => c.name).includes('role')) {
       sqliteDb.exec("ALTER TABLE admin_users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'");
     }
+    if (!adminCols.map((c) => c.name).includes('tenant_id')) {
+      sqliteDb.exec('ALTER TABLE admin_users ADD COLUMN tenant_id INTEGER');
+    }
+
+    sqliteDb.exec(`
+      CREATE TABLE IF NOT EXISTS tenants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        contact_email TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        aws_region TEXT NOT NULL DEFAULT 'ap-southeast-1',
+        instance_type TEXT NOT NULL DEFAULT 't3.micro',
+        root_volume_size INTEGER NOT NULL DEFAULT 12,
+        compiler_enabled INTEGER NOT NULL DEFAULT 0,
+        compiler_memory_mb INTEGER NOT NULL DEFAULT 512,
+        compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15,
+        compiler_concurrency INTEGER NOT NULL DEFAULT 2,
+        compiler_lambda_arn TEXT,
+        domain_name TEXT NOT NULL DEFAULT '',
+        route53_zone_id TEXT NOT NULL DEFAULT '',
+        secret_arn TEXT NOT NULL DEFAULT '',
+        repository_url TEXT NOT NULL DEFAULT 'https://github.com/minhmaihuy/e-proc.git',
+        repository_ref TEXT NOT NULL DEFAULT 'main',
+        provision_status TEXT NOT NULL DEFAULT 'not_started',
+        terraform_state_key TEXT,
+        instance_id TEXT,
+        public_ip TEXT,
+        app_url TEXT,
+        last_error TEXT,
+        approved_by INTEGER,
+        approved_at DATETIME,
+        created_by INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
+
+      CREATE TABLE IF NOT EXISTS tenant_provision_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        requested_by INTEGER NOT NULL,
+        log_output TEXT,
+        started_at DATETIME,
+        finished_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_tenant_jobs_tenant ON tenant_provision_jobs(tenant_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS tenant_audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id INTEGER NOT NULL,
+        actor_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        detail TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_tenant_audit_tenant ON tenant_audit_events(tenant_id, created_at DESC);
+    `);
+
+    const tenantColNames = (sqliteDb.prepare("PRAGMA table_info(tenants)").all() as { name: string }[]).map(c => c.name);
+    if (!tenantColNames.includes('compiler_enabled')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_enabled INTEGER NOT NULL DEFAULT 0');
+    if (!tenantColNames.includes('compiler_memory_mb')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_memory_mb INTEGER NOT NULL DEFAULT 512');
+    if (!tenantColNames.includes('compiler_timeout_seconds')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15');
+    if (!tenantColNames.includes('compiler_concurrency')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_concurrency INTEGER NOT NULL DEFAULT 2');
+    if (!tenantColNames.includes('compiler_lambda_arn')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_lambda_arn TEXT');
 
     // Migration cho SQLite DB cũ: thêm cột nếu chưa có (SQLite không có IF NOT EXISTS cho ADD COLUMN)
     // (cột role của admin_users đã được migrate ở ngay trên)
@@ -528,6 +741,12 @@ function initSqlite() {
     if (!qbQuizCols.includes('score')) sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN score REAL DEFAULT 1');
     const eqCols = (sqliteDb.prepare("PRAGMA table_info(exam_questions)").all() as { name: string }[]).map(c => c.name);
     if (!eqCols.includes('option_order')) sqliteDb.exec('ALTER TABLE exam_questions ADD COLUMN option_order TEXT');
+    // question_id một mình không còn xác định được câu hỏi sau khi question_bank đổi sang
+    // khóa (id, question_group) → lưu kèm group của câu đã gán cho học viên.
+    if (!eqCols.includes('question_group')) {
+      sqliteDb.exec("ALTER TABLE exam_questions ADD COLUMN question_group TEXT DEFAULT ''");
+      sqliteDb.exec("UPDATE exam_questions SET question_group = '' WHERE question_group IS NULL");
+    }
 
     console.log('[DB] All SQLite tables initialized');
   } catch (err) {

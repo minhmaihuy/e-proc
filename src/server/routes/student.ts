@@ -8,6 +8,11 @@ import { studentAuthMiddleware } from '../middleware/studentAuth.js';
 import type { StudentTokenPayload } from '../middleware/studentAuth.js';
 import { runCode } from '../coderunner.js';
 import { createRecordingUploadUrl, isS3Configured } from '../services/s3.js';
+import {
+  getPracticeCompilerMode,
+  LAMBDA_COMPILER_LANGUAGES,
+  runCodeWithLambda,
+} from '../services/lambdaCompiler.js';
 
 dotenv.config();
 
@@ -33,6 +38,7 @@ async function finalizeSubmission(studentId: number): Promise<void> {
       SELECT eq.id, eq.answer, q.type, q.correct_answers, q.score
       FROM exam_questions eq
       JOIN question_bank q ON eq.question_id = q.id
+        AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
       WHERE eq.student_id = ?
     `, [studentId]);
 
@@ -391,6 +397,7 @@ router.get('/exam/questions', studentAuthMiddleware, async (req: Request, res: R
       SELECT eq.question_order, eq.answer, eq.option_order, q.id, q.type, q.level, q.module, q.question_sample, q.options
       FROM exam_questions eq
       JOIN question_bank q ON eq.question_id = q.id
+        AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
       WHERE eq.student_id = ?
       ORDER BY eq.question_order
     `, [parseInt(studentId)]);
@@ -612,7 +619,9 @@ router.get('/practice', studentAuthMiddleware, async (req: Request, res: Respons
     res.json({
       practice: { id: practice.id, name: practice.name, content_html: practice.content_html },
       answer: submission.answer || '',
-      time_remaining
+      time_remaining,
+      compiler_mode: getPracticeCompilerMode(),
+      compiler_languages: getPracticeCompilerMode() === 'lambda' ? LAMBDA_COMPILER_LANGUAGES : undefined,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -667,20 +676,35 @@ router.post('/practice/submit', studentAuthMiddleware, async (req: Request, res:
 // Đặt ENABLE_SERVER_CODE_RUN=false để tắt hẳn chạy code phía server.
 router.post('/run', studentAuthMiddleware, async (req: Request, res: Response) => {
   try {
-    if (process.env.ENABLE_SERVER_CODE_RUN === 'false') {
-      return res.status(503).json({ error: 'Server-side code execution is currently disabled by the administrator.' });
-    }
-
     const studentId = req.studentPayload!.studentId;
     const { language, code, stdin } = req.body;
 
-    // Chỉ cho học viên đang trong giờ làm bài chạy code
-    const studentResult = await db.query('SELECT status FROM students WHERE id = ?', [studentId]);
+    // Lambda compiler is a Practice-only tenant feature. Normal exams cannot use
+    // this endpoint even when a valid student token exists.
+    const studentResult = await db.query(`
+      SELECT s.status, b.practice_exam_id
+      FROM students s JOIN batches b ON b.id = s.batch_id
+      WHERE s.id = ?
+    `, [studentId]);
     const student = studentResult.rows[0];
-    if (!student || student.status !== 'in_progress') {
+    if (!student || student.status !== 'in_progress' || !student.practice_exam_id) {
       return res.status(403).json({ error: 'Code can only be run during an active exam session' });
     }
 
+    const mode = getPracticeCompilerMode();
+    if (mode === 'lambda') {
+      const { status, body } = await runCodeWithLambda(
+        studentId,
+        String(language || ''),
+        String(code || ''),
+        stdin ? String(stdin) : '',
+      );
+      return res.status(status).json(body);
+    }
+
+    if (process.env.ENABLE_SERVER_CODE_RUN === 'false') {
+      return res.status(503).json({ error: 'Server-side code execution is currently disabled by the administrator.' });
+    }
     const { status, body } = await runCode(studentId, String(language || ''), String(code || ''), stdin ? String(stdin) : undefined);
     res.status(status).json(body);
   } catch (error: any) {

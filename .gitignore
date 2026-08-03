@@ -18,3 +18,13 @@ client/package-lock.json
 # Local environments
 client/.env.local
 
+# Per-tenant Terraform runtime files (state is remote; local files are ephemeral)
+data/tenant-terraform/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.auto.tfvars.json
+
+# Terraform CLI binary tải về cho validator (87MB) — không commit vào repo
+data/terraform-validator/

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { adminApi } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import AdminNav from '../components/AdminNav';
 
 interface AdminUserRow {
   id: number;
@@ -113,14 +114,7 @@ function UserManagement() {
         <Link to="/admin/dashboard" className="btn btn-secondary">Back to Dashboard</Link>
       </div>
 
-      <div className="nav">
-        <Link to="/admin/dashboard">Dashboard</Link>
-        <Link to="/admin/questions">Question Bank</Link>
-        <Link to="/admin/batches">Batches</Link>
-        <Link to="/admin/practice">Practice</Link>
-        <Link to="/admin/settings">AI Settings</Link>
-        <Link to="/admin/users" className="active">User Management</Link>
-      </div>
+      <AdminNav />
 
       {error && <p className="error">{error}</p>}
       {success && <p className="success">{success}</p>}

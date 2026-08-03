@@ -5,6 +5,7 @@ export interface AdminUser {
   id: number;
   username: string;
   role: string;
+  tenantId?: number | null;
 }
 
 // Extend Express Request type
@@ -32,7 +33,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
   }
 
   try {
-    const payload = jwt.verify(token, secret) as AdminUser;
+    const payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as AdminUser;
     req.adminUser = payload;
     next();
   } catch (err: any) {
@@ -47,7 +48,16 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
 // và các thao tác đặc quyền khác (vd bật ghi màn hình lên S3).
 export function requireSuperAdmin(req: Request, res: Response, next: NextFunction) {
   if (req.adminUser?.role !== 'superadmin') {
+    console.warn('[Security] Blocked superadmin action', { userId: req.adminUser?.id, role: req.adminUser?.role });
     return res.status(403).json({ error: 'Forbidden: Superadmin access required' });
+  }
+  next();
+}
+
+export function requirePlatformAdmin(req: Request, res: Response, next: NextFunction) {
+  if (req.adminUser?.role !== 'admin' && req.adminUser?.role !== 'superadmin') {
+    console.warn('[Security] Blocked platform-admin action', { userId: req.adminUser?.id, role: req.adminUser?.role });
+    return res.status(403).json({ error: 'Forbidden: Platform admin access required' });
   }
   next();
 }

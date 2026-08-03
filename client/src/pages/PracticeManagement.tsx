@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import DOMPurify from 'dompurify';
 import { adminApi } from '../services/api';
-import { useAuth } from '../contexts/AuthContext';
+import AdminNav from '../components/AdminNav';
 
 interface PracticeExamRow {
   id: number;
@@ -12,7 +12,6 @@ interface PracticeExamRow {
 }
 
 function PracticeManagement() {
-  const { isSuperAdmin } = useAuth();
   const [practices, setPractices] = useState<PracticeExamRow[]>([]);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -97,14 +96,7 @@ function PracticeManagement() {
         <Link to="/admin/dashboard" className="btn btn-secondary">Back to Dashboard</Link>
       </div>
 
-      <div className="nav">
-        <Link to="/admin/dashboard">Dashboard</Link>
-        <Link to="/admin/questions">Question Bank</Link>
-        <Link to="/admin/batches">Batches</Link>
-        <Link to="/admin/practice" className="active">Practice</Link>
-        <Link to="/admin/settings">AI Settings</Link>
-        {isSuperAdmin && <Link to="/admin/users">User Management</Link>}
-      </div>
+      <AdminNav />
 
       {error && <p className="error">{error}</p>}
       {success && <p className="success">{success}</p>}

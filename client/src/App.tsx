@@ -15,6 +15,7 @@ import StudentExam from './pages/StudentExam';
 import StudentPractice from './pages/StudentPractice';
 import StudentConfirm from './pages/StudentConfirm';
 import StudentSubmit from './pages/StudentSubmit';
+import TenantManagement from './pages/TenantManagement';
 
 function App() {
   return (
@@ -31,13 +32,14 @@ function App() {
         <Route path="/admin" element={<AdminLogin />} />
 
         {/* Admin protected routes */}
-        <Route path="/admin/dashboard" element={<PrivateRoute><AdminDashboard /></PrivateRoute>} />
-        <Route path="/admin/questions" element={<PrivateRoute><QuestionBank /></PrivateRoute>} />
-        <Route path="/admin/batches" element={<PrivateRoute><BatchManagement /></PrivateRoute>} />
-        <Route path="/admin/batches/:id/students" element={<PrivateRoute><StudentManagement /></PrivateRoute>} />
-        <Route path="/admin/batches/:id/results" element={<PrivateRoute><Results /></PrivateRoute>} />
-        <Route path="/admin/settings" element={<PrivateRoute><AISettings /></PrivateRoute>} />
-        <Route path="/admin/practice" element={<PrivateRoute><PracticeManagement /></PrivateRoute>} />
+        <Route path="/admin/dashboard" element={<PrivateRoute requirePlatformAdmin><AdminDashboard /></PrivateRoute>} />
+        <Route path="/admin/questions" element={<PrivateRoute requirePlatformAdmin><QuestionBank /></PrivateRoute>} />
+        <Route path="/admin/batches" element={<PrivateRoute requirePlatformAdmin><BatchManagement /></PrivateRoute>} />
+        <Route path="/admin/batches/:id/students" element={<PrivateRoute requirePlatformAdmin><StudentManagement /></PrivateRoute>} />
+        <Route path="/admin/batches/:id/results" element={<PrivateRoute requirePlatformAdmin><Results /></PrivateRoute>} />
+        <Route path="/admin/settings" element={<PrivateRoute requirePlatformAdmin><AISettings /></PrivateRoute>} />
+        <Route path="/admin/practice" element={<PrivateRoute requirePlatformAdmin><PracticeManagement /></PrivateRoute>} />
+        <Route path="/admin/tenants" element={<PrivateRoute><TenantManagement /></PrivateRoute>} />
         <Route path="/admin/users" element={<PrivateRoute requireSuperAdmin><UserManagement /></PrivateRoute>} />
       </Routes>
     </AuthProvider>

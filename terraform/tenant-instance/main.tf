@@ -1,0 +1,256 @@
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_ami" "ubuntu_x86" {
+  most_recent = true
+  owners      = ["099720109477"]
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+data "aws_ami" "ubuntu_arm" {
+  most_recent = true
+  owners      = ["099720109477"]
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-*"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["arm64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+locals {
+  name_prefix   = "eproc-${var.tenant_slug}"
+  compiler_name = "${local.name_prefix}-compiler"
+  is_arm        = startswith(var.instance_type, "t4g.")
+}
+
+resource "aws_security_group" "app" {
+  name_prefix = "${local.name_prefix}-"
+  description = "HTTP and HTTPS access for tenant ${var.tenant_slug}"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "Outbound package and API access"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_iam_role" "app" {
+  name_prefix = "${local.name_prefix}-"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "runtime" {
+  name = "tenant-runtime"
+  role = aws_iam_role.app.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.secret_arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:UpdateInstanceInformation",
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel",
+          "ec2messages:AcknowledgeMessage",
+          "ec2messages:DeleteMessage",
+          "ec2messages:FailMessage",
+          "ec2messages:GetEndpoint",
+          "ec2messages:GetMessages",
+          "ec2messages:SendReply"
+        ]
+        Resource = "*"
+      }
+      ], var.compiler_enabled ? [{
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = aws_lambda_function.compiler[0].arn
+      }] : []
+    )
+  })
+}
+
+resource "aws_iam_role" "compiler" {
+  count       = var.compiler_enabled ? 1 : 0
+  name_prefix = "${local.compiler_name}-"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "compiler" {
+  count             = var.compiler_enabled ? 1 : 0
+  name              = "/aws/lambda/${local.compiler_name}"
+  retention_in_days = 7
+}
+
+resource "aws_iam_role_policy" "compiler_logs" {
+  count = var.compiler_enabled ? 1 : 0
+  name  = "compiler-logs-only"
+  role  = aws_iam_role.compiler[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ]
+      Resource = "${aws_cloudwatch_log_group.compiler[0].arn}:*"
+    }]
+  })
+}
+
+resource "aws_lambda_function" "compiler" {
+  count                          = var.compiler_enabled ? 1 : 0
+  function_name                  = local.compiler_name
+  role                           = aws_iam_role.compiler[0].arn
+  package_type                   = "Image"
+  image_uri                      = var.compiler_image_uri
+  architectures                  = ["x86_64"]
+  memory_size                    = var.compiler_memory_mb
+  timeout                        = var.compiler_timeout_seconds
+  reserved_concurrent_executions = var.compiler_concurrency
+
+  ephemeral_storage {
+    size = 512
+  }
+
+  tracing_config {
+    mode = "PassThrough"
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.compiler,
+    aws_iam_role_policy.compiler_logs
+  ]
+}
+
+resource "aws_iam_instance_profile" "app" {
+  name_prefix = "${local.name_prefix}-"
+  role        = aws_iam_role.app.name
+}
+
+resource "aws_instance" "app" {
+  ami                    = local.is_arm ? data.aws_ami.ubuntu_arm.id : data.aws_ami.ubuntu_x86.id
+  instance_type          = var.instance_type
+  vpc_security_group_ids = [aws_security_group.app.id]
+  iam_instance_profile   = aws_iam_instance_profile.app.name
+
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
+  root_block_device {
+    volume_size           = var.root_volume_size
+    volume_type           = "gp3"
+    encrypted             = true
+    delete_on_termination = true
+  }
+
+  user_data = templatefile("${path.module}/user-data.sh.tftpl", {
+    app_port            = var.app_port
+    domain_name         = var.domain_name
+    repository_url      = var.repository_url
+    repository_ref      = var.repository_ref
+    secret_arn          = var.secret_arn
+    tenant_slug         = var.tenant_slug
+    aws_region          = var.aws_region
+    compiler_mode       = var.compiler_enabled ? "lambda" : "local"
+    compiler_lambda_arn = var.compiler_enabled ? aws_lambda_function.compiler[0].arn : ""
+  })
+
+  tags = {
+    Name = "${local.name_prefix}-server"
+  }
+
+  lifecycle {
+    ignore_changes = [ami]
+  }
+}
+
+resource "aws_eip" "app" {
+  domain = "vpc"
+  tags   = { Name = "${local.name_prefix}-eip" }
+}
+
+resource "aws_eip_association" "app" {
+  instance_id   = aws_instance.app.id
+  allocation_id = aws_eip.app.id
+}
+
+resource "aws_route53_record" "app" {
+  count   = var.domain_name != "" && var.route53_zone_id != "" ? 1 : 0
+  zone_id = var.route53_zone_id
+  name    = var.domain_name
+  type    = "A"
+  ttl     = 300
+  records = [aws_eip.app.public_ip]
+}

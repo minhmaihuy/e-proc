@@ -4,16 +4,24 @@ import { useAuth } from '../contexts/AuthContext';
 // Thanh điều hướng admin dùng chung cho mọi trang admin.
 // Link "User Management" chỉ hiện với role superadmin (admin thường không thấy).
 function AdminNav() {
-  const { isSuperAdmin } = useAuth();
+  const { isSuperAdmin, isTenantAdmin } = useAuth();
+  if (isTenantAdmin) {
+    return (
+      <nav className="nav" aria-label="Tenant navigation">
+        <Link to="/admin/tenants">My tenant</Link>
+      </nav>
+    );
+  }
   return (
-    <div className="nav">
+    <nav className="nav" aria-label="Admin navigation">
       <Link to="/admin/dashboard">Dashboard</Link>
       <Link to="/admin/questions">Question Bank</Link>
       <Link to="/admin/batches">Batches</Link>
       <Link to="/admin/practice">Practice</Link>
       <Link to="/admin/settings">AI Settings</Link>
+      {isSuperAdmin && <Link to="/admin/tenants">Tenants</Link>}
       {isSuperAdmin && <Link to="/admin/users">User Management</Link>}
-    </div>
+    </nav>
   );
 }
 

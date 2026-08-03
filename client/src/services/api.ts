@@ -2,6 +2,66 @@ import axios from 'axios';
 
 const API_BASE = '/api';
 
+export type TenantStatus = 'pending' | 'approved' | 'suspended';
+export type TenantProvisionStatus = 'not_started' | 'queued' | 'planning' | 'planned' | 'applying' | 'active' | 'failed';
+
+export interface Tenant {
+  id: number;
+  slug: string;
+  name: string;
+  contact_email: string;
+  status: TenantStatus;
+  aws_region: string;
+  instance_type: string;
+  root_volume_size: number;
+  compiler_enabled: boolean | number;
+  compiler_memory_mb: number;
+  compiler_timeout_seconds: number;
+  compiler_concurrency: number;
+  compiler_lambda_arn?: string;
+  domain_name: string;
+  route53_zone_id: string;
+  secret_arn: string;
+  repository_url: string;
+  repository_ref: string;
+  provision_status: TenantProvisionStatus;
+  terraform_state_key?: string;
+  instance_id?: string;
+  public_ip?: string;
+  app_url?: string;
+  last_error?: string;
+  approved_at?: string;
+  created_at: string;
+  admin_count?: number;
+}
+
+export interface TenantProvisionJob {
+  id: number;
+  action: 'plan' | 'apply';
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  log_output?: string;
+  started_at?: string;
+  finished_at?: string;
+  created_at: string;
+}
+
+export interface TenantConfiguration {
+  name: string;
+  contact_email: string;
+  aws_region: string;
+  instance_type: string;
+  root_volume_size: number;
+  compiler_enabled: boolean;
+  compiler_memory_mb: number;
+  compiler_timeout_seconds: number;
+  compiler_concurrency: number;
+  domain_name: string;
+  route53_zone_id?: string;
+  secret_arn?: string;
+  repository_url: string;
+  repository_ref: string;
+}
+
 const api = axios.create({
   baseURL: API_BASE,
   withCredentials: true
@@ -69,6 +129,31 @@ export const adminApi = {
   deleteUser: (id: number) =>
     api.delete(`/admin/users/${id}`),
 
+  // --- Multi-tenant control plane ---
+  getTenants: () =>
+    api.get<Tenant[]>('/admin/tenants'),
+
+  createTenant: (data: TenantConfiguration & { slug: string; admin_username: string; admin_password: string }) =>
+    api.post('/admin/tenants', data),
+
+  updateTenant: (id: number, data: TenantConfiguration) =>
+    api.put(`/admin/tenants/${id}`, data),
+
+  approveTenant: (id: number) =>
+    api.post(`/admin/tenants/${id}/approve`),
+
+  suspendTenant: (id: number) =>
+    api.post(`/admin/tenants/${id}/suspend`),
+
+  planTenant: (id: number) =>
+    api.post(`/admin/tenants/${id}/plan`),
+
+  provisionTenant: (id: number) =>
+    api.post(`/admin/tenants/${id}/provision`),
+
+  getTenantJobs: (id: number) =>
+    api.get<TenantProvisionJob[]>(`/admin/tenants/${id}/jobs`),
+
   // --- Question endpoints ---
   importQuestions: (formData: FormData) =>
     api.post('/admin/questions/import', formData),
@@ -103,9 +188,12 @@ export const adminApi = {
   getModuleGroupTypeStats: () =>
     api.get('/admin/questions/module-group-type-stats'),
 
-  deleteQuestion: (id: string) =>
-    api.delete(`/admin/questions/${id}`),
-  
+  // Câu hỏi được định danh bằng cặp (id, question_group) — hai bộ đề khác nhau được
+  // phép dùng chung mã ID, nên xóa phải nêu rõ group.
+  deleteQuestion: (id: string, questionGroup: string = '') =>
+    api.delete(`/admin/questions/${encodeURIComponent(id)}`, { params: { group: questionGroup } }),
+
+  // keys dạng "id|||group" (xem questionKey() trong QuestionBank.tsx)
   deleteQuestions: (ids: string[]) =>
     api.post('/admin/questions/bulk-delete', { ids }),
   

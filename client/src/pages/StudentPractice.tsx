@@ -27,6 +27,7 @@ interface RunResult {
   timedOut: boolean;
   durationMs: number;
   ranLocally?: boolean;
+  runner?: 'lambda';
 }
 
 // Local-first: python/c/cpp chạy ngay trong trình duyệt học viên (localRunner.ts,
@@ -56,6 +57,8 @@ function StudentPractice() {
   const [running, setRunning] = useState(false);
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [runError, setRunError] = useState('');
+  const [compilerMode, setCompilerMode] = useState<'local' | 'lambda'>('local');
+  const [compilerLanguages, setCompilerLanguages] = useState<string[]>([]);
   const editorRef = useRef<CodeEditorHandle>(null);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const clipboardCooldownRef = useRef<Record<string, number>>({});
@@ -354,6 +357,8 @@ function StudentPractice() {
   const loadPractice = (data: any) => {
     setPractice(data.practice);
     setAnswer(data.answer || '');
+    setCompilerMode(data.compiler_mode === 'lambda' ? 'lambda' : 'local');
+    setCompilerLanguages(Array.isArray(data.compiler_languages) ? data.compiler_languages : []);
 
     const serverTimeRemaining: number | null = data.time_remaining ?? null;
     if (serverTimeRemaining !== null && serverTimeRemaining > 0) {
@@ -423,7 +428,14 @@ function StudentPractice() {
     setRunError('');
     setRunResult(null);
     try {
-      if (canRunLocally(language)) {
+      if (compilerMode === 'lambda') {
+        if (!compilerLanguages.includes(language)) {
+          setRunError(`Ngôn ngữ "${language}" chưa được hỗ trợ trên Lambda. Hỗ trợ: ${compilerLanguages.join(', ') || 'C, C++, Python, Java'}.`);
+          return;
+        }
+        const res = await studentApi.runCode(language, answer);
+        setRunResult(res.data);
+      } else if (canRunLocally(language)) {
         const result = await runLocally(language, answer);
         setRunResult(result);
       } else if (SERVER_RUN_LANGUAGES.includes(language)) {
@@ -437,7 +449,7 @@ function StudentPractice() {
     } finally {
       setRunning(false);
     }
-  }, [answer, locked, running, submitting]);
+  }, [answer, compilerLanguages, compilerMode, locked, running, submitting]);
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
@@ -557,7 +569,10 @@ function StudentPractice() {
           <div className="card practice-editor-panel">
             <div className="form-group" style={{ marginBottom: 0 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <label style={{ marginBottom: 0 }}>Your Answer:</label>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <label style={{ marginBottom: 0 }}>Your Answer:</label>
+                  {compilerMode === 'lambda' && <span className="status-badge provision-active">AWS Lambda compiler</span>}
+                </span>
                 <button
                   type="button"
                   onClick={handleRun}
@@ -606,7 +621,7 @@ function StudentPractice() {
                     </strong>
                     <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                       <span style={{ fontSize: 12, color: 'var(--text-light)' }}>
-                        {runResult.durationMs}ms · {runResult.ranLocally ? 'chạy trên máy bạn' : 'chạy trên server'}
+                        {runResult.durationMs}ms · {runResult.runner === 'lambda' ? 'AWS Lambda' : runResult.ranLocally ? 'chạy trên máy bạn' : 'chạy trên server'}
                       </span>
                       <button
                         type="button"

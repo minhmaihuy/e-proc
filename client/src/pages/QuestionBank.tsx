@@ -6,6 +6,12 @@ import AdminNav from '../components/AdminNav';
 const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
 type PageSize = typeof PAGE_SIZE_OPTIONS[number];
 
+
+// Câu hỏi được định danh bằng CẶP (id, question_group): hai bộ đề khác nhau (vd
+// CPP_EMB_PRINT_IOT và CPP_EMB_AUTOSAR) hoàn toàn có thể dùng chung mã ID. Dùng riêng
+// q.id để chọn/xóa sẽ đụng nhầm câu của bộ đề khác.
+const questionKey = (q: any) => `${q.id}|||${q.question_group || ''}`;
+
 function QuestionBank() {
   const [questions, setQuestions] = useState<any[]>([]);
   const [modules, setModules] = useState<string[]>([]);
@@ -86,10 +92,10 @@ function QuestionBank() {
     setLoading(false);
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (q: any) => {
     if (!confirm('Delete this question?')) return;
     try {
-      await adminApi.deleteQuestion(id);
+      await adminApi.deleteQuestion(q.id, q.question_group || '');
       loadQuestions();
     } catch (error) {
       console.error(error);
@@ -129,7 +135,7 @@ function QuestionBank() {
     [filtered, currentPage, pageSize]
   );
 
-  const pageIds = useMemo(() => paginated.map((q: any) => q.id as string), [paginated]);
+  const pageIds = useMemo(() => paginated.map((q: any) => questionKey(q)), [paginated]);
   const allPageSelected = pageIds.length > 0 && pageIds.every(id => selectedIds.has(id));
   const somePageSelected = pageIds.some(id => selectedIds.has(id));
 
@@ -351,14 +357,14 @@ function QuestionBank() {
           <tbody>
             {paginated.map((q: any) => (
               <tr
-                key={q.id}
-                style={{ background: selectedIds.has(q.id) ? 'rgba(99,102,241,0.07)' : undefined }}
+                key={questionKey(q)}
+                style={{ background: selectedIds.has(questionKey(q)) ? 'rgba(99,102,241,0.07)' : undefined }}
               >
                 <td style={{ textAlign: 'center' }}>
                   <input
                     type="checkbox"
-                    checked={selectedIds.has(q.id)}
-                    onChange={() => toggleSelectId(q.id)}
+                    checked={selectedIds.has(questionKey(q))}
+                    onChange={() => toggleSelectId(questionKey(q))}
                     style={{ cursor: 'pointer', width: 15, height: 15 }}
                   />
                 </td>
@@ -374,7 +380,7 @@ function QuestionBank() {
                 </td>
                 <td>
                   <button
-                    onClick={() => handleDelete(q.id)}
+                    onClick={() => handleDelete(q)}
                     className="btn btn-danger"
                     style={{ fontSize: 12, padding: '4px 10px' }}
                   >
