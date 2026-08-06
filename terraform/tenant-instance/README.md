@@ -2,10 +2,11 @@
 
 This module creates one isolated EC2 application server for one E-PROC customer:
 
-- encrypted EC2 root volume and Elastic IP;
-- HTTP/HTTPS-only security group (administration uses SSM, not public SSH);
+- dedicated dual-stack VPC with an AWS-assigned IPv6 /56 and public subnet;
+- public IPv6 as the primary endpoint plus Elastic IPv4 as a bootstrap fallback;
+- HTTP/HTTPS-only security group over IPv4 and IPv6 (administration uses SSM, not public SSH);
 - least-privilege instance role for exactly one Secrets Manager ARN;
-- optional Route53 A record;
+- optional Route53 A and AAAA records;
 - optional isolated Lambda compiler for Practice exams, with bounded memory,
   timeout and reserved concurrency;
 - bootstrap of the selected repository/ref through cloud-init.
@@ -40,6 +41,8 @@ key = tenants/<tenant-slug>/terraform.tfstate
 - The UI intentionally has no destroy button. Decommissioning requires a separate
   reviewed workflow to avoid accidental data loss.
 - Run a successful plan after the latest tenant approval before apply is accepted.
+- The IPv4 CIDR defaults to `10.0.0.0/16` inside each isolated VPC. Configure a
+  non-overlapping CIDR before introducing VPC peering or Transit Gateway routing.
 
 ## Control-plane environment
 

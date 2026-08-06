@@ -1,7 +1,3 @@
-data "aws_vpc" "default" {
-  default = true
-}
-
 data "aws_ami" "ubuntu_x86" {
   most_recent = true
   owners      = ["099720109477"]
@@ -48,10 +44,55 @@ locals {
   is_arm        = startswith(var.instance_type, "t4g.")
 }
 
+resource "aws_vpc" "tenant" {
+  cidr_block                       = var.vpc_ipv4_cidr
+  assign_generated_ipv6_cidr_block = true
+  enable_dns_support               = true
+  enable_dns_hostnames             = true
+
+  tags = { Name = "${local.name_prefix}-vpc" }
+}
+
+resource "aws_internet_gateway" "tenant" {
+  vpc_id = aws_vpc.tenant.id
+  tags   = { Name = "${local.name_prefix}-igw" }
+}
+
+resource "aws_subnet" "public" {
+  vpc_id                          = aws_vpc.tenant.id
+  cidr_block                      = cidrsubnet(var.vpc_ipv4_cidr, 8, 1)
+  ipv6_cidr_block                 = cidrsubnet(aws_vpc.tenant.ipv6_cidr_block, 8, 1)
+  map_public_ip_on_launch         = true
+  assign_ipv6_address_on_creation = true
+
+  tags = { Name = "${local.name_prefix}-public" }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.tenant.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.tenant.id
+  }
+
+  route {
+    ipv6_cidr_block = "::/0"
+    gateway_id      = aws_internet_gateway.tenant.id
+  }
+
+  tags = { Name = "${local.name_prefix}-public" }
+}
+
+resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
+
 resource "aws_security_group" "app" {
   name_prefix = "${local.name_prefix}-"
   description = "HTTP and HTTPS access for tenant ${var.tenant_slug}"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = aws_vpc.tenant.id
 
   ingress {
     description = "HTTP"
@@ -62,11 +103,27 @@ resource "aws_security_group" "app" {
   }
 
   ingress {
+    description      = "HTTP over IPv6"
+    from_port        = 80
+    to_port          = 80
+    protocol         = "tcp"
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  ingress {
     description = "HTTPS"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description      = "HTTPS over IPv6"
+    from_port        = 443
+    to_port          = 443
+    protocol         = "tcp"
+    ipv6_cidr_blocks = ["::/0"]
   }
 
   egress {
@@ -75,6 +132,14 @@ resource "aws_security_group" "app" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description      = "Outbound package and API access over IPv6"
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    ipv6_cidr_blocks = ["::/0"]
   }
 
   lifecycle {
@@ -200,12 +265,15 @@ resource "aws_iam_instance_profile" "app" {
 resource "aws_instance" "app" {
   ami                    = local.is_arm ? data.aws_ami.ubuntu_arm.id : data.aws_ami.ubuntu_x86.id
   instance_type          = var.instance_type
+  subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.app.id]
   iam_instance_profile   = aws_iam_instance_profile.app.name
+  ipv6_address_count     = 1
 
   metadata_options {
-    http_endpoint = "enabled"
-    http_tokens   = "required"
+    http_endpoint      = "enabled"
+    http_protocol_ipv6 = "enabled"
+    http_tokens        = "required"
   }
 
   root_block_device {
@@ -253,4 +321,13 @@ resource "aws_route53_record" "app" {
   type    = "A"
   ttl     = 300
   records = [aws_eip.app.public_ip]
+}
+
+resource "aws_route53_record" "app_ipv6" {
+  count   = var.domain_name != "" && var.route53_zone_id != "" ? 1 : 0
+  zone_id = var.route53_zone_id
+  name    = var.domain_name
+  type    = "AAAA"
+  ttl     = 300
+  records = [aws_instance.app.ipv6_addresses[0]]
 }

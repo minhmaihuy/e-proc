@@ -40,6 +40,7 @@ su - ubuntu -c 'cd /opt/eproc/app && pm2 start dist/server/server.js --name epro
 cat > /etc/nginx/sites-available/eproc <<'NGINX'
 server {
   listen 80 default_server;
+  listen [::]:80 default_server;
   server_name ${domain_name != "" ? domain_name : "_"};
 
   add_header X-Frame-Options "SAMEORIGIN" always;

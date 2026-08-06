@@ -361,6 +361,7 @@ await client.query(`
       terraform_state_key TEXT,
       instance_id VARCHAR(64),
       public_ip VARCHAR(64),
+      ipv6_address VARCHAR(64),
       app_url TEXT,
       last_error TEXT,
       approved_by INTEGER,
@@ -375,6 +376,7 @@ await client.query(`
   await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15`);
   await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_concurrency INTEGER NOT NULL DEFAULT 2`);
   await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_lambda_arn TEXT`);
+  await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS ipv6_address VARCHAR(64)`);
   await client.query(`CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status)`);
 
   await client.query(`
@@ -679,6 +681,7 @@ function initSqlite() {
         terraform_state_key TEXT,
         instance_id TEXT,
         public_ip TEXT,
+        ipv6_address TEXT,
         app_url TEXT,
         last_error TEXT,
         approved_by INTEGER,
@@ -719,6 +722,7 @@ function initSqlite() {
     if (!tenantColNames.includes('compiler_timeout_seconds')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15');
     if (!tenantColNames.includes('compiler_concurrency')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_concurrency INTEGER NOT NULL DEFAULT 2');
     if (!tenantColNames.includes('compiler_lambda_arn')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_lambda_arn TEXT');
+    if (!tenantColNames.includes('ipv6_address')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN ipv6_address TEXT');
 
     // Migration cho SQLite DB cũ: thêm cột nếu chưa có (SQLite không có IF NOT EXISTS cho ADD COLUMN)
     // (cột role của admin_users đã được migrate ở ngay trên)

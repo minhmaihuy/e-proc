@@ -4,13 +4,18 @@ output "instance_id" {
 }
 
 output "public_ip" {
-  description = "Tenant Elastic IP."
+  description = "Tenant Elastic IPv4 fallback address."
   value       = aws_eip.app.public_ip
+}
+
+output "ipv6_address" {
+  description = "Tenant public IPv6 address."
+  value       = aws_instance.app.ipv6_addresses[0]
 }
 
 output "app_url" {
   description = "Public tenant application URL."
-  value       = var.domain_name != "" ? "http://${var.domain_name}" : "http://${aws_eip.app.public_ip}"
+  value       = var.domain_name != "" ? "http://${var.domain_name}" : "http://[${aws_instance.app.ipv6_addresses[0]}]"
 }
 
 output "compiler_lambda_arn" {

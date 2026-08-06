@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   ProvisionableTenant,
   redactProvisionLog,
@@ -52,4 +54,17 @@ test('Terraform logs redact common credentials and database userinfo', () => {
   );
   assert.doesNotMatch(output, /SuperSecret123|abcdefghijklmnop|admin:dbpass/);
   assert.match(output, /\[REDACTED\]/);
+});
+
+test('tenant Terraform module exposes the application over IPv6 end to end', () => {
+  const moduleRoot = path.resolve(process.cwd(), 'terraform', 'tenant-instance');
+  const main = fs.readFileSync(path.join(moduleRoot, 'main.tf'), 'utf8');
+  const outputs = fs.readFileSync(path.join(moduleRoot, 'outputs.tf'), 'utf8');
+  const userData = fs.readFileSync(path.join(moduleRoot, 'user-data.sh.tftpl'), 'utf8');
+
+  assert.match(main, /assign_generated_ipv6_cidr_block\s*=\s*true/);
+  assert.match(main, /ipv6_cidr_block\s*=\s*"::\/0"/);
+  assert.match(main, /resource\s+"aws_route53_record"\s+"app_ipv6"/);
+  assert.match(outputs, /output\s+"ipv6_address"/);
+  assert.match(userData, /listen \[::\]:80 default_server;/);
 });

@@ -18,6 +18,17 @@ variable "aws_region" {
   }
 }
 
+variable "vpc_ipv4_cidr" {
+  description = "Private IPv4 CIDR used by this tenant's isolated dual-stack VPC. Overlap is allowed while tenant VPCs are not peered."
+  type        = string
+  default     = "10.0.0.0/16"
+
+  validation {
+    condition     = can(cidrhost(var.vpc_ipv4_cidr, 0)) && can(cidrsubnet(var.vpc_ipv4_cidr, 8, 1))
+    error_message = "vpc_ipv4_cidr must be a valid CIDR with enough address space for tenant subnets."
+  }
+}
+
 variable "instance_type" {
   description = "EC2 instance type selected from the control-plane allowlist."
   type        = string

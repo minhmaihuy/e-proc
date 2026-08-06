@@ -28,6 +28,7 @@ export interface Tenant {
   terraform_state_key?: string;
   instance_id?: string;
   public_ip?: string;
+  ipv6_address?: string;
   app_url?: string;
   last_error?: string;
   approved_at?: string;

@@ -187,10 +187,10 @@ export async function runTenantProvisioning(
       await appendJobLog(jobId, await runTerraform(config.terraformBin, workingDirectory, ['apply', '-no-color', '-auto-approve', 'tenant.tfplan']));
       const outputs = await readTerraformOutputs(config.terraformBin, workingDirectory);
       await db.query(
-        `UPDATE tenants SET provision_status = 'active', instance_id = ?, public_ip = ?, app_url = ?, compiler_lambda_arn = ?,
+        `UPDATE tenants SET provision_status = 'active', instance_id = ?, public_ip = ?, ipv6_address = ?, app_url = ?, compiler_lambda_arn = ?,
          last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-        [outputs.instance_id?.value || null, outputs.public_ip?.value || null, outputs.app_url?.value || null,
-          outputs.compiler_lambda_arn?.value || null, tenant.id],
+        [outputs.instance_id?.value || null, outputs.public_ip?.value || null, outputs.ipv6_address?.value || null,
+          outputs.app_url?.value || null, outputs.compiler_lambda_arn?.value || null, tenant.id],
       );
     } else {
       await db.query(

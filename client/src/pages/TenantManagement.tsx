@@ -324,7 +324,8 @@ function TenantManagement() {
                 <div className="section-heading"><div><span className="eyebrow">INFRASTRUCTURE</span><h3>Terraform deployment</h3></div>{latestJob && <span className={`status-badge job-${latestJob.status}`}>{statusLabel(latestJob.status)}</span>}</div>
                 <div className="resource-grid">
                   <div><span>Instance</span><strong>{selectedTenant.instance_id || 'Not created'}</strong></div>
-                  <div><span>Public IP</span><strong>{selectedTenant.public_ip || 'Pending'}</strong></div>
+                  <div><span>Public IPv6</span><strong>{selectedTenant.ipv6_address || 'Pending'}</strong></div>
+                  <div><span>IPv4 fallback</span><strong>{selectedTenant.public_ip || 'Pending'}</strong></div>
                   <div><span>Practice compiler</span><strong>{selectedTenant.compiler_enabled ? (selectedTenant.compiler_lambda_arn || 'Pending Lambda') : 'Local / EC2'}</strong></div>
                   <div><span>State</span><strong>{selectedTenant.terraform_state_key || `tenants/${selectedTenant.slug}/terraform.tfstate`}</strong></div>
                 </div>
