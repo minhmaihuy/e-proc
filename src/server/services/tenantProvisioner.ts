@@ -15,6 +15,8 @@ export type ProvisionAction = 'plan' | 'apply';
 export interface ProvisionableTenant {
   id: number;
   slug: string;
+  name: string;
+  contact_email: string;
   status: string;
   aws_region: string;
   instance_type: string;
@@ -143,6 +145,8 @@ export async function runTenantProvisioning(
     copyModule(moduleSource, workingDirectory);
     const tfvars = {
       tenant_slug: tenant.slug,
+      tenant_name: tenant.name,
+      tenant_contact_email: tenant.contact_email,
       aws_region: tenant.aws_region,
       instance_type: tenant.instance_type,
       root_volume_size: Number(tenant.root_volume_size),

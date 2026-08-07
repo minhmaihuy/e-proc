@@ -1,11 +1,15 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { getCurrentTenantConfig } from '../tenantContext.js';
+import db from '../db/postgres.js';
 
 export interface AdminUser {
   id: number;
   username: string;
   role: string;
   tenantId?: number | null;
+  tenantSlug?: string | null;
+  tenantName?: string | null;
 }
 
 // Extend Express Request type
@@ -17,7 +21,7 @@ declare global {
   }
 }
 
-export function authMiddleware(req: Request, res: Response, next: NextFunction) {
+export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers['authorization'];
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -32,15 +36,54 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
     return res.status(500).json({ error: 'Server configuration error' });
   }
 
+  let payload: AdminUser;
   try {
-    const payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as AdminUser;
-    req.adminUser = payload;
-    next();
+    payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as AdminUser;
   } catch (err: any) {
     if (err.name === 'TokenExpiredError') {
       return res.status(401).json({ error: 'Unauthorized: Token expired' });
     }
     return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+  }
+
+  try {
+    const result = await db.query(
+      `SELECT u.id, u.username, u.role, u.tenant_id, t.slug AS tenant_slug,
+              t.name AS tenant_name, t.status AS tenant_status
+       FROM admin_users u LEFT JOIN tenants t ON t.id = u.tenant_id
+       WHERE u.id = ?`,
+      [payload.id],
+    );
+    const current = result.rows[0];
+    if (!current || current.username !== payload.username) {
+      return res.status(401).json({ error: 'Unauthorized: Account no longer exists' });
+    }
+
+    const tenantId = current.tenant_id ? Number(current.tenant_id) : null;
+    const tenantSlug = current.tenant_slug ? String(current.tenant_slug) : null;
+    const isSuperAdmin = current.role === 'superadmin';
+    if (!isSuperAdmin && (!tenantId || !tenantSlug)) {
+      return res.status(403).json({ error: 'Account is not assigned to a tenant' });
+    }
+    if (!isSuperAdmin && current.tenant_status === 'suspended') {
+      return res.status(403).json({ error: 'Tenant access is suspended' });
+    }
+    if (payload.role !== current.role || Number(payload.tenantId || 0) !== Number(tenantId || 0)) {
+      return res.status(401).json({ error: 'Unauthorized: Session permissions changed. Sign in again.' });
+    }
+
+    req.adminUser = {
+      id: Number(current.id),
+      username: String(current.username),
+      role: String(current.role),
+      tenantId: isSuperAdmin ? null : tenantId,
+      tenantSlug: isSuperAdmin ? null : tenantSlug,
+      tenantName: isSuperAdmin ? null : String(current.tenant_name),
+    };
+    next();
+  } catch (error) {
+    console.error('[Auth] Session lookup failed:', error);
+    return res.status(500).json({ error: 'Server authentication error' });
   }
 }
 
@@ -55,7 +98,11 @@ export function requireSuperAdmin(req: Request, res: Response, next: NextFunctio
 }
 
 export function requirePlatformAdmin(req: Request, res: Response, next: NextFunction) {
-  if (req.adminUser?.role !== 'admin' && req.adminUser?.role !== 'superadmin') {
+  const user = req.adminUser;
+  const isCurrentTenantAdmin = user?.role === 'admin'
+    && Boolean(user.tenantId)
+    && user.tenantSlug === getCurrentTenantConfig().slug;
+  if (user?.role !== 'superadmin' && !isCurrentTenantAdmin) {
     console.warn('[Security] Blocked platform-admin action', { userId: req.adminUser?.id, role: req.adminUser?.role });
     return res.status(403).json({ error: 'Forbidden: Platform admin access required' });
   }

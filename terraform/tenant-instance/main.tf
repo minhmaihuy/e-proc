@@ -284,15 +284,17 @@ resource "aws_instance" "app" {
   }
 
   user_data = templatefile("${path.module}/user-data.sh.tftpl", {
-    app_port            = var.app_port
-    domain_name         = var.domain_name
-    repository_url      = var.repository_url
-    repository_ref      = var.repository_ref
-    secret_arn          = var.secret_arn
-    tenant_slug         = var.tenant_slug
-    aws_region          = var.aws_region
-    compiler_mode       = var.compiler_enabled ? "lambda" : "local"
-    compiler_lambda_arn = var.compiler_enabled ? aws_lambda_function.compiler[0].arn : ""
+    app_port                 = var.app_port
+    domain_name              = var.domain_name
+    repository_url           = var.repository_url
+    repository_ref           = var.repository_ref
+    secret_arn               = var.secret_arn
+    tenant_slug              = var.tenant_slug
+    tenant_name_b64          = base64encode(var.tenant_name)
+    tenant_contact_email_b64 = base64encode(var.tenant_contact_email)
+    aws_region               = var.aws_region
+    compiler_mode            = var.compiler_enabled ? "lambda" : "local"
+    compiler_lambda_arn      = var.compiler_enabled ? aws_lambda_function.compiler[0].arn : ""
   })
 
   tags = {

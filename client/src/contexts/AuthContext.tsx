@@ -3,14 +3,24 @@ import { adminApi } from '../services/api';
 
 interface AuthContextType {
   token: string | null;
+  userId: number | null;
   role: string | null;
   tenantId: number | null;
+  tenantSlug: string | null;
+  tenantName: string | null;
   isAuthenticated: boolean;
   isSuperAdmin: boolean;
   isPlatformAdmin: boolean;
   isTenantAdmin: boolean;
+  isUserManager: boolean;
   isLoading: boolean;
-  login: (username: string, password: string) => Promise<{ role: string; tenantId: number | null }>;
+  login: (username: string, password: string) => Promise<{
+    role: string;
+    userId: number;
+    tenantId: number | null;
+    tenantSlug: string | null;
+    tenantName: string | null;
+  }>;
   logout: () => void;
 }
 
@@ -18,8 +28,11 @@ const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
+  const [userId, setUserId] = useState<number | null>(null);
   const [role, setRole] = useState<string | null>(null);
   const [tenantId, setTenantId] = useState<number | null>(null);
+  const [tenantSlug, setTenantSlug] = useState<string | null>(null);
+  const [tenantName, setTenantName] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   // Restore session từ localStorage khi app mount
@@ -27,20 +40,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const stored = localStorage.getItem('adminToken');
     const expiresAt = localStorage.getItem('adminTokenExpiry');
     const storedRole = localStorage.getItem('adminRole');
+    const storedUserId = localStorage.getItem('adminUserId');
     const storedTenantId = localStorage.getItem('adminTenantId');
+    const storedTenantSlug = localStorage.getItem('adminTenantSlug');
+    const storedTenantName = localStorage.getItem('adminTenantName');
 
     if (stored && expiresAt) {
       // Kiểm tra token có còn hạn không
       if (new Date(expiresAt) > new Date()) {
         setToken(stored);
         setRole(storedRole);
+        setUserId(storedUserId ? Number(storedUserId) : null);
         setTenantId(storedTenantId ? Number(storedTenantId) : null);
+        setTenantSlug(storedTenantSlug);
+        setTenantName(storedTenantName);
       } else {
         // Token đã hết hạn — xóa đi
         localStorage.removeItem('adminToken');
         localStorage.removeItem('adminTokenExpiry');
         localStorage.removeItem('adminRole');
+        localStorage.removeItem('adminUserId');
         localStorage.removeItem('adminTenantId');
+        localStorage.removeItem('adminTenantSlug');
+        localStorage.removeItem('adminTenantName');
       }
     }
     setIsLoading(false);
@@ -48,17 +70,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (username: string, password: string) => {
     const res = await adminApi.login(username, password);
-    const { token: newToken, expiresAt, role: newRole, tenantId: newTenantId } = res.data;
+    const {
+      token: newToken,
+      expiresAt,
+      role: newRole,
+      userId: newUserId,
+      tenantId: newTenantId,
+      tenantSlug: newTenantSlug,
+      tenantName: newTenantName,
+    } = res.data;
 
     localStorage.setItem('adminToken', newToken);
     localStorage.setItem('adminTokenExpiry', expiresAt);
     localStorage.setItem('adminRole', newRole || 'admin');
+    localStorage.setItem('adminUserId', String(newUserId));
     if (newTenantId) localStorage.setItem('adminTenantId', String(newTenantId));
     else localStorage.removeItem('adminTenantId');
+    if (newTenantSlug) localStorage.setItem('adminTenantSlug', newTenantSlug);
+    else localStorage.removeItem('adminTenantSlug');
+    if (newTenantName) localStorage.setItem('adminTenantName', newTenantName);
+    else localStorage.removeItem('adminTenantName');
     setToken(newToken);
     setRole(newRole || 'admin');
+    setUserId(Number(newUserId));
     setTenantId(newTenantId || null);
-    return { role: newRole || 'admin', tenantId: newTenantId || null };
+    setTenantSlug(newTenantSlug || null);
+    setTenantName(newTenantName || null);
+    return {
+      role: newRole || 'admin',
+      userId: Number(newUserId),
+      tenantId: newTenantId || null,
+      tenantSlug: newTenantSlug || null,
+      tenantName: newTenantName || null,
+    };
   };
 
   const logout = () => {
@@ -66,22 +110,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('adminToken');
     localStorage.removeItem('adminTokenExpiry');
     localStorage.removeItem('adminRole');
+    localStorage.removeItem('adminUserId');
     localStorage.removeItem('adminTenantId');
+    localStorage.removeItem('adminTenantSlug');
+    localStorage.removeItem('adminTenantName');
     setToken(null);
     setRole(null);
+    setUserId(null);
     setTenantId(null);
+    setTenantSlug(null);
+    setTenantName(null);
   };
 
   return (
     <AuthContext.Provider
       value={{
         token,
+        userId,
         role,
         tenantId,
+        tenantSlug,
+        tenantName,
         isAuthenticated: !!token,
         isSuperAdmin: role === 'superadmin',
-        isPlatformAdmin: role === 'admin' || role === 'superadmin',
+        isPlatformAdmin: role === 'superadmin' || (role === 'admin' && Boolean(tenantId) && Boolean(tenantSlug)),
         isTenantAdmin: role === 'tenant_admin',
+        isUserManager: role === 'superadmin' || role === 'tenant_admin',
         isLoading,
         login,
         logout,

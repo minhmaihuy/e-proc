@@ -11,6 +11,8 @@ import {
 const validTenant: ProvisionableTenant = {
   id: 1,
   slug: 'acme-vietnam',
+  name: 'Acme Vietnam',
+  contact_email: 'admin@acme.example.com',
   status: 'approved',
   aws_region: 'ap-southeast-1',
   instance_type: 't3.micro',

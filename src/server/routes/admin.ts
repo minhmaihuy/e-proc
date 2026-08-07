@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
@@ -8,7 +8,8 @@ import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
-import { authMiddleware, requirePlatformAdmin, requireSuperAdmin } from '../middleware/auth.js';
+import { authMiddleware, requirePlatformAdmin } from '../middleware/auth.js';
+import { canManageTenantUser, getCurrentTenantConfig } from '../tenantContext.js';
 
 dotenv.config();
 
@@ -41,12 +42,19 @@ router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
   try {
     const { username, password } = req.body;
 
-    if (!username || !password) {
+    if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password) {
       return res.status(400).json({ error: 'Username and password are required' });
+    }
+    if (username.trim().length > 100 || password.length > 128) {
+      return res.status(400).json({ error: 'Invalid login request' });
     }
 
     const result = await db.query(
-      'SELECT * FROM admin_users WHERE username = ?',
+      `SELECT u.*, t.slug AS tenant_slug, t.name AS tenant_name, t.status AS tenant_status,
+              t.app_url AS tenant_app_url
+       FROM admin_users u
+       LEFT JOIN tenants t ON t.id = u.tenant_id
+       WHERE u.username = ?`,
       [username.trim()]
     );
 
@@ -69,15 +77,33 @@ router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
     const expiresIn = '24h';
     const role = user.role || 'admin';
     const tenantId = user.tenant_id ? Number(user.tenant_id) : null;
+    const isSuperAdmin = role === 'superadmin';
+    if (!isSuperAdmin && (!tenantId || !user.tenant_slug)) {
+      console.warn('[Security] Blocked login for account without tenant', { userId: user.id, role });
+      return res.status(403).json({ error: 'Account is not assigned to a tenant. Contact the superadmin.' });
+    }
+    if (!isSuperAdmin && user.tenant_status === 'suspended') {
+      console.warn('[Security] Blocked login for suspended tenant', { userId: user.id, tenantId });
+      return res.status(403).json({ error: 'Tenant access is suspended.' });
+    }
+    if (role === 'admin' && user.tenant_slug !== getCurrentTenantConfig().slug) {
+      return res.status(403).json({
+        error: user.tenant_app_url
+          ? `Use your tenant application to sign in: ${user.tenant_app_url}`
+          : 'Use your tenant application to sign in.',
+      });
+    }
+    const tenantSlug = isSuperAdmin ? null : String(user.tenant_slug);
+    const tenantName = isSuperAdmin ? null : String(user.tenant_name);
     const token = jwt.sign(
-      { id: user.id, username: user.username, role, tenantId },
+      { id: user.id, username: user.username, role, tenantId, tenantSlug, tenantName },
       secret,
       { algorithm: 'HS256', expiresIn }
     );
 
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-    console.log('[Auth] Login success:', username, 'role:', role);
-    return res.json({ token, expiresAt, role, tenantId });
+    console.log('[Auth] Login success:', username, 'role:', role, 'tenant:', tenantSlug || 'global');
+    return res.json({ token, expiresAt, userId: Number(user.id), role, tenantId, tenantSlug, tenantName });
   } catch (err: any) {
     console.error('[Auth] Login error:', err);
     return res.status(500).json({ error: 'Login failed' });
@@ -135,20 +161,71 @@ router.put('/change-password', async (req: Request, res: Response) => {
   }
 });
 
-// Tenant admins use only /api/admin/tenants/* and change-password. Existing exam,
-// question-bank and platform-management routes remain isolated to platform admins.
-router.use(requirePlatformAdmin);
+// User-management routes are intentionally registered before the platform-admin
+// gate so tenant_admin can manage identities in its own JWT tenant.
+type ManagedAdminRole = 'admin' | 'tenant_admin' | 'superadmin';
+interface ManagedUserRow {
+  id: number;
+  username: string;
+  role: string;
+  tenant_id?: number | null;
+}
+const MANAGED_ADMIN_ROLES = new Set<ManagedAdminRole>(['admin', 'tenant_admin', 'superadmin']);
+const USERNAME_PATTERN = /^[A-Za-z0-9_.@-]{3,100}$/;
+
+function requireUserManager(req: Request, res: Response, next: NextFunction) {
+  if (req.adminUser?.role !== 'superadmin' && req.adminUser?.role !== 'tenant_admin') {
+    console.warn('[Security] Blocked user-management action', { userId: req.adminUser?.id, role: req.adminUser?.role });
+    return res.status(403).json({ error: 'Forbidden: User manager access required' });
+  }
+  if (req.adminUser.role === 'tenant_admin' && !req.adminUser.tenantId) {
+    return res.status(403).json({ error: 'Tenant membership is required' });
+  }
+  next();
+}
+
+function canManageUser(req: Request, target: ManagedUserRow): boolean {
+  if (!req.adminUser) return false;
+  return canManageTenantUser(req.adminUser, {
+    role: target.role,
+    tenantId: target.tenant_id ? Number(target.tenant_id) : null,
+  });
+}
+
+async function tenantExists(tenantId: number): Promise<boolean> {
+  if (!Number.isInteger(tenantId) || tenantId <= 0) return false;
+  const result = await db.query('SELECT id FROM tenants WHERE id = ?', [tenantId]);
+  return Boolean(result.rows[0]);
+}
+
+async function auditUserChange(tenantId: number | null, actorId: number, action: string, detail: Record<string, unknown>) {
+  if (!tenantId) return;
+  await db.query(
+    'INSERT INTO tenant_audit_events (tenant_id, actor_id, action, detail) VALUES (?, ?, ?, ?)',
+    [tenantId, actorId, action, JSON.stringify(detail)],
+  );
+}
+
+async function isLastRoleHolder(role: 'superadmin' | 'tenant_admin', tenantId?: number | null): Promise<boolean> {
+  const result = role === 'superadmin'
+    ? await db.query("SELECT COUNT(*) AS count FROM admin_users WHERE role = 'superadmin'")
+    : await db.query("SELECT COUNT(*) AS count FROM admin_users WHERE role = 'tenant_admin' AND tenant_id = ?", [tenantId]);
+  return Number(result.rows[0]?.count ?? result.rows[0]?.COUNT ?? 0) <= 1;
+}
 
 // =============================================
-// USER MANAGEMENT — Chỉ superadmin (require JWT + role superadmin)
+// USER MANAGEMENT — superadmin sees all; tenant_admin is tenant-scoped
 // =============================================
 
 // GET /api/admin/users — Danh sách tài khoản admin (không trả password_hash)
-router.get('/users', requireSuperAdmin, async (req: Request, res: Response) => {
+router.get('/users', requireUserManager, async (req: Request, res: Response) => {
   try {
-    const result = await db.query(
-      'SELECT id, username, role, created_at, updated_at FROM admin_users WHERE tenant_id IS NULL ORDER BY created_at ASC'
-    );
+    const select = `SELECT u.id, u.username, u.role, u.tenant_id, u.created_at, u.updated_at,
+                           t.slug AS tenant_slug, t.name AS tenant_name
+                    FROM admin_users u LEFT JOIN tenants t ON t.id = u.tenant_id`;
+    const result = req.adminUser!.role === 'superadmin'
+      ? await db.query(`${select} ORDER BY COALESCE(t.name, ''), u.created_at ASC`)
+      : await db.query(`${select} WHERE u.tenant_id = ? AND u.role <> 'superadmin' ORDER BY u.created_at ASC`, [req.adminUser!.tenantId]);
     return res.json(result.rows);
   } catch (err: any) {
     console.error('[Users] List error:', err);
@@ -157,32 +234,40 @@ router.get('/users', requireSuperAdmin, async (req: Request, res: Response) => {
 });
 
 // POST /api/admin/users — Tạo tài khoản admin mới
-router.post('/users', requireSuperAdmin, async (req: Request, res: Response) => {
+router.post('/users', requireUserManager, async (req: Request, res: Response) => {
   try {
-    const { username, password, role } = req.body;
+    const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const role = req.body?.role as ManagedAdminRole;
 
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
-    }
-    if (password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
-    }
-    if (role !== 'admin' && role !== 'superadmin') {
-      return res.status(400).json({ error: "role must be 'admin' or 'superadmin'" });
+    if (!USERNAME_PATTERN.test(username)) return res.status(400).json({ error: 'Username must be 3-100 valid characters.' });
+    if (password.length < 8 || password.length > 128) return res.status(400).json({ error: 'Password must be 8-128 characters.' });
+    if (!MANAGED_ADMIN_ROLES.has(role)) return res.status(400).json({ error: 'Invalid role.' });
+    if (req.adminUser!.role !== 'superadmin' && role === 'superadmin') {
+      return res.status(403).json({ error: 'Only superadmin can create superadmin accounts.' });
     }
 
-    const existing = await db.query('SELECT id FROM admin_users WHERE username = ?', [username.trim()]);
+    const requestedTenantId = Number(req.body?.tenant_id ?? req.body?.tenantId);
+    const tenantId = role === 'superadmin'
+      ? null
+      : req.adminUser!.role === 'superadmin' ? requestedTenantId : req.adminUser!.tenantId!;
+    if (role !== 'superadmin' && !(await tenantExists(Number(tenantId)))) {
+      return res.status(400).json({ error: 'A valid tenant is required for non-superadmin accounts.' });
+    }
+
+    const existing = await db.query('SELECT id FROM admin_users WHERE username = ?', [username]);
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: 'Username already exists' });
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(password, 12);
     await db.query(
-      'INSERT INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)',
-      [username.trim(), passwordHash, role]
+      'INSERT INTO admin_users (username, password_hash, role, tenant_id) VALUES (?, ?, ?, ?)',
+      [username, passwordHash, role, tenantId]
     );
 
-    console.log('[Users] Created admin user:', username, 'role:', role, 'by:', req.adminUser!.username);
+    await auditUserChange(tenantId, req.adminUser!.id, 'tenant_user.created', { username, role });
+    console.log('[Users] Created admin user:', username, 'role:', role, 'tenant:', tenantId || 'global', 'by:', req.adminUser!.username);
     return res.status(201).json({ success: true });
   } catch (err: any) {
     console.error('[Users] Create error:', err);
@@ -191,37 +276,71 @@ router.post('/users', requireSuperAdmin, async (req: Request, res: Response) => 
 });
 
 // PUT /api/admin/users/:id — Đổi role và/hoặc reset password của một tài khoản admin
-router.put('/users/:id', requireSuperAdmin, async (req: Request, res: Response) => {
+router.put('/users/:id', requireUserManager, async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-    const { role, password } = req.body;
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid user ID.' });
 
     const existing = await db.query('SELECT * FROM admin_users WHERE id = ?', [id]);
     const target = existing.rows[0];
-    if (!target) {
+    if (!target || !canManageUser(req, target)) {
       return res.status(404).json({ error: 'Admin user not found' });
     }
 
-    if (role !== undefined) {
-      if (role !== 'admin' && role !== 'superadmin') {
-        return res.status(400).json({ error: "role must be 'admin' or 'superadmin'" });
-      }
-      // Không cho phép tự hạ quyền chính mình xuống 'admin' — tránh tự khoá bản thân
-      if (Number(id) === req.adminUser!.id && role !== 'superadmin') {
-        return res.status(400).json({ error: 'You cannot demote your own account' });
-      }
-      await db.query('UPDATE admin_users SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [role, id]);
+    const role = (req.body?.role ?? target.role) as ManagedAdminRole;
+    if (!MANAGED_ADMIN_ROLES.has(role)) return res.status(400).json({ error: 'Invalid role.' });
+    if (req.adminUser!.role !== 'superadmin' && role === 'superadmin') {
+      return res.status(403).json({ error: 'Only superadmin can grant superadmin access.' });
     }
 
+    const hasTenantInput = req.body?.tenant_id !== undefined || req.body?.tenantId !== undefined;
+    const requestedTenantId = Number(req.body?.tenant_id ?? req.body?.tenantId);
+    const tenantId = role === 'superadmin'
+      ? null
+      : req.adminUser!.role === 'superadmin'
+        ? (hasTenantInput ? requestedTenantId : Number(target.tenant_id))
+        : req.adminUser!.tenantId!;
+    if (role !== 'superadmin' && !(await tenantExists(Number(tenantId)))) {
+      return res.status(400).json({ error: 'A valid tenant is required for non-superadmin accounts.' });
+    }
+    // Self-service password changes require the current password on /change-password.
+    if (id === req.adminUser!.id && (role !== target.role || Number(tenantId) !== Number(target.tenant_id) || req.body?.password !== undefined)) {
+      return res.status(400).json({ error: 'Use Change Password for your own account; you cannot change your own role or tenant.' });
+    }
+    if (target.role === 'superadmin' && role !== 'superadmin' && await isLastRoleHolder('superadmin')) {
+      return res.status(400).json({ error: 'Cannot demote the last remaining superadmin.' });
+    }
+    const leavesTenantAdminRole = target.role === 'tenant_admin'
+      && (role !== 'tenant_admin' || Number(tenantId) !== Number(target.tenant_id));
+    if (leavesTenantAdminRole && await isLastRoleHolder('tenant_admin', Number(target.tenant_id))) {
+      return res.status(400).json({ error: 'Cannot remove the last tenant administrator.' });
+    }
+
+    const password = req.body?.password;
+    if (password !== undefined && (typeof password !== 'string' || password.length < 8 || password.length > 128)) {
+      return res.status(400).json({ error: 'Password must be 8-128 characters.' });
+    }
     if (password !== undefined) {
-      if (password.length < 8) {
-        return res.status(400).json({ error: 'Password must be at least 8 characters' });
-      }
-      const passwordHash = await bcrypt.hash(password, 10);
-      await db.query('UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [passwordHash, id]);
+      const passwordHash = await bcrypt.hash(password, 12);
+      await db.query(
+        'UPDATE admin_users SET role = ?, tenant_id = ?, password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [role, tenantId, passwordHash, id],
+      );
+    } else {
+      await db.query(
+        'UPDATE admin_users SET role = ?, tenant_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [role, tenantId, id],
+      );
     }
 
-    console.log('[Users] Updated admin user:', target.username, 'by:', req.adminUser!.username);
+    const oldTenantId = target.tenant_id ? Number(target.tenant_id) : null;
+    await auditUserChange(oldTenantId, req.adminUser!.id, 'tenant_user.updated', {
+      username: target.username, previousRole: target.role, role, tenantId,
+    });
+    if (tenantId && tenantId !== oldTenantId) {
+      await auditUserChange(tenantId, req.adminUser!.id, 'tenant_user.assigned', { username: target.username, role });
+    }
+    console.log('[Users] Updated admin user:', target.username, 'tenant:', tenantId || 'global', 'by:', req.adminUser!.username);
     return res.json({ success: true });
   } catch (err: any) {
     console.error('[Users] Update error:', err);
@@ -230,30 +349,33 @@ router.put('/users/:id', requireSuperAdmin, async (req: Request, res: Response) 
 });
 
 // DELETE /api/admin/users/:id — Xoá tài khoản admin
-router.delete('/users/:id', requireSuperAdmin, async (req: Request, res: Response) => {
+router.delete('/users/:id', requireUserManager, async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid user ID.' });
 
-    if (Number(id) === req.adminUser!.id) {
+    if (id === req.adminUser!.id) {
       return res.status(400).json({ error: 'You cannot delete your own account' });
     }
 
     const existing = await db.query('SELECT * FROM admin_users WHERE id = ?', [id]);
     const target = existing.rows[0];
-    if (!target) {
+    if (!target || !canManageUser(req, target)) {
       return res.status(404).json({ error: 'Admin user not found' });
     }
 
     // Không cho xoá superadmin cuối cùng — tránh khoá toàn bộ hệ thống quản trị
-    if (target.role === 'superadmin') {
-      const superAdmins = await db.query("SELECT COUNT(*) as count FROM admin_users WHERE role = 'superadmin'");
-      const count = Number(superAdmins.rows[0]?.count ?? superAdmins.rows[0]?.COUNT ?? 0);
-      if (count <= 1) {
-        return res.status(400).json({ error: 'Cannot delete the last remaining superadmin' });
-      }
+    if (target.role === 'superadmin' && await isLastRoleHolder('superadmin')) {
+      return res.status(400).json({ error: 'Cannot delete the last remaining superadmin' });
+    }
+    if (target.role === 'tenant_admin' && await isLastRoleHolder('tenant_admin', Number(target.tenant_id))) {
+      return res.status(400).json({ error: 'Cannot delete the last tenant administrator' });
     }
 
     await db.query('DELETE FROM admin_users WHERE id = ?', [id]);
+    await auditUserChange(target.tenant_id ? Number(target.tenant_id) : null, req.adminUser!.id, 'tenant_user.deleted', {
+      username: target.username, role: target.role,
+    });
     console.log('[Users] Deleted admin user:', target.username, 'by:', req.adminUser!.username);
     return res.json({ success: true });
   } catch (err: any) {
@@ -263,6 +385,10 @@ router.delete('/users/:id', requireSuperAdmin, async (req: Request, res: Respons
 });
 
 // Client gửi UTC ISO string, server chỉ cần validate và normalize
+// Existing exam, question-bank and platform-management routes stay isolated to
+// superadmin and the `admin` role of this server's current tenant.
+router.use(requirePlatformAdmin);
+
 const toStorageTime = (isoStr: string): string => {
   if (!isoStr) return isoStr;
   return new Date(isoStr).toISOString();

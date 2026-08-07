@@ -8,6 +8,26 @@ variable "tenant_slug" {
   }
 }
 
+variable "tenant_name" {
+  description = "Customer-facing tenant name used to seed the deployed application."
+  type        = string
+
+  validation {
+    condition     = length(trimspace(var.tenant_name)) >= 2 && length(var.tenant_name) <= 160
+    error_message = "tenant_name must contain 2-160 characters."
+  }
+}
+
+variable "tenant_contact_email" {
+  description = "Tenant contact email used to seed the deployed application."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$", var.tenant_contact_email))
+    error_message = "tenant_contact_email must be a valid email address."
+  }
+}
+
 variable "aws_region" {
   description = "AWS region for the tenant server."
   type        = string

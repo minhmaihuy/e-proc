@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import bcrypt from 'bcryptjs';
+import { getCurrentTenantConfig } from '../tenantContext.js';
 
 dotenv.config();
 
@@ -378,6 +379,7 @@ await client.query(`
   await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_lambda_arn TEXT`);
   await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS ipv6_address VARCHAR(64)`);
   await client.query(`CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_admin_users_tenant ON admin_users(tenant_id)`);
 
   await client.query(`
     CREATE TABLE IF NOT EXISTS tenant_provision_jobs (
@@ -691,6 +693,7 @@ function initSqlite() {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
       CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
+      CREATE INDEX IF NOT EXISTS idx_admin_users_tenant ON admin_users(tenant_id);
 
       CREATE TABLE IF NOT EXISTS tenant_provision_jobs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -777,6 +780,46 @@ async function seedSuperAdmin() {
   console.log('[DB] Seeded initial superadmin account:', username);
 }
 
+// Every non-superadmin account belongs to exactly one tenant. Legacy installations
+// predate tenant_id, so attach those accounts to the current server tenant. The
+// control plane defaults to FSA; provisioned tenant servers export TENANT_SLUG.
+export async function ensureCurrentTenant(): Promise<number> {
+  const config = getCurrentTenantConfig();
+  let tenant = await query('SELECT id FROM tenants WHERE slug = ?', [config.slug]);
+
+  if (!tenant.rows[0]) {
+    const owner = await query("SELECT id FROM admin_users WHERE role = 'superadmin' ORDER BY id ASC LIMIT 1");
+    const ownerId = Number(owner.rows[0]?.id);
+    if (!Number.isInteger(ownerId) || ownerId <= 0) {
+      throw new Error('A superadmin is required before the default tenant can be created.');
+    }
+
+    await query(
+      `INSERT INTO tenants
+       (slug, name, contact_email, status, aws_region, domain_name, provision_status,
+        app_url, approved_by, approved_at, created_by)
+       VALUES (?, ?, ?, 'approved', ?, ?, 'active', ?, ?, CURRENT_TIMESTAMP, ?)`,
+      [config.slug, config.name, config.contactEmail, config.awsRegion, config.domainName,
+        config.appUrl || null, ownerId, ownerId],
+    );
+    tenant = await query('SELECT id FROM tenants WHERE slug = ?', [config.slug]);
+    console.log('[DB] Created current tenant:', config.slug);
+  }
+
+  const tenantId = Number(tenant.rows[0]?.id);
+  if (!Number.isInteger(tenantId) || tenantId <= 0) throw new Error('Unable to resolve current tenant.');
+
+  await query("UPDATE admin_users SET tenant_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE role = 'superadmin' AND tenant_id IS NOT NULL");
+  const migrated = await query(
+    "UPDATE admin_users SET tenant_id = ?, updated_at = CURRENT_TIMESTAMP WHERE role <> 'superadmin' AND tenant_id IS NULL",
+    [tenantId],
+  );
+  if (migrated.rowCount > 0) {
+    console.log(`[DB] Assigned ${migrated.rowCount} legacy admin account(s) to tenant ${config.slug}`);
+  }
+  return tenantId;
+}
+
 export async function initDatabase() {
   if (USE_SQLITE) {
     initSqlite();
@@ -784,6 +827,7 @@ export async function initDatabase() {
     await initPostgres();
   }
   await seedSuperAdmin();
+  await ensureCurrentTenant();
 }
 
 interface DbResult {

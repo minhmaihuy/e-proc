@@ -4,6 +4,18 @@ const API_BASE = '/api';
 
 export type TenantStatus = 'pending' | 'approved' | 'suspended';
 export type TenantProvisionStatus = 'not_started' | 'queued' | 'planning' | 'planned' | 'applying' | 'active' | 'failed';
+export type AdminRole = 'admin' | 'tenant_admin' | 'superadmin';
+
+export interface AdminUser {
+  id: number;
+  username: string;
+  role: AdminRole;
+  tenant_id: number | null;
+  tenant_slug?: string | null;
+  tenant_name?: string | null;
+  created_at: string;
+  updated_at?: string;
+}
 
 export interface Tenant {
   id: number;
@@ -100,6 +112,12 @@ api.interceptors.response.use(
       window.location.pathname !== '/admin'
     ) {
       localStorage.removeItem('adminToken');
+      localStorage.removeItem('adminTokenExpiry');
+      localStorage.removeItem('adminRole');
+      localStorage.removeItem('adminUserId');
+      localStorage.removeItem('adminTenantId');
+      localStorage.removeItem('adminTenantSlug');
+      localStorage.removeItem('adminTenantName');
       window.location.href = '/admin';
     }
     return Promise.reject(error);
@@ -117,14 +135,14 @@ export const adminApi = {
   changePassword: (currentPassword: string, newPassword: string) =>
     api.put('/admin/change-password', { currentPassword, newPassword }),
 
-  // --- User management endpoints (superadmin only) ---
+  // --- Tenant-aware user management ---
   listUsers: () =>
-    api.get('/admin/users'),
+    api.get<AdminUser[]>('/admin/users'),
 
-  createUser: (username: string, password: string, role: 'admin' | 'superadmin') =>
-    api.post('/admin/users', { username, password, role }),
+  createUser: (data: { username: string; password: string; role: AdminRole; tenant_id?: number | null }) =>
+    api.post('/admin/users', data),
 
-  updateUser: (id: number, data: { role?: 'admin' | 'superadmin'; password?: string }) =>
+  updateUser: (id: number, data: { role?: AdminRole; password?: string; tenant_id?: number | null }) =>
     api.put(`/admin/users/${id}`, data),
 
   deleteUser: (id: number) =>

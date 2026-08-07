@@ -40,7 +40,7 @@ function App() {
         <Route path="/admin/settings" element={<PrivateRoute requirePlatformAdmin><AISettings /></PrivateRoute>} />
         <Route path="/admin/practice" element={<PrivateRoute requirePlatformAdmin><PracticeManagement /></PrivateRoute>} />
         <Route path="/admin/tenants" element={<PrivateRoute><TenantManagement /></PrivateRoute>} />
-        <Route path="/admin/users" element={<PrivateRoute requireSuperAdmin><UserManagement /></PrivateRoute>} />
+        <Route path="/admin/users" element={<PrivateRoute requireUserManager><UserManagement /></PrivateRoute>} />
       </Routes>
     </AuthProvider>
   );

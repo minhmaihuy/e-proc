@@ -42,7 +42,7 @@ function AdminLogin() {
         <div className="login-mark">EP</div>
         <span className="eyebrow">SECURE ACCESS</span>
         <h2>Welcome back</h2>
-        <p className="login-subtitle">Sign in as a platform or tenant administrator.</p>
+        <p className="login-subtitle">Your account selects its tenant automatically. Legacy accounts use FSA.</p>
         <form onSubmit={handleSubmit}>
           <div className="form-group">
             <label htmlFor="admin-username">Username</label>

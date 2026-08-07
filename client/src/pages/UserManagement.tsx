@@ -1,213 +1,227 @@
-import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { adminApi } from '../services/api';
-import { useAuth } from '../contexts/AuthContext';
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import AdminNav from '../components/AdminNav';
+import { AdminRole, AdminUser, adminApi, Tenant } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
 
-interface AdminUserRow {
-  id: number;
-  username: string;
-  role: 'admin' | 'superadmin';
-  created_at: string;
+function apiErrorMessage(error: unknown, fallback: string): string {
+  if (!error || typeof error !== 'object') return fallback;
+  const response = (error as { response?: { data?: { error?: unknown } } }).response;
+  return typeof response?.data?.error === 'string' ? response.data.error : fallback;
+}
+
+function roleLabel(role: AdminRole): string {
+  if (role === 'superadmin') return 'Superadmin';
+  if (role === 'tenant_admin') return 'Tenant administrator';
+  return 'Application administrator';
 }
 
 function UserManagement() {
-  const { role: currentRole } = useAuth();
-  const [users, setUsers] = useState<AdminUserRow[]>([]);
+  const { isSuperAdmin, userId, tenantId, tenantName, tenantSlug, role: currentRole } = useAuth();
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [tenants, setTenants] = useState<Tenant[]>([]);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [loading, setLoading] = useState(true);
 
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [newRole, setNewRole] = useState<'admin' | 'superadmin'>('admin');
+  const [newRole, setNewRole] = useState<AdminRole>('tenant_admin');
+  const [newTenantId, setNewTenantId] = useState<number | null>(tenantId);
   const [creating, setCreating] = useState(false);
-
   const [resetPasswordId, setResetPasswordId] = useState<number | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = useState('');
 
-  useEffect(() => {
-    loadUsers();
-  }, []);
-
-  const loadUsers = async () => {
+  const loadData = useCallback(async () => {
     try {
-      const res = await adminApi.listUsers();
-      setUsers(res.data);
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to load admin users');
+      const [usersResponse, tenantsResponse] = await Promise.all([
+        adminApi.listUsers(),
+        adminApi.getTenants(),
+      ]);
+      setUsers(usersResponse.data);
+      setTenants(tenantsResponse.data);
+      setNewTenantId((current) => current ?? tenantId ?? tenantsResponse.data[0]?.id ?? null);
+      setError('');
+    } catch (requestError: unknown) {
+      setError(apiErrorMessage(requestError, 'Unable to load tenant users.'));
+    } finally {
+      setLoading(false);
     }
-  };
+  }, [tenantId]);
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
+
+  const visibleRoles = useMemo<AdminRole[]>(
+    () => isSuperAdmin ? ['tenant_admin', 'admin', 'superadmin'] : ['tenant_admin', 'admin'],
+    [isSuperAdmin],
+  );
+
+  const clearMessages = () => {
     setError('');
     setSuccess('');
+  };
 
-    if (!newUsername.trim() || newPassword.length < 8) {
-      setError('Username is required and password must be at least 8 characters');
+  const handleCreate = async (event: FormEvent) => {
+    event.preventDefault();
+    clearMessages();
+    const username = newUsername.trim();
+    if (!/^[A-Za-z0-9_.@-]{3,100}$/.test(username)) {
+      setError('Username must contain 3-100 letters, numbers, dots, dashes, @ or underscores.');
+      return;
+    }
+    if (newPassword.length < 8 || newPassword.length > 128) {
+      setError('Password must contain 8-128 characters.');
+      return;
+    }
+    if (newRole !== 'superadmin' && !newTenantId) {
+      setError('Select a tenant for this account.');
       return;
     }
 
     setCreating(true);
     try {
-      await adminApi.createUser(newUsername.trim(), newPassword, newRole);
-      setSuccess(`Account "${newUsername.trim()}" created`);
+      await adminApi.createUser({
+        username,
+        password: newPassword,
+        role: newRole,
+        tenant_id: newRole === 'superadmin' ? null : newTenantId,
+      });
+      setSuccess(`Account “${username}” created.`);
       setNewUsername('');
       setNewPassword('');
-      setNewRole('admin');
-      loadUsers();
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to create account');
+      setNewRole('tenant_admin');
+      await loadData();
+    } catch (requestError: unknown) {
+      setError(apiErrorMessage(requestError, 'Unable to create account.'));
     } finally {
       setCreating(false);
     }
   };
 
-  const handleRoleChange = async (user: AdminUserRow, role: 'admin' | 'superadmin') => {
-    setError('');
-    setSuccess('');
+  const updateUser = async (user: AdminUser, changes: { role?: AdminRole; tenant_id?: number | null; password?: string }) => {
+    clearMessages();
     try {
-      await adminApi.updateUser(user.id, { role });
-      setSuccess(`Updated role for "${user.username}"`);
-      loadUsers();
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to update role');
+      await adminApi.updateUser(user.id, changes);
+      setSuccess(`Updated “${user.username}”.`);
+      await loadData();
+    } catch (requestError: unknown) {
+      setError(apiErrorMessage(requestError, 'Unable to update account.'));
     }
   };
 
-  const handleResetPassword = async (userId: number) => {
-    if (resetPasswordValue.length < 8) {
-      setError('New password must be at least 8 characters');
+  const handleResetPassword = async (user: AdminUser) => {
+    if (resetPasswordValue.length < 8 || resetPasswordValue.length > 128) {
+      setError('Password must contain 8-128 characters.');
       return;
     }
-    setError('');
-    setSuccess('');
-    try {
-      await adminApi.updateUser(userId, { password: resetPasswordValue });
-      setSuccess('Password reset successfully');
-      setResetPasswordId(null);
-      setResetPasswordValue('');
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to reset password');
-    }
+    await updateUser(user, { password: resetPasswordValue });
+    setResetPasswordId(null);
+    setResetPasswordValue('');
   };
 
-  const handleDelete = async (user: AdminUserRow) => {
-    if (!confirm(`Delete admin account "${user.username}"? This cannot be undone.`)) {
-      return;
-    }
-    setError('');
-    setSuccess('');
+  const handleDelete = async (user: AdminUser) => {
+    if (!window.confirm(`Delete account “${user.username}”? This cannot be undone.`)) return;
+    clearMessages();
     try {
       await adminApi.deleteUser(user.id);
-      setSuccess(`Deleted "${user.username}"`);
-      loadUsers();
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to delete account');
+      setSuccess(`Deleted “${user.username}”.`);
+      await loadData();
+    } catch (requestError: unknown) {
+      setError(apiErrorMessage(requestError, 'Unable to delete account.'));
     }
   };
 
+  if (loading) return <div className="loading">Loading tenant users...</div>;
+
   return (
-    <div className="container">
-      <div className="header">
-        <h1>User Management</h1>
-        <Link to="/admin/dashboard" className="btn btn-secondary">Back to Dashboard</Link>
-      </div>
+    <main className="admin-shell">
+      <header className="admin-topbar">
+        <div>
+          <span className="eyebrow">IDENTITY & ACCESS</span>
+          <h1>{isSuperAdmin ? 'Users across tenants' : 'My tenant users'}</h1>
+          <p>
+            {isSuperAdmin
+              ? 'Assign every non-superadmin account to an explicit customer tenant.'
+              : `Managing ${tenantName || tenantSlug || 'your tenant'} only.`}
+          </p>
+        </div>
+      </header>
 
       <AdminNav />
+      {error && <div className="notice notice-error" role="alert">{error}</div>}
+      {success && <div className="notice notice-success" role="status">{success}</div>}
 
-      {error && <p className="error">{error}</p>}
-      {success && <p className="success">{success}</p>}
-
-      <div className="card" style={{ maxWidth: 600, marginBottom: 24 }}>
-        <h3>Create Admin Account</h3>
+      <section className="tenant-config-card">
+        <div className="section-heading">
+          <div><span className="eyebrow">NEW ACCOUNT</span><h2>Create tenant user</h2></div>
+          <small>Passwords are stored as bcrypt hashes</small>
+        </div>
         <form onSubmit={handleCreate}>
-          <div className="form-group">
-            <label>Username</label>
-            <input
-              type="text"
-              value={newUsername}
-              onChange={(e) => setNewUsername(e.target.value)}
-              disabled={creating}
-            />
+          <div className="form-grid">
+            <label className="field"><span>Username</span><input value={newUsername} onChange={(event) => setNewUsername(event.target.value)} disabled={creating} required minLength={3} maxLength={100} /></label>
+            <label className="field"><span>Temporary password</span><input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} disabled={creating} required minLength={8} maxLength={128} /></label>
+            <label className="field"><span>Role</span><select value={newRole} onChange={(event) => setNewRole(event.target.value as AdminRole)} disabled={creating}>{visibleRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select></label>
+            {newRole !== 'superadmin' && (
+              <label className="field"><span>Tenant</span><select value={newTenantId ?? ''} onChange={(event) => setNewTenantId(Number(event.target.value))} disabled={creating || !isSuperAdmin} required>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name} ({tenant.slug})</option>)}</select></label>
+            )}
           </div>
-          <div className="form-group">
-            <label>Password <span style={{ color: 'var(--text-light)', fontWeight: 400, fontSize: 12 }}>(min 8 characters)</span></label>
-            <input
-              type="password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              disabled={creating}
-            />
+          <div className="form-footer">
+            <p>Tenant administrators cannot assign accounts outside their JWT tenant.</p>
+            <button type="submit" className="btn btn-primary" disabled={creating}>{creating ? 'Creating...' : 'Create account'}</button>
           </div>
-          <div className="form-group">
-            <label>Role</label>
-            <select value={newRole} onChange={(e) => setNewRole(e.target.value as 'admin' | 'superadmin')} disabled={creating}>
-              <option value="admin">Admin</option>
-              <option value="superadmin">Superadmin</option>
-            </select>
-          </div>
-          <button type="submit" className="btn btn-primary" disabled={creating}>
-            {creating ? 'Creating...' : 'Create Account'}
-          </button>
         </form>
-      </div>
+      </section>
 
-      <div className="card">
-        <h3>Admin Accounts</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Username</th>
-              <th>Role</th>
-              <th>Created</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((user) => (
-              <tr key={user.id}>
-                <td>{user.username}</td>
-                <td>
-                  <select
-                    value={user.role}
-                    onChange={(e) => handleRoleChange(user, e.target.value as 'admin' | 'superadmin')}
-                  >
-                    <option value="admin">Admin</option>
-                    <option value="superadmin">Superadmin</option>
-                  </select>
-                </td>
-                <td>{new Date(user.created_at).toLocaleString()}</td>
-                <td style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {resetPasswordId === user.id ? (
-                    <>
-                      <input
-                        type="password"
-                        placeholder="New password"
-                        value={resetPasswordValue}
-                        onChange={(e) => setResetPasswordValue(e.target.value)}
-                        style={{ width: 140 }}
-                      />
-                      <button className="btn btn-primary" onClick={() => handleResetPassword(user.id)}>Save</button>
-                      <button className="btn btn-secondary" onClick={() => { setResetPasswordId(null); setResetPasswordValue(''); }}>Cancel</button>
-                    </>
-                  ) : (
-                    <button className="btn btn-secondary" onClick={() => { setResetPasswordId(user.id); setResetPasswordValue(''); }}>
-                      Reset Password
-                    </button>
-                  )}
-                  <button className="btn btn-danger" onClick={() => handleDelete(user)}>Delete</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <section className="provision-card">
+        <div className="section-heading"><div><span className="eyebrow">DIRECTORY</span><h2>Administrator accounts</h2></div><span className="count-pill">{users.length}</span></div>
+        <div style={{ overflowX: 'auto' }}>
+          <table>
+            <thead><tr><th>Username</th><th>Tenant</th><th>Role</th><th>Created</th><th>Actions</th></tr></thead>
+            <tbody>
+              {users.map((user) => (
+                <tr key={user.id}>
+                  <td><strong>{user.username}</strong></td>
+                  <td>
+                    {isSuperAdmin && user.role !== 'superadmin' ? (
+                      <select value={user.tenant_id ?? ''} disabled={user.id === userId} onChange={(event) => void updateUser(user, { tenant_id: Number(event.target.value), role: user.role })}>
+                        {tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}
+                      </select>
+                    ) : user.tenant_name || (user.role === 'superadmin' ? 'All tenants' : tenantName || 'Tenant')}
+                  </td>
+                  <td>
+                    <select value={user.role} disabled={user.id === userId} onChange={(event) => {
+                      const role = event.target.value as AdminRole;
+                      const assignedTenantId = role === 'superadmin' ? null : user.tenant_id ?? tenants[0]?.id ?? null;
+                      void updateUser(user, { role, tenant_id: assignedTenantId });
+                    }}>
+                      {(isSuperAdmin ? ['tenant_admin', 'admin', 'superadmin'] as AdminRole[] : ['tenant_admin', 'admin'] as AdminRole[]).map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}
+                    </select>
+                  </td>
+                  <td>{new Date(user.created_at).toLocaleString()}</td>
+                  <td>
+                    {user.id === userId ? <span className="status-badge status-approved">Current session</span> : <div className="button-row">
+                      {resetPasswordId === user.id ? (
+                        <>
+                          <input type="password" aria-label={`New password for ${user.username}`} placeholder="New password" value={resetPasswordValue} onChange={(event) => setResetPasswordValue(event.target.value)} minLength={8} maxLength={128} />
+                          <button className="btn btn-primary" type="button" onClick={() => void handleResetPassword(user)}>Save</button>
+                          <button className="btn btn-secondary" type="button" onClick={() => { setResetPasswordId(null); setResetPasswordValue(''); }}>Cancel</button>
+                        </>
+                      ) : <button className="btn btn-secondary" type="button" onClick={() => { setResetPasswordId(user.id); setResetPasswordValue(''); }}>Reset password</button>}
+                      <button className="btn btn-danger" type="button" onClick={() => void handleDelete(user)}>Delete</button>
+                    </div>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
-      <p style={{ color: 'var(--text-light)', fontSize: 12, marginTop: 16 }}>
-        You are signed in as: <strong>{currentRole}</strong>
+      <p style={{ color: 'var(--text-light)', fontSize: 12 }}>
+        Session scope: <strong>{currentRole === 'superadmin' ? 'All tenants' : `${tenantName || 'Tenant'} (${tenantSlug || tenantId})`}</strong>
       </p>
-    </div>
+    </main>
   );
 }
 

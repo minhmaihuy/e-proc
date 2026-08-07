@@ -10,6 +10,9 @@ This module creates one isolated EC2 application server for one E-PROC customer:
 - optional isolated Lambda compiler for Practice exams, with bounded memory,
   timeout and reserved concurrency;
 - bootstrap of the selected repository/ref through cloud-init.
+- seeding of the deployed application's tenant identity through `TENANT_SLUG`
+  and Base64-encoded tenant name/contact environment values (avoids shell
+  injection and makes non-superadmin login tenant-aware from first startup).
 
 It is normally invoked by the control-plane API, not manually. The API copies this
 module into a tenant-specific working directory and initializes the S3 backend with:

@@ -6,10 +6,11 @@ interface PrivateRouteProps {
   children: ReactNode;
   requireSuperAdmin?: boolean;
   requirePlatformAdmin?: boolean;
+  requireUserManager?: boolean;
 }
 
-function PrivateRoute({ children, requireSuperAdmin = false, requirePlatformAdmin = false }: PrivateRouteProps) {
-  const { isAuthenticated, isSuperAdmin, isPlatformAdmin, isLoading } = useAuth();
+function PrivateRoute({ children, requireSuperAdmin = false, requirePlatformAdmin = false, requireUserManager = false }: PrivateRouteProps) {
+  const { isAuthenticated, isSuperAdmin, isPlatformAdmin, isUserManager, isLoading } = useAuth();
 
   // Chờ AuthContext kiểm tra localStorage xong trước khi redirect
   if (isLoading) {
@@ -36,6 +37,10 @@ function PrivateRoute({ children, requireSuperAdmin = false, requirePlatformAdmi
 
   if (requirePlatformAdmin && !isPlatformAdmin) {
     return <Navigate to="/admin/tenants" replace />;
+  }
+
+  if (requireUserManager && !isUserManager) {
+    return <Navigate to={isPlatformAdmin ? '/admin/dashboard' : '/admin/tenants'} replace />;
   }
 
   return <>{children}</>;
