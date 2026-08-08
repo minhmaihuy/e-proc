@@ -72,13 +72,12 @@ variable "app_port" {
 }
 
 variable "domain_name" {
-  description = "Optional tenant FQDN. Leave empty to use the public IP."
+  description = "Dedicated tenant FQDN. FSA-CLS temporarily uses epoc.devfasttrack.com; other tenants use epoc.<tenant-label>.devfasttrack.com."
   type        = string
-  default     = ""
 
   validation {
-    condition     = var.domain_name == "" || can(regex("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$", var.domain_name))
-    error_message = "domain_name must be an FQDN or empty."
+    condition     = can(regex("^epoc(?:\\.[a-z](?:[a-z0-9-]{0,29}[a-z0-9])?)?\\.devfasttrack\\.com$", var.domain_name))
+    error_message = "domain_name must use epoc.devfasttrack.com or epoc.<tenant-label>.devfasttrack.com."
   }
 }
 
@@ -89,12 +88,25 @@ variable "route53_zone_id" {
 }
 
 variable "secret_arn" {
-  description = "Secrets Manager ARN containing DATABASE_URL, JWT_SECRET and optional app settings."
+  description = "Secrets Manager ARN containing DATABASE_URL, CONTROL_DATABASE_URL, LOG_DATABASE_URL, JWT_SECRET and optional app settings."
   type        = string
 
   validation {
     condition     = can(regex("^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$", var.secret_arn))
     error_message = "secret_arn must be an AWS Secrets Manager ARN."
+  }
+}
+
+variable "observed_tenant_secret_arns" {
+  description = "Explicit Secrets Manager ARN allowlist readable by the superadmin control-plane host for remote tenant log observation. Keep empty on ordinary tenant hosts."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = length(var.observed_tenant_secret_arns) <= 100 && alltrue([
+      for arn in var.observed_tenant_secret_arns : can(regex("^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$", arn))
+    ])
+    error_message = "observed_tenant_secret_arns must contain at most 100 valid Secrets Manager ARNs."
   }
 }
 

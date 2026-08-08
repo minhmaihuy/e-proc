@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 import db from '../db/controlPlane.js';
+import { getCurrentTenantConfig, isTenantDomainForSlug, tenantDomainForSlug } from '../tenantContext.js';
 
 const execFileAsync = promisify(execFile);
 const SLUG_PATTERN = /^[a-z][a-z0-9-]{2,30}$/;
@@ -47,10 +48,25 @@ export function validateTenantForProvisioning(tenant: ProvisionableTenant): stri
   if (!SLUG_PATTERN.test(tenant.slug)) return 'Invalid tenant slug.';
   if (tenant.status !== 'approved') return 'Tenant must be approved before provisioning.';
   if (!SECRET_ARN_PATTERN.test(tenant.secret_arn || '')) return 'A valid AWS Secrets Manager ARN is required before provisioning.';
+  const requiredDomain = tenantDomainForSlug(tenant.slug);
+  if (!tenant.domain_name || !isTenantDomainForSlug(tenant.domain_name, tenant.slug)) {
+    return `Tenant domain must be ${requiredDomain} before provisioning.`;
+  }
   if (Boolean(tenant.compiler_enabled) && !ECR_IMAGE_PATTERN.test(process.env.TENANT_COMPILER_IMAGE_URI?.trim() || '')) {
     return 'TENANT_COMPILER_IMAGE_URI must be a versioned ECR image URI when Lambda compiler is enabled.';
   }
   return null;
+}
+
+export function getObservedTenantSecretArns(env: NodeJS.ProcessEnv = process.env): string[] {
+  const values = (env.CONTROL_PLANE_LOG_SECRET_ARNS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (values.length > 100 || values.some((value) => !SECRET_ARN_PATTERN.test(value))) {
+    throw new Error('CONTROL_PLANE_LOG_SECRET_ARNS must contain at most 100 valid Secrets Manager ARNs.');
+  }
+  return [...new Set(values)];
 }
 
 function errorText(error: unknown, field: 'stdout' | 'stderr' | 'message'): string {
@@ -158,6 +174,9 @@ export async function runTenantProvisioning(
       domain_name: tenant.domain_name || '',
       route53_zone_id: tenant.route53_zone_id || '',
       secret_arn: tenant.secret_arn,
+      observed_tenant_secret_arns: tenant.slug === getCurrentTenantConfig().slug
+        ? getObservedTenantSecretArns()
+        : [],
       repository_url: tenant.repository_url,
       repository_ref: tenant.repository_ref,
       tags: { TenantId: String(tenant.id), Environment: 'production' },

@@ -107,9 +107,9 @@ aws sts get-caller-identity
 **Kết quả mong đợi:**
 ```json
 {
-    "UserId": "AIDAXXXXXXXXXX",
-    "Account": "123456789012",
-    "Arn": "arn:aws:iam::123456789012:user/terraform-deploy"
+    "UserId": "<AWS_USER_ID>",
+    "Account": "<AWS_ACCOUNT_ID>",
+    "Arn": "arn:aws:iam::<AWS_ACCOUNT_ID>:user/terraform-deploy"
 }
 ```
 
@@ -140,7 +140,7 @@ Copy-Item terraform.tfvars.example terraform.tfvars
 ```hcl
 # ✅ Giữ nguyên
 aws_region    = "ap-southeast-1"
-domain_name   = "devfatstrack.cloud"
+domain_name   = "devfasttrack.com"
 app_subdomain = "epoc"
 instance_type = "t3.micro"
 
@@ -153,13 +153,13 @@ db_name           = "eaudit"
 db_username       = "eaudit_admin"
 
 # ⚠️ ĐỔI PASSWORD NÀY! (ít nhất 8 ký tự, có chữ hoa + số + ký tự đặc biệt)
-db_password = "MyStr0ng!Pass2026"
+db_password = "<set-locally>"
 
 # ⚠️ Điền Gemini API key (lấy từ https://aistudio.google.com/app/apikey)
-gemini_api_key = "AIzaSy..."
+gemini_api_key = "<set-locally>"
 
 # ⚠️ ĐỔI THÀNH CHUỖI NGẪU NHIÊN (ít nhất 32 ký tự)
-session_secret = "my-super-secret-random-string-2026-eaudit-platform"
+session_secret = "<set-locally>"
 
 # ✅ Giữ nguyên
 node_env = "production"
@@ -234,7 +234,7 @@ Apply complete! Resources: 16 added, 0 changed, 0 destroyed.
 
 Outputs:
 
-app_url = "https://epoc.devfatstrack.cloud"
+app_url = "https://epoc.devfasttrack.com"
 ec2_public_ip = "13.xxx.xxx.xxx"
 rds_endpoint = "eaudit-db.xxxxxxxxx.ap-southeast-1.rds.amazonaws.com:5432"
 route53_nameservers = [
@@ -250,7 +250,7 @@ ssh_command = "ssh -i ~/.ssh/id_rsa ubuntu@13.xxx.xxx.xxx"
 ### 6.4 — ⚠️ QUAN TRỌNG: Cập nhật Nameservers
 
 > [!IMPORTANT]
-> **Bước này BẮT BUỘC** để domain `devfatstrack.cloud` hoạt động!
+> **Bước này BẮT BUỘC** để domain `epoc.devfasttrack.com` hoạt động!
 
 1. Copy 4 nameservers từ output `route53_nameservers`
 2. Vào **nơi bạn mua domain** (VD: Namecheap, GoDaddy, Tenten, etc.)
@@ -402,13 +402,13 @@ curl -s http://localhost:3001/api/health
 
 > ⚠️ DNS phải đã propagate trước khi chạy bước này. Kiểm tra:
 > ```bash
-> nslookup epoc.devfatstrack.cloud
+> nslookup epoc.devfasttrack.com
 > # Phải trả về IP = EC2 Elastic IP
 > ```
 
 ```bash
 sudo certbot --nginx \
-  -d epoc.devfatstrack.cloud \
+  -d epoc.devfasttrack.com \
   --agree-tos \
   --no-eff-email \
   --redirect \
@@ -433,9 +433,9 @@ pm2 status
 
 ### Trên trình duyệt (máy local):
 ```
-🌐 https://epoc.devfatstrack.cloud           → Trang student login
-🌐 https://epoc.devfatstrack.cloud/admin     → Trang admin login
-🌐 https://epoc.devfatstrack.cloud/api/health → Health check JSON
+🌐 https://epoc.devfasttrack.com            → Trang student login
+🌐 https://epoc.devfasttrack.com/admin      → Trang admin login
+🌐 https://epoc.devfasttrack.com/api/health → Health check JSON
 ```
 
 ### Login Admin:
@@ -525,8 +525,8 @@ psql "$(grep DATABASE_URL /opt/eaudit/.env | cut -d= -f2-)"
 ### Lỗi Certbot — DNS chưa propagate
 ```bash
 # Kiểm tra DNS
-nslookup devfatstrack.cloud
-dig devfatstrack.cloud
+nslookup epoc.devfasttrack.com
+dig epoc.devfasttrack.com
 
 # Nếu chưa có IP → đợi thêm 10-30 phút
 # Hoặc kiểm tra nameservers đã update ở domain registrar chưa

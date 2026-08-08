@@ -11,12 +11,13 @@
     "build": "npm run build:client && npm run build:server",
     "build:client": "cd client && npm install && npm run build",
     "build:server": "npx tsc",
-    "test:tenant": "npm run build:server && node --test dist/server/db/controlPlane.test.js dist/server/services/tenantProvisioner.test.js dist/server/services/lambdaCompiler.test.js dist/server/tenantContext.test.js",
+    "test:tenant": "npm run build:server && node --test dist/server/db/controlPlane.test.js dist/server/db/logPlane.test.js dist/server/middleware/issueLogger.test.js dist/server/services/tenantLogReader.test.js dist/server/services/tenantProvisioner.test.js dist/server/services/lambdaCompiler.test.js dist/server/tenantContext.test.js",
     "start": "node dist/server/index.js"
   },
   "dependencies": {
     "@aws-sdk/client-lambda": "^3.1097.0",
     "@aws-sdk/client-s3": "^3.1097.0",
+    "@aws-sdk/client-secrets-manager": "^3.1106.0",
     "@aws-sdk/s3-request-presigner": "^3.1097.0",
     "@google/generative-ai": "^0.2.1",
     "bcryptjs": "^3.0.3",

@@ -1,15 +1,13 @@
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
-// Thanh điều hướng admin dùng chung cho mọi trang admin.
-// Link "User Management" chỉ hiện với role superadmin (admin thường không thấy).
+// Global superadmin and tenant administrators intentionally have separate navigation trees.
 function AdminNav() {
-  const { isSuperAdmin, isTenantAdmin, isUserManager } = useAuth();
-  if (isTenantAdmin) {
+  const { isSuperAdmin, isUserManager } = useAuth();
+  if (isSuperAdmin) {
     return (
-      <nav className="nav" aria-label="Tenant navigation">
-        <Link to="/admin/tenant">Tenant workspace</Link>
-        {isUserManager && <Link to="/admin/users">Users</Link>}
+      <nav className="nav" aria-label="Global tenant control navigation">
+        <Link to="/tenants">Tenant Control Plane</Link>
       </nav>
     );
   }
@@ -20,8 +18,8 @@ function AdminNav() {
       <Link to="/admin/batches">Batches</Link>
       <Link to="/admin/practice">Practice</Link>
       <Link to="/admin/settings">AI Settings</Link>
-      {isSuperAdmin && <Link to="/admin/tenants">Tenant control plane</Link>}
-      {isUserManager && <Link to="/admin/users">User Management</Link>}
+      <Link to="/admin/issues">Issue Logs</Link>
+      {isUserManager && <Link to="/admin/users">Tenant Users</Link>}
     </nav>
   );
 }

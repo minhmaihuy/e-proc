@@ -1,6 +1,6 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useState } from 'react';
 import AdminNav from '../components/AdminNav';
-import { AdminRole, AdminUser, adminApi, Tenant } from '../services/api';
+import { AdminRole, AdminUser, adminApi } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 
 function apiErrorMessage(error: unknown, fallback: string): string {
@@ -10,15 +10,13 @@ function apiErrorMessage(error: unknown, fallback: string): string {
 }
 
 function roleLabel(role: AdminRole): string {
-  if (role === 'superadmin') return 'Superadmin';
   if (role === 'tenant_admin') return 'Tenant administrator';
   return 'Application administrator';
 }
 
 function UserManagement() {
-  const { isSuperAdmin, userId, tenantId, tenantName, tenantSlug, role: currentRole } = useAuth();
+  const { userId, tenantId, tenantName, tenantSlug } = useAuth();
   const [users, setUsers] = useState<AdminUser[]>([]);
-  const [tenants, setTenants] = useState<Tenant[]>([]);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(true);
@@ -26,36 +24,27 @@ function UserManagement() {
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState<AdminRole>('tenant_admin');
-  const [newTenantId, setNewTenantId] = useState<number | null>(tenantId);
   const [creating, setCreating] = useState(false);
   const [resetPasswordId, setResetPasswordId] = useState<number | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = useState('');
 
   const loadData = useCallback(async () => {
     try {
-      const [usersResponse, tenantsResponse] = await Promise.all([
-        adminApi.listUsers(),
-        adminApi.getTenants(),
-      ]);
+      const usersResponse = await adminApi.listUsers();
       setUsers(usersResponse.data);
-      setTenants(tenantsResponse.data);
-      setNewTenantId((current) => current ?? tenantId ?? tenantsResponse.data[0]?.id ?? null);
       setError('');
     } catch (requestError: unknown) {
       setError(apiErrorMessage(requestError, 'Unable to load tenant users.'));
     } finally {
       setLoading(false);
     }
-  }, [tenantId]);
+  }, []);
 
   useEffect(() => {
     void loadData();
   }, [loadData]);
 
-  const visibleRoles = useMemo<AdminRole[]>(
-    () => isSuperAdmin ? ['tenant_admin', 'admin', 'superadmin'] : ['tenant_admin', 'admin'],
-    [isSuperAdmin],
-  );
+  const visibleRoles: AdminRole[] = ['tenant_admin', 'admin'];
 
   const clearMessages = () => {
     setError('');
@@ -74,18 +63,13 @@ function UserManagement() {
       setError('Password must contain 8-128 characters.');
       return;
     }
-    if (newRole !== 'superadmin' && !newTenantId) {
-      setError('Select a tenant for this account.');
-      return;
-    }
-
     setCreating(true);
     try {
       await adminApi.createUser({
         username,
         password: newPassword,
         role: newRole,
-        tenant_id: newRole === 'superadmin' ? null : newTenantId,
+        tenant_id: tenantId,
       });
       setSuccess(`Account “${username}” created.`);
       setNewUsername('');
@@ -139,12 +123,8 @@ function UserManagement() {
       <header className="admin-topbar">
         <div>
           <span className="eyebrow">IDENTITY & ACCESS</span>
-          <h1>{isSuperAdmin ? 'Users across tenants' : 'My tenant users'}</h1>
-          <p>
-            {isSuperAdmin
-              ? 'Assign every non-superadmin account to an explicit customer tenant.'
-              : `Managing ${tenantName || tenantSlug || 'your tenant'} only.`}
-          </p>
+          <h1>My tenant users</h1>
+          <p>Managing {tenantName || tenantSlug || 'your tenant'} only.</p>
         </div>
       </header>
 
@@ -162,9 +142,7 @@ function UserManagement() {
             <label className="field"><span>Username</span><input value={newUsername} onChange={(event) => setNewUsername(event.target.value)} disabled={creating} required minLength={3} maxLength={100} /></label>
             <label className="field"><span>Temporary password</span><input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} disabled={creating} required minLength={8} maxLength={128} /></label>
             <label className="field"><span>Role</span><select value={newRole} onChange={(event) => setNewRole(event.target.value as AdminRole)} disabled={creating}>{visibleRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select></label>
-            {newRole !== 'superadmin' && (
-              <label className="field"><span>Tenant</span><select value={newTenantId ?? ''} onChange={(event) => setNewTenantId(Number(event.target.value))} disabled={creating || !isSuperAdmin} required>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name} ({tenant.slug})</option>)}</select></label>
-            )}
+            <label className="field"><span>Tenant</span><input value={`${tenantName || 'Tenant'} (${tenantSlug || tenantId})`} disabled /></label>
           </div>
           <div className="form-footer">
             <p>Tenant administrators cannot assign accounts outside their JWT tenant.</p>
@@ -183,19 +161,14 @@ function UserManagement() {
                 <tr key={user.id}>
                   <td><strong>{user.username}</strong></td>
                   <td>
-                    {isSuperAdmin && user.role !== 'superadmin' ? (
-                      <select value={user.tenant_id ?? ''} disabled={user.id === userId} onChange={(event) => void updateUser(user, { tenant_id: Number(event.target.value), role: user.role })}>
-                        {tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}
-                      </select>
-                    ) : user.tenant_name || (user.role === 'superadmin' ? 'All tenants' : tenantName || 'Tenant')}
+                    {user.tenant_name || tenantName || 'Tenant'}
                   </td>
                   <td>
                     <select value={user.role} disabled={user.id === userId} onChange={(event) => {
                       const role = event.target.value as AdminRole;
-                      const assignedTenantId = role === 'superadmin' ? null : user.tenant_id ?? tenants[0]?.id ?? null;
-                      void updateUser(user, { role, tenant_id: assignedTenantId });
+                      void updateUser(user, { role, tenant_id: tenantId });
                     }}>
-                      {(isSuperAdmin ? ['tenant_admin', 'admin', 'superadmin'] as AdminRole[] : ['tenant_admin', 'admin'] as AdminRole[]).map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}
+                      {visibleRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}
                     </select>
                   </td>
                   <td>{new Date(user.created_at).toLocaleString()}</td>
@@ -219,7 +192,7 @@ function UserManagement() {
       </section>
 
       <p style={{ color: 'var(--text-light)', fontSize: 12 }}>
-        Session scope: <strong>{currentRole === 'superadmin' ? 'All tenants' : `${tenantName || 'Tenant'} (${tenantSlug || tenantId})`}</strong>
+        Session scope: <strong>{tenantName || 'Tenant'} ({tenantSlug || tenantId})</strong>
       </p>
     </main>
   );

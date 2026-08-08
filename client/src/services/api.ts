@@ -58,6 +58,30 @@ export interface TenantProvisionJob {
   created_at: string;
 }
 
+export interface TenantIssue {
+  id: number;
+  tenant_slug: string;
+  severity: 'warning' | 'error' | 'critical';
+  source: string;
+  code: string;
+  message: string;
+  http_status?: number | null;
+  http_method?: string | null;
+  request_path?: string | null;
+  request_id?: string | null;
+  actor_type: 'admin' | 'student' | 'anonymous' | 'system';
+  actor_id?: number | null;
+  metadata?: Record<string, string | number | boolean | null> | null;
+  status: 'open' | 'resolved' | 'archived';
+  resolved_by?: number | null;
+  resolved_at?: string | null;
+  archived_by?: number | null;
+  archived_at?: string | null;
+  last_managed_by?: number | null;
+  last_managed_at?: string | null;
+  created_at: string;
+}
+
 export interface TenantConfiguration {
   name: string;
   contact_email: string;
@@ -87,7 +111,7 @@ api.interceptors.request.use(
   (config) => {
     // Admin JWT
     const adminToken = localStorage.getItem('adminToken');
-    if (adminToken && config.url?.includes('/admin/')) {
+    if (adminToken && (config.url?.includes('/admin/') || config.url?.startsWith('/tenants'))) {
       config.headers.Authorization = `Bearer ${adminToken}`;
     }
     // [C-4] Student token — gắn vào tất cả /student/ request
@@ -108,7 +132,7 @@ api.interceptors.response.use(
   (error) => {
     if (
       error.response?.status === 401 &&
-      window.location.pathname.startsWith('/admin') &&
+      (window.location.pathname.startsWith('/admin') || window.location.pathname.startsWith('/tenants')) &&
       window.location.pathname !== '/admin'
     ) {
       localStorage.removeItem('adminToken');
@@ -152,28 +176,40 @@ export const adminApi = {
 
   // --- Multi-tenant control plane ---
   getTenants: () =>
-    api.get<Tenant[]>('/admin/tenants'),
+    api.get<Tenant[]>('/tenants'),
 
   createTenant: (data: TenantConfiguration & { slug: string; admin_username: string; admin_password: string }) =>
-    api.post('/admin/tenants', data),
+    api.post('/tenants', data),
 
   updateTenant: (id: number, data: TenantConfiguration) =>
-    api.put(`/admin/tenants/${id}`, data),
+    api.put(`/tenants/${id}`, data),
 
   approveTenant: (id: number) =>
-    api.post(`/admin/tenants/${id}/approve`),
+    api.post(`/tenants/${id}/approve`),
 
   suspendTenant: (id: number) =>
-    api.post(`/admin/tenants/${id}/suspend`),
+    api.post(`/tenants/${id}/suspend`),
 
   planTenant: (id: number) =>
-    api.post(`/admin/tenants/${id}/plan`),
+    api.post(`/tenants/${id}/plan`),
 
   provisionTenant: (id: number) =>
-    api.post(`/admin/tenants/${id}/provision`),
+    api.post(`/tenants/${id}/provision`),
 
   getTenantJobs: (id: number) =>
-    api.get<TenantProvisionJob[]>(`/admin/tenants/${id}/jobs`),
+    api.get<TenantProvisionJob[]>(`/tenants/${id}/jobs`),
+
+  getTenantIssues: (id: number, params?: { status?: 'open' | 'resolved' | 'archived'; severity?: 'warning' | 'error' | 'critical'; limit?: number }) =>
+    api.get<TenantIssue[]>(`/tenants/${id}/issues`, { params }),
+
+  getIssues: (params?: { status?: 'open' | 'resolved' | 'archived'; severity?: 'warning' | 'error' | 'critical'; limit?: number }) =>
+    api.get<TenantIssue[]>('/admin/issues', { params }),
+
+  resolveIssue: (id: number) =>
+    api.put(`/admin/issues/${id}/resolve`),
+
+  updateIssueStatus: (id: number, status: 'open' | 'resolved' | 'archived') =>
+    api.put(`/admin/issues/${id}/status`, { status }),
 
   // --- Question endpoints ---
   importQuestions: (formData: FormData) =>

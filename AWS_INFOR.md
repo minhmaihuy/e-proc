@@ -1,7 +1,7 @@
 Outputs:
 
-app_fqdn = "epoc.devfatstrack.cloud"
-app_url = "https://epoc.devfatstrack.cloud"
+app_fqdn = "epoc.devfasttrack.com"
+app_url = "https://epoc.devfasttrack.com"
 database_url = <sensitive>
 ec2_instance_id = "i-045fd74dd61091dab"
 ec2_public_ip = "52.74.229.94"
@@ -20,7 +20,7 @@ monthly_cost_estimate = <<EOT
 ├──────────────────────┼───────────┼───────────────┤
 │ TOTAL                │ ~$0.50    │ ~$23.52       │
 └──────────────────────┴───────────┴───────────────┘
-App: https://epoc.devfatstrack.cloud
+App: https://epoc.devfasttrack.com
 
 EOT
 rds_endpoint = "eaudit-db.cj2qeu0i2g9c.ap-southeast-1.rds.amazonaws.com:5432"

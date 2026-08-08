@@ -19,12 +19,13 @@ aws secretsmanager get-secret-value \
 chmod 0600 /opt/eproc/runtime-secrets.json
 
 jq -r '
-  ["DATABASE_URL", "CONTROL_DATABASE_URL", "JWT_SECRET", "SESSION_SECRET", "GEMINI_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY"] as $allowed
+  ["DATABASE_URL", "CONTROL_DATABASE_URL", "LOG_DATABASE_URL", "JWT_SECRET", "SESSION_SECRET", "GEMINI_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY"] as $allowed
   | to_entries[]
   | select(.key as $key | $allowed | index($key))
   | "\(.key)=\(.value | tostring | gsub("[\\r\\n]"; ""))"
 ' /opt/eproc/runtime-secrets.json > /opt/eproc/.env
 printf 'NODE_ENV=production\nPORT=${app_port}\nTENANT_SLUG=${tenant_slug}\nDEFAULT_TENANT_NAME_B64=${tenant_name_b64}\nDEFAULT_TENANT_CONTACT_EMAIL_B64=${tenant_contact_email_b64}\n' >> /opt/eproc/.env
+printf 'DEFAULT_TENANT_DOMAIN=${domain_name}\nDEFAULT_TENANT_APP_URL=https://${domain_name}/\nALLOWED_ORIGINS=https://${domain_name}\n' >> /opt/eproc/.env
 printf 'PRACTICE_COMPILER_MODE=${compiler_mode}\nPRACTICE_COMPILER_LAMBDA_ARN=${compiler_lambda_arn}\nAWS_REGION=${aws_region}\n' >> /opt/eproc/.env
 chmod 0600 /opt/eproc/.env
 rm -f /opt/eproc/runtime-secrets.json

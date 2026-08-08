@@ -4,12 +4,15 @@ import session from 'express-session';
 import dotenv from 'dotenv';
 import { initDatabase } from './db/postgres.js';
 import { initControlPlaneDatabase } from './db/controlPlane.js';
+import { initLogPlaneDatabase } from './db/logPlane.js';
 import adminRoutes from './routes/admin.js';
 import tenantRoutes from './routes/tenants.js';
+import issueRoutes from './routes/issues.js';
 import studentRoutes from './routes/student.js';
 import { cache } from './cache.js';
 import rateLimit from 'express-rate-limit';
-import { authMiddleware } from './middleware/auth.js';
+import { authMiddleware, requireTenantDataAdmin } from './middleware/auth.js';
+import { tenantIssueRequestLogger } from './middleware/issueLogger.js';
 
 dotenv.config();
 
@@ -81,9 +84,11 @@ app.use(session({
   }
 }));
 
-// Tenant routes are mounted first because tenant_admin accounts are intentionally
-// blocked from the legacy platform-admin router after authentication.
-app.use('/api/admin/tenants', tenantRoutes);
+app.use(tenantIssueRequestLogger);
+
+// Global control-plane and tenant data-plane are deliberately separate route trees.
+app.use('/api/tenants', tenantRoutes);
+app.use('/api/admin/issues', issueRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/student', studentRoutes);
 
@@ -99,7 +104,7 @@ app.get('/api/health', (req, res) => {
 // [C-2] Internal diagnostic/operational endpoints — require admin JWT
 // [C-3] POST /api/init-tables đã bị xóa (DB init tự động khi server start)
 
-app.get('/api/test-db', authMiddleware, async (req, res) => {
+app.get('/api/test-db', authMiddleware, requireTenantDataAdmin, async (req, res) => {
   try {
     const { query } = await import('./db/postgres.js');
     const result = await query('SELECT NOW() as time, version() as pg_version');
@@ -116,35 +121,38 @@ app.get('/api/test-db', authMiddleware, async (req, res) => {
   }
 });
 
-app.get('/api/queue/process', authMiddleware, async (req, res) => {
+app.get('/api/queue/process', authMiddleware, requireTenantDataAdmin, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit as string) || 5;
     const processed = await cache.processQueue(limit);
     res.json({ processed, timestamp: new Date().toISOString() });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[Queue] Process failed:', error);
+    res.status(500).json({ error: 'Queue processing failed' });
   }
 });
 
-app.get('/api/queue/stats', authMiddleware, async (req, res) => {
+app.get('/api/queue/stats', authMiddleware, requireTenantDataAdmin, async (req, res) => {
   try {
     const stats = cache.getQueueStats();
     res.json(stats);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[Queue] Stats failed:', error);
+    res.status(500).json({ error: 'Queue statistics failed' });
   }
 });
 
-app.post('/api/cache/flush', authMiddleware, async (req, res) => {
+app.post('/api/cache/flush', authMiddleware, requireTenantDataAdmin, async (req, res) => {
   try {
     await cache.flushAnswers();
     res.json({ success: true, timestamp: new Date().toISOString() });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[Cache] Flush failed:', error);
+    res.status(500).json({ error: 'Cache flush failed' });
   }
 });
 
-app.get('/api/stats', authMiddleware, (req, res) => {
+app.get('/api/stats', authMiddleware, requireTenantDataAdmin, (req, res) => {
   res.json({
     queue: cache.getQueueStats(),
     timestamp: new Date().toISOString(),
@@ -167,6 +175,8 @@ export const initialization = initDatabase()
   .then(() => console.log('Assessment data-plane initialized'))
   .then(() => initControlPlaneDatabase())
   .then(() => console.log('Tenant control-plane initialized'))
+  .then(() => initLogPlaneDatabase())
+  .then(() => console.log('Tenant issue log-plane initialized'))
   .then(() => cache.init())
   .then(() => cache.processQueue(5))
   .then(() => console.log('Initial queue processed'));

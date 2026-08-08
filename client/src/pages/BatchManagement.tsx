@@ -91,7 +91,7 @@ const decodeComboKey = (key: string): { module: string; question_group: string }
 const comboLabel = (module: string, group: string) => (group ? `${module} (${group})` : module);
 
 function BatchManagement() {
-  const { isSuperAdmin } = useAuth();
+  const { isTenantAdmin } = useAuth();
   const [batches, setBatches] = useState<any[]>([]);
   const [moduleGroups, setModuleGroups] = useState<ModuleGroupOption[]>([]);
   const [moduleGroupStats, setModuleGroupStats] = useState<ModuleGroupStats[]>([]);
@@ -873,13 +873,12 @@ function BatchManagement() {
               </div>
             </div>
 
-            {/* Chế độ ghi màn hình — chỉ superadmin đổi được; admin thường thấy nhưng bị khóa.
-                Áp dụng cho cả batch Question Bank lẫn Practice. */}
+            {/* tenant_admin controls recording for both Question Bank and Practice batches. */}
             <div className="form-group" style={{ marginTop: 12 }}>
               <label>Screen Recording</label>
               <select
                 value={formData.record_mode}
-                disabled={!isSuperAdmin}
+                disabled={!isTenantAdmin}
                 onChange={e => setFormData(prev => ({ ...prev, record_mode: e.target.value as 'none' | 'local' | 's3' }))}
                 style={{ width: 'auto' }}
               >
@@ -887,8 +886,8 @@ function BatchManagement() {
                 <option value="local">Record Local (Save on student's machine, encrypted)</option>
                 <option value="s3">Record S3 (Save to AWS S3)</option>
               </select>
-              {!isSuperAdmin && (
-                <small style={{ color: 'var(--text-light)', display: 'block' }}>Only superadmin accounts can change this setting.</small>
+              {!isTenantAdmin && (
+                <small style={{ color: 'var(--text-light)', display: 'block' }}>Only the tenant administrator can change this setting.</small>
               )}
             </div>
 
@@ -1320,12 +1319,12 @@ function BatchManagement() {
             />
           </div>
 
-          {/* Chế độ ghi màn hình — chỉ superadmin đổi được; admin thường bị khóa (backend giữ nguyên mode cũ) */}
+          {/* tenant_admin controls recording; backend preserves the current mode for regular admin. */}
           <div className="form-group">
             <label>Screen Recording</label>
             <select
               value={editingBatch.record_mode || 'none'}
-              disabled={!isSuperAdmin}
+              disabled={!isTenantAdmin}
               onChange={e => setEditingBatch({ ...editingBatch, record_mode: e.target.value })}
               style={{ width: 'auto' }}
             >
@@ -1333,8 +1332,8 @@ function BatchManagement() {
               <option value="local">Record Local (Save on student's machine, encrypted)</option>
               <option value="s3">Record S3 (Save to AWS S3)</option>
             </select>
-            {!isSuperAdmin && (
-              <small style={{ color: 'var(--text-light)', display: 'block' }}>Only superadmin accounts can change this setting.</small>
+            {!isTenantAdmin && (
+              <small style={{ color: 'var(--text-light)', display: 'block' }}>Only the tenant administrator can change this setting.</small>
             )}
           </div>
 

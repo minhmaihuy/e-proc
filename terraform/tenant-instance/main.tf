@@ -187,7 +187,11 @@ resource "aws_iam_role_policy" "runtime" {
         ]
         Resource = "*"
       }
-      ], var.compiler_enabled ? [{
+      ], length(var.observed_tenant_secret_arns) > 0 ? [{
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.observed_tenant_secret_arns
+        }] : [], var.compiler_enabled ? [{
         Effect   = "Allow"
         Action   = ["lambda:InvokeFunction"]
         Resource = aws_lambda_function.compiler[0].arn

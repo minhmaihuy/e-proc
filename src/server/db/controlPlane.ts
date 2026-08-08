@@ -29,13 +29,12 @@ export function resolveControlPlaneConnection(
   cwd = process.cwd(),
 ): ControlPlaneConnectionConfig {
   const explicitControlUrl = env.CONTROL_DATABASE_URL?.trim() || '';
-  const dataUrl = env.DATABASE_URL?.trim() || '';
-  const connectionString = explicitControlUrl || dataUrl;
+  const connectionString = explicitControlUrl;
   return {
     useSqlite: !connectionString,
     connectionString,
     sqlitePath: path.resolve(env.CONTROL_SQLITE_PATH?.trim() || path.join(cwd, 'data', 'control-plane.db')),
-    sharedWithDataPlane: !explicitControlUrl && Boolean(dataUrl),
+    sharedWithDataPlane: false,
   };
 }
 
@@ -307,6 +306,25 @@ async function ensureFsaClsTenant(legacyTenantIds: number[]): Promise<number> {
     tenant = await query('SELECT id FROM tenants WHERE slug = ?', [targetSlug]);
   }
   const tenantId = Number(tenant.rows[0]?.id);
+  await query(
+    `UPDATE tenants
+     SET domain_name = CASE
+           WHEN domain_name = '' OR LOWER(domain_name) IN ('epoc-fsa-cls.devfasttrack.cloud', 'epoc.devfasttrack.cloud', 'epoc.fsa.devfasttrack.com') THEN ?
+           ELSE domain_name
+         END,
+         app_url = CASE
+           WHEN app_url IS NULL OR app_url = '' OR app_url LIKE 'http://localhost%'
+             OR LOWER(app_url) IN (
+               'https://epoc-fsa-cls.devfasttrack.cloud', 'https://epoc-fsa-cls.devfasttrack.cloud/',
+               'https://epoc.devfasttrack.cloud', 'https://epoc.devfasttrack.cloud/',
+               'https://epoc.fsa.devfasttrack.com', 'https://epoc.fsa.devfasttrack.com/'
+             ) THEN ?
+           ELSE app_url
+         END,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    [config.domainName, config.appUrl, tenantId],
+  );
   await query("UPDATE admin_users SET tenant_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE role = 'superadmin' AND tenant_id IS NOT NULL");
   if (legacyTenantIds.length > 0) {
     await query(
@@ -359,14 +377,14 @@ async function migrateLegacyControlPlane() {
 export async function initControlPlaneDatabase() {
   connectionConfig = resolveControlPlaneConnection();
   if (connectionConfig.useSqlite) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('CONTROL_DATABASE_URL is required in production; the control plane cannot share the tenant database.');
+    }
     initSqlite(connectionConfig);
     console.log('[ControlDB] SQLite:', connectionConfig.sqlitePath);
   } else {
     await initPostgres(connectionConfig);
-    console.log('[ControlDB] PostgreSQL:', connectionConfig.sharedWithDataPlane ? 'shared compatibility mode' : 'separate control plane');
-    if (connectionConfig.sharedWithDataPlane) {
-      console.warn('[ControlDB] CONTROL_DATABASE_URL is not set; tenant control data still shares DATABASE_URL. Configure a separate database to complete isolation.');
-    }
+    console.log('[ControlDB] PostgreSQL: separate control plane');
   }
   await migrateLegacyControlPlane();
 }

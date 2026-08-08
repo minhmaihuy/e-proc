@@ -1,6 +1,6 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AdminNav from '../components/AdminNav';
-import { adminApi, Tenant, TenantConfiguration, TenantProvisionJob } from '../services/api';
+import { adminApi, Tenant, TenantConfiguration, TenantIssue, TenantProvisionJob } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 
 const REGIONS = ['ap-southeast-1', 'ap-southeast-2', 'us-east-1', 'us-west-2', 'eu-west-1'] as const;
@@ -29,6 +29,14 @@ interface CreateTenantForm extends TenantConfiguration {
   admin_password: string;
 }
 
+function domainForTenantSlug(inputSlug: string): string {
+  const requestedSlug = inputSlug.trim().toLowerCase();
+  const slug = requestedSlug === 'fsa' ? 'fsa-cls' : requestedSlug;
+  if (!/^[a-z][a-z0-9-]{2,30}$/.test(slug)) return '';
+  if (slug === 'fsa-cls') return 'epoc.devfasttrack.com';
+  return `epoc.${slug}.devfasttrack.com`;
+}
+
 function apiErrorMessage(error: unknown, fallback: string): string {
   if (!error || typeof error !== 'object') return fallback;
   const response = (error as { response?: { data?: { error?: unknown } } }).response;
@@ -46,7 +54,7 @@ function configFromTenant(tenant: Tenant): TenantConfiguration {
     compiler_memory_mb: Number(tenant.compiler_memory_mb || 512),
     compiler_timeout_seconds: Number(tenant.compiler_timeout_seconds || 15),
     compiler_concurrency: Number(tenant.compiler_concurrency || 2),
-    domain_name: tenant.domain_name || '',
+    domain_name: domainForTenantSlug(tenant.slug) || tenant.domain_name || '',
     route53_zone_id: tenant.route53_zone_id || '',
     secret_arn: tenant.secret_arn === 'configured' ? undefined : tenant.secret_arn || '',
     repository_url: tenant.repository_url,
@@ -58,13 +66,26 @@ function statusLabel(status: string): string {
   return status.replace(/_/g, ' ').replace(/\b\w/g, (letter: string) => letter.toUpperCase());
 }
 
-function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
-  const { isSuperAdmin, isTenantAdmin, logout } = useAuth();
-  const isControlPlane = scope === 'control' && isSuperAdmin;
+function tenantApplicationUrl(tenant: Tenant): string {
+  const standardDomain = domainForTenantSlug(tenant.slug);
+  if (standardDomain) return `https://${standardDomain}/`;
+  if (tenant.domain_name) return `https://${tenant.domain_name}/`;
+  if (tenant.app_url) return tenant.app_url;
+  return '';
+}
+
+function TenantManagement() {
+  const { logout } = useAuth();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [form, setForm] = useState<TenantConfiguration>(EMPTY_CONFIG);
   const [jobs, setJobs] = useState<TenantProvisionJob[]>([]);
+  const [issues, setIssues] = useState<TenantIssue[]>([]);
+  const [issueStatus, setIssueStatus] = useState<'' | 'open' | 'resolved' | 'archived'>('');
+  const [issueSeverity, setIssueSeverity] = useState<'' | 'warning' | 'error' | 'critical'>('');
+  const [issueLoading, setIssueLoading] = useState(false);
+  const [issueError, setIssueError] = useState('');
+  const issueRequestSequence = useRef(0);
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState<CreateTenantForm>({
     ...EMPTY_CONFIG,
@@ -107,6 +128,27 @@ function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
     }
   }, []);
 
+  const loadTenantIssues = useCallback(async (tenantId: number) => {
+    const requestSequence = ++issueRequestSequence.current;
+    setIssueLoading(true);
+    setIssueError('');
+    try {
+      const response = await adminApi.getTenantIssues(tenantId, {
+        status: issueStatus || undefined,
+        severity: issueSeverity || undefined,
+        limit: 100,
+      });
+      if (requestSequence === issueRequestSequence.current) setIssues(response.data);
+    } catch (requestError: unknown) {
+      if (requestSequence === issueRequestSequence.current) {
+        setIssues([]);
+        setIssueError(apiErrorMessage(requestError, 'Unable to load this tenant log database.'));
+      }
+    } finally {
+      if (requestSequence === issueRequestSequence.current) setIssueLoading(false);
+    }
+  }, [issueSeverity, issueStatus]);
+
   useEffect(() => {
     void loadTenants();
   }, [loadTenants]);
@@ -115,7 +157,8 @@ function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
     if (!selectedTenant) return;
     setForm(configFromTenant(selectedTenant));
     void loadJobs(selectedTenant.id);
-  }, [loadJobs, selectedTenant]);
+    void loadTenantIssues(selectedTenant.id);
+  }, [loadJobs, loadTenantIssues, selectedTenant]);
 
   useEffect(() => {
     if (!selectedTenant || !['planning', 'applying'].includes(selectedTenant.provision_status)) return;
@@ -136,7 +179,10 @@ function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
   };
 
   const handleCreateChange = (field: keyof CreateTenantForm, value: string | number | boolean) => {
-    setCreateForm((current) => ({ ...current, [field]: value }));
+    setCreateForm((current) => {
+      if (field !== 'slug' || typeof value !== 'string') return { ...current, [field]: value };
+      return { ...current, slug: value, domain_name: domainForTenantSlug(value) };
+    });
   };
 
   const handleSelectTenant = (tenantId: number) => {
@@ -222,6 +268,7 @@ function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
     && job.status === 'succeeded'
     && new Date(job.created_at).getTime() >= approvedAt
   ));
+  const selectedTenantUrl = selectedTenant ? tenantApplicationUrl(selectedTenant) : '';
 
   if (loading) return <div className="loading">Loading tenant control plane...</div>;
 
@@ -230,11 +277,11 @@ function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
       <header className="admin-topbar">
         <div>
           <span className="eyebrow">E-PROC CONTROL PLANE</span>
-          <h1>{isControlPlane ? 'Tenant operations' : 'My tenant workspace'}</h1>
-          <p>{isControlPlane ? 'Approve customer environments and control every Terraform deployment.' : 'Configure your environment and submit changes for platform approval.'}</p>
+          <h1>Tenant operations</h1>
+          <p>Approve isolated tenant subdomains, control Terraform deployments, and observe each tenant log database.</p>
         </div>
         <div className="topbar-actions">
-          {isControlPlane && <button className="btn btn-primary" onClick={() => setShowCreate(true)}>New tenant</button>}
+          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>New tenant</button>
           <button className="btn btn-secondary" onClick={logout}>Sign out</button>
         </div>
       </header>
@@ -255,12 +302,11 @@ function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
           <div className="empty-icon">T</div>
           <h2>No tenants yet</h2>
           <p>Create the first customer workspace and its tenant administrator account.</p>
-          {isControlPlane && <button className="btn btn-primary" onClick={() => setShowCreate(true)}>Create tenant</button>}
+          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>Create tenant</button>
         </section>
       ) : (
-        <div className={`tenant-layout ${isTenantAdmin ? 'tenant-layout-single' : ''}`}>
-          {isControlPlane && (
-            <aside className="tenant-list" aria-label="Tenant list">
+        <div className="tenant-layout">
+          <aside className="tenant-list" aria-label="Tenant list">
               <div className="section-heading"><div><span className="eyebrow">CUSTOMERS</span><h2>Environments</h2></div><span className="count-pill">{tenants.length}</span></div>
               {tenants.map((tenant) => (
                 <button
@@ -273,8 +319,7 @@ function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
                   <span className={`status-dot status-${tenant.status}`} title={statusLabel(tenant.status)} />
                 </button>
               ))}
-            </aside>
-          )}
+          </aside>
 
           {selectedTenant && (
             <section className="tenant-workspace">
@@ -287,13 +332,13 @@ function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
                   <h2>{selectedTenant.name}</h2>
                   <p>{selectedTenant.contact_email} · <code>{selectedTenant.slug}</code></p>
                 </div>
-                {selectedTenant.app_url && <a className="btn btn-secondary" href={selectedTenant.app_url} target="_blank" rel="noreferrer">Open server</a>}
+                {selectedTenantUrl && <a className="btn btn-secondary" href={selectedTenantUrl} target="_blank" rel="noreferrer">Open tenant subdomain</a>}
               </div>
 
               {selectedTenant.status === 'pending' && (
                 <div className="approval-banner">
                   <span>Configuration waiting for platform review.</span>
-                  {isControlPlane && <button className="btn btn-primary" disabled={!!action} onClick={handleApprove}>Approve tenant</button>}
+                  <button className="btn btn-primary" disabled={!!action} onClick={handleApprove}>Approve tenant</button>
                 </div>
               )}
 
@@ -309,11 +354,11 @@ function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
                   {form.compiler_enabled && <label className="field"><span>Compiler memory (MB)</span><input type="number" min={256} max={3008} step={64} value={form.compiler_memory_mb} onChange={(event) => handleConfigChange('compiler_memory_mb', Number(event.target.value))} /></label>}
                   {form.compiler_enabled && <label className="field"><span>Compiler timeout (seconds)</span><input type="number" min={10} max={30} value={form.compiler_timeout_seconds} onChange={(event) => handleConfigChange('compiler_timeout_seconds', Number(event.target.value))} /></label>}
                   {form.compiler_enabled && <label className="field"><span>Reserved concurrency</span><input type="number" min={1} max={20} value={form.compiler_concurrency} onChange={(event) => handleConfigChange('compiler_concurrency', Number(event.target.value))} /></label>}
-                  <label className="field"><span>Domain name</span><input placeholder="customer.example.com" value={form.domain_name} onChange={(event) => handleConfigChange('domain_name', event.target.value)} /></label>
+                  <label className="field"><span>Domain name</span><input value={form.domain_name} readOnly aria-describedby="tenant-domain-help" /><small id="tenant-domain-help">Derived from tenant slug; FSA-CLS temporarily uses epoc.devfasttrack.com.</small></label>
                   <label className="field"><span>Repository</span><input value={form.repository_url} onChange={(event) => handleConfigChange('repository_url', event.target.value)} required /></label>
                   <label className="field"><span>Branch / tag</span><input value={form.repository_ref} onChange={(event) => handleConfigChange('repository_ref', event.target.value)} required /></label>
-                  {isControlPlane && <label className="field"><span>Route53 zone ID</span><input value={form.route53_zone_id || ''} onChange={(event) => handleConfigChange('route53_zone_id', event.target.value)} /></label>}
-                  {isControlPlane && <label className="field field-wide"><span>AWS Secrets Manager ARN</span><input type="password" autoComplete="off" placeholder="arn:aws:secretsmanager:..." value={form.secret_arn || ''} onChange={(event) => handleConfigChange('secret_arn', event.target.value)} /></label>}
+                  <label className="field"><span>Route53 zone ID</span><input value={form.route53_zone_id || ''} onChange={(event) => handleConfigChange('route53_zone_id', event.target.value)} /></label>
+                  <label className="field field-wide"><span>AWS Secrets Manager ARN</span><input type="password" autoComplete="off" placeholder="arn:aws:secretsmanager:..." value={form.secret_arn || ''} onChange={(event) => handleConfigChange('secret_arn', event.target.value)} /></label>
                 </div>
                 <div className="form-footer">
                   <p>Secrets remain in AWS Secrets Manager. Only the ARN is stored here.</p>
@@ -331,13 +376,11 @@ function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
                   <div><span>State</span><strong>{selectedTenant.terraform_state_key || `tenants/${selectedTenant.slug}/terraform.tfstate`}</strong></div>
                 </div>
                 {selectedTenant.last_error && <div className="notice notice-error"><strong>Last error:</strong> {selectedTenant.last_error}</div>}
-                {isControlPlane && (
-                  <div className="provision-actions">
+                <div className="provision-actions">
                     <button className="btn btn-secondary" disabled={selectedTenant.status !== 'approved' || !!action} onClick={handlePlan}>{action === 'plan' ? 'Queuing...' : 'Run plan'}</button>
                     <button className="btn btn-primary" disabled={selectedTenant.status !== 'approved' || !hasReviewedPlan || !!action} onClick={handleProvision}>{action === 'provision' ? 'Queuing...' : 'Create / update server'}</button>
                     <button className="btn btn-danger-outline" disabled={selectedTenant.status === 'suspended' || !!action} onClick={handleSuspend}>Suspend access</button>
-                  </div>
-                )}
+                </div>
                 {latestJob?.log_output && (
                   <details className="terraform-log">
                     <summary>Latest Terraform log · {new Date(latestJob.created_at).toLocaleString()}</summary>
@@ -345,12 +388,76 @@ function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
                   </details>
                 )}
               </section>
+
+              <section className="provision-card" aria-labelledby="tenant-log-heading">
+                <div className="section-heading">
+                  <div>
+                    <span className="eyebrow">READ-ONLY OBSERVABILITY</span>
+                    <h3 id="tenant-log-heading">Operational logs</h3>
+                    <small>{selectedTenantUrl || 'Configure a dedicated tenant domain before approval.'}</small>
+                  </div>
+                  <button className="btn btn-secondary" type="button" disabled={issueLoading} onClick={() => void loadTenantIssues(selectedTenant.id)}>
+                    {issueLoading ? 'Loading...' : 'Refresh logs'}
+                  </button>
+                </div>
+                <p style={{ color: 'var(--text-light)' }}>
+                  Superadmin can observe safe operational failures for this tenant but cannot resolve or delete them. Tenant administrators retain issue ownership.
+                </p>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
+                  <label className="field" style={{ minWidth: 180 }}>
+                    <span>Status</span>
+                    <select value={issueStatus} onChange={(event) => setIssueStatus(event.target.value as typeof issueStatus)}>
+                      <option value="">All</option>
+                      <option value="open">Open</option>
+                      <option value="resolved">Resolved</option>
+                      <option value="archived">Archived</option>
+                    </select>
+                  </label>
+                  <label className="field" style={{ minWidth: 180 }}>
+                    <span>Severity</span>
+                    <select value={issueSeverity} onChange={(event) => setIssueSeverity(event.target.value as typeof issueSeverity)}>
+                      <option value="">All</option>
+                      <option value="warning">Warning</option>
+                      <option value="error">Error</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                  </label>
+                </div>
+                {issueError && <div className="notice notice-error" role="alert">{issueError}</div>}
+                <div style={{ overflowX: 'auto' }}>
+                  <table>
+                    <thead>
+                      <tr><th>Time</th><th>Severity</th><th>Issue</th><th>Request</th><th>Status</th></tr>
+                    </thead>
+                    <tbody>
+                      {issues.map((issue) => (
+                        <tr key={issue.id}>
+                          <td style={{ whiteSpace: 'nowrap' }}>{new Date(issue.created_at).toLocaleString()}</td>
+                          <td><strong>{issue.severity.toUpperCase()}</strong></td>
+                          <td>
+                            <div><code>{issue.code}</code> · {issue.source}</div>
+                            <div style={{ maxWidth: 420, overflowWrap: 'anywhere' }}>{issue.message}</div>
+                            <small style={{ color: 'var(--text-light)' }}>Request ID: {issue.request_id || 'n/a'}</small>
+                            {issue.metadata && <details><summary>Safe metadata</summary><pre>{JSON.stringify(issue.metadata, null, 2)}</pre></details>}
+                          </td>
+                          <td><code>{issue.http_method || '-'} {issue.request_path || '-'}</code><div>{issue.http_status || '-'}</div></td>
+                          <td>{issue.status}</td>
+                        </tr>
+                      ))}
+                      {!issueLoading && !issueError && issues.length === 0 && (
+                        <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-light)' }}>No issues match these filters.</td></tr>
+                      )}
+                      {issueLoading && <tr><td colSpan={5} style={{ textAlign: 'center' }}>Loading tenant log database...</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
             </section>
           )}
         </div>
       )}
 
-      {showCreate && isControlPlane && (
+      {showCreate && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowCreate(false)}>
           <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="create-tenant-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="section-heading"><div><span className="eyebrow">ONBOARD CUSTOMER</span><h2 id="create-tenant-title">Create tenant</h2></div><button className="icon-button" type="button" aria-label="Close" onClick={() => setShowCreate(false)}>×</button></div>
@@ -358,11 +465,12 @@ function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
               <div className="form-grid">
                 <label className="field"><span>Customer name</span><input value={createForm.name} onChange={(event) => handleCreateChange('name', event.target.value)} required /></label>
                 <label className="field"><span>Stable slug</span><input placeholder="acme-vietnam" value={createForm.slug} onChange={(event) => handleCreateChange('slug', event.target.value.toLowerCase())} required pattern="[a-z][a-z0-9-]{2,30}" /></label>
+                <label className="field"><span>Tenant domain</span><input value={createForm.domain_name} placeholder="epoc.acme-vietnam.devfasttrack.com" readOnly /></label>
                 <label className="field"><span>Contact email</span><input type="email" value={createForm.contact_email} onChange={(event) => handleCreateChange('contact_email', event.target.value)} required /></label>
                 <label className="field"><span>Tenant admin username</span><input value={createForm.admin_username} onChange={(event) => handleCreateChange('admin_username', event.target.value)} required minLength={3} /></label>
                 <label className="field field-wide"><span>Tenant admin password</span><input type="password" autoComplete="new-password" value={createForm.admin_password} onChange={(event) => handleCreateChange('admin_password', event.target.value)} required minLength={8} maxLength={128} /></label>
               </div>
-              <div className="form-footer"><p>The customer can configure infrastructure but cannot approve or provision it.</p><div className="button-row"><button className="btn btn-ghost" type="button" onClick={() => setShowCreate(false)}>Cancel</button><button className="btn btn-primary" type="submit" disabled={saving}>{saving ? 'Creating...' : 'Create workspace'}</button></div></div>
+              <div className="form-footer"><p>Only superadmin can configure, approve, and provision tenant infrastructure.</p><div className="button-row"><button className="btn btn-ghost" type="button" onClick={() => setShowCreate(false)}>Cancel</button><button className="btn btn-primary" type="submit" disabled={saving}>{saving ? 'Creating...' : 'Create workspace'}</button></div></div>
             </form>
           </section>
         </div>

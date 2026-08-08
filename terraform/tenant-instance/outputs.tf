@@ -15,7 +15,7 @@ output "ipv6_address" {
 
 output "app_url" {
   description = "Public tenant application URL."
-  value       = var.domain_name != "" ? "http://${var.domain_name}" : "http://[${aws_instance.app.ipv6_addresses[0]}]"
+  value       = "https://${var.domain_name}/"
 }
 
 output "compiler_lambda_arn" {

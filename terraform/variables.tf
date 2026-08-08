@@ -13,13 +13,13 @@ variable "aws_region" {
 variable "domain_name" {
   description = "Root domain name"
   type        = string
-  default     = "devfatstrack.cloud"
+  default     = "devfasttrack.com"
 }
 
 variable "app_subdomain" {
-  description = "Subdomain for the app (e.g. 'eproc' → eproc.devfatstrack.cloud)"
+  description = "Subdomain for the app (use 'epoc' for the temporary FSA-CLS domain epoc.devfasttrack.com)"
   type        = string
-  default     = "eproc"
+  default     = "epoc"
 }
 
 variable "route53_zone_id" {

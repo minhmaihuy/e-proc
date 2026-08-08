@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ProvisionableTenant,
+  getObservedTenantSecretArns,
   redactProvisionLog,
   validateTenantForProvisioning,
 } from './tenantProvisioner.js';
@@ -21,7 +22,7 @@ const validTenant: ProvisionableTenant = {
   compiler_memory_mb: 512,
   compiler_timeout_seconds: 15,
   compiler_concurrency: 2,
-  domain_name: 'acme.example.com',
+  domain_name: 'epoc.acme-vietnam.devfasttrack.com',
   route53_zone_id: 'Z123456789',
   secret_arn: 'arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:eproc-acme',
   repository_url: 'https://github.com/minhmaihuy/e-proc.git',
@@ -50,6 +51,27 @@ test('provisioning validation rejects unsafe slugs and malformed secret ARNs', (
   );
 });
 
+test('provisioning validation requires a dedicated tenant domain', () => {
+  assert.match(
+    validateTenantForProvisioning({ ...validTenant, domain_name: '' }) || '',
+    /Tenant domain must be epoc\.acme-vietnam\.devfasttrack\.com/,
+  );
+  assert.match(
+    validateTenantForProvisioning({ ...validTenant, domain_name: 'epoc.other.devfasttrack.com' }) || '',
+    /Tenant domain must be epoc\.acme-vietnam\.devfasttrack\.com/,
+  );
+});
+
+test('control-plane log secret permissions use an explicit validated allowlist', () => {
+  assert.deepEqual(getObservedTenantSecretArns({
+    CONTROL_PLANE_LOG_SECRET_ARNS: `${validTenant.secret_arn}, ${validTenant.secret_arn}`,
+  }), [validTenant.secret_arn]);
+  assert.throws(
+    () => getObservedTenantSecretArns({ CONTROL_PLANE_LOG_SECRET_ARNS: '*' }),
+    /valid Secrets Manager ARNs/,
+  );
+});
+
 test('Terraform logs redact common credentials and database userinfo', () => {
   const output = redactProvisionLog(
     'password=SuperSecret123 token: abcdefghijklmnop postgresql://admin:dbpass@example.com/eproc',
@@ -69,5 +91,7 @@ test('tenant Terraform module exposes the application over IPv6 end to end', () 
   assert.match(main, /resource\s+"aws_route53_record"\s+"app_ipv6"/);
   assert.match(outputs, /output\s+"ipv6_address"/);
   assert.match(userData, /listen \[::\]:80 default_server;/);
-  assert.match(userData, /"DATABASE_URL", "CONTROL_DATABASE_URL"/);
+  assert.match(userData, /"DATABASE_URL", "CONTROL_DATABASE_URL", "LOG_DATABASE_URL"/);
+  assert.match(userData, /DEFAULT_TENANT_APP_URL=https:\/\/\$\{domain_name\}\//);
+  assert.match(userData, /ALLOWED_ORIGINS=https:\/\/\$\{domain_name\}/);
 });
