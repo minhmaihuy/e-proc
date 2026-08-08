@@ -11,7 +11,7 @@
     "build": "npm run build:client && npm run build:server",
     "build:client": "cd client && npm install && npm run build",
     "build:server": "npx tsc",
-    "test:tenant": "npm run build:server && node --test dist/server/services/tenantProvisioner.test.js dist/server/services/lambdaCompiler.test.js dist/server/tenantContext.test.js",
+    "test:tenant": "npm run build:server && node --test dist/server/db/controlPlane.test.js dist/server/services/tenantProvisioner.test.js dist/server/services/lambdaCompiler.test.js dist/server/tenantContext.test.js",
     "start": "node dist/server/index.js"
   },
   "dependencies": {

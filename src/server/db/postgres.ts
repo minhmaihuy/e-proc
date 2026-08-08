@@ -3,7 +3,6 @@ import Database from 'better-sqlite3';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
-import bcrypt from 'bcryptjs';
 import { getCurrentTenantConfig } from '../tenantContext.js';
 
 dotenv.config();
@@ -762,62 +761,38 @@ function initSqlite() {
   }
 }
 
-// Seed tài khoản superadmin đầu tiên — chỉ chạy khi bảng admin_users đang trống,
-// thay cho form đăng ký admin tự phục vụ (đã bị gỡ bỏ vì lý do bảo mật).
-async function seedSuperAdmin() {
-  const existing = await query('SELECT COUNT(*) as count FROM admin_users');
-  const count = Number(existing.rows[0]?.count ?? existing.rows[0]?.COUNT ?? 0);
-  if (count > 0) return;
-
-  const username = process.env.SUPERADMIN_USERNAME || 'supperadmin';
-  const password = process.env.SUPERADMIN_PASSWORD || 'superadmin123#2nf';
-  const passwordHash = await bcrypt.hash(password, 10);
-
-  await query(
-    'INSERT INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)',
-    [username, passwordHash, 'superadmin']
-  );
-  console.log('[DB] Seeded initial superadmin account:', username);
+// Assessment data remains in this data-plane database. Persisting the identity
+// here makes its FSA-CLS ownership explicit and independently auditable.
+export function assertDataPlaneTenantBinding(existingSlug: unknown, requestedSlug: string): void {
+  const normalizedExisting = String(existingSlug || '').trim().toLowerCase() === 'fsa'
+    ? 'fsa-cls'
+    : String(existingSlug || '').trim().toLowerCase();
+  if (normalizedExisting && normalizedExisting !== requestedSlug) {
+    throw new Error(`Assessment database belongs to tenant "${normalizedExisting}" and cannot be rebound to "${requestedSlug}".`);
+  }
 }
 
-// Every non-superadmin account belongs to exactly one tenant. Legacy installations
-// predate tenant_id, so attach those accounts to the current server tenant. The
-// control plane defaults to FSA; provisioned tenant servers export TENANT_SLUG.
-export async function ensureCurrentTenant(): Promise<number> {
+export async function bindDataPlaneTenant(): Promise<void> {
   const config = getCurrentTenantConfig();
-  let tenant = await query('SELECT id FROM tenants WHERE slug = ?', [config.slug]);
-
-  if (!tenant.rows[0]) {
-    const owner = await query("SELECT id FROM admin_users WHERE role = 'superadmin' ORDER BY id ASC LIMIT 1");
-    const ownerId = Number(owner.rows[0]?.id);
-    if (!Number.isInteger(ownerId) || ownerId <= 0) {
-      throw new Error('A superadmin is required before the default tenant can be created.');
-    }
-
-    await query(
-      `INSERT INTO tenants
-       (slug, name, contact_email, status, aws_region, domain_name, provision_status,
-        app_url, approved_by, approved_at, created_by)
-       VALUES (?, ?, ?, 'approved', ?, ?, 'active', ?, ?, CURRENT_TIMESTAMP, ?)`,
-      [config.slug, config.name, config.contactEmail, config.awsRegion, config.domainName,
-        config.appUrl || null, ownerId, ownerId],
+  await query(`CREATE TABLE IF NOT EXISTS data_plane_metadata (
+    metadata_key VARCHAR(64) PRIMARY KEY,
+    metadata_value TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`);
+  const existingSlug = (await query(
+    "SELECT metadata_value FROM data_plane_metadata WHERE metadata_key = 'tenant_slug'",
+  )).rows[0]?.metadata_value;
+  assertDataPlaneTenantBinding(existingSlug, config.slug);
+  for (const [key, value] of [['tenant_slug', config.slug], ['tenant_name', config.name]]) {
+    const updated = await query(
+      'UPDATE data_plane_metadata SET metadata_value = ?, updated_at = CURRENT_TIMESTAMP WHERE metadata_key = ?',
+      [value, key],
     );
-    tenant = await query('SELECT id FROM tenants WHERE slug = ?', [config.slug]);
-    console.log('[DB] Created current tenant:', config.slug);
+    if (updated.rowCount === 0) {
+      await query('INSERT INTO data_plane_metadata (metadata_key, metadata_value) VALUES (?, ?)', [key, value]);
+    }
   }
-
-  const tenantId = Number(tenant.rows[0]?.id);
-  if (!Number.isInteger(tenantId) || tenantId <= 0) throw new Error('Unable to resolve current tenant.');
-
-  await query("UPDATE admin_users SET tenant_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE role = 'superadmin' AND tenant_id IS NOT NULL");
-  const migrated = await query(
-    "UPDATE admin_users SET tenant_id = ?, updated_at = CURRENT_TIMESTAMP WHERE role <> 'superadmin' AND tenant_id IS NULL",
-    [tenantId],
-  );
-  if (migrated.rowCount > 0) {
-    console.log(`[DB] Assigned ${migrated.rowCount} legacy admin account(s) to tenant ${config.slug}`);
-  }
-  return tenantId;
+  console.log('[DB] Assessment data-plane tenant:', config.slug);
 }
 
 export async function initDatabase() {
@@ -826,8 +801,7 @@ export async function initDatabase() {
   } else {
     await initPostgres();
   }
-  await seedSuperAdmin();
-  await ensureCurrentTenant();
+  await bindDataPlaneTenant();
 }
 
 interface DbResult {

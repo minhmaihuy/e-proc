@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { getCurrentTenantConfig } from '../tenantContext.js';
-import db from '../db/postgres.js';
+import db from '../db/controlPlane.js';
 
 export interface AdminUser {
   id: number;

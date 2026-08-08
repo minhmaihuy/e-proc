@@ -1,0 +1,75 @@
+{
+  "profile": "e-proc-fullstack-change-qa",
+  "rules": [
+    {
+      "id": "EP001",
+      "type": "regex_forbidden",
+      "severity": "error",
+      "scope": "code",
+      "patterns": ["\\bdebugger\\b", "TODO|FIXME|XXX|HACK"],
+      "message": "Unresolved debug or placeholder marker in changed code"
+    },
+    {
+      "id": "EP002",
+      "type": "regex_forbidden",
+      "severity": "error",
+      "scope": "all",
+      "patterns": [
+        "(?i)(api[_-]?key|secret|password|token)\\s*[:=]\\s*[\"'][A-Za-z0-9+/_-]{16,}[\"']",
+        "-----BEGIN (RSA |EC )?PRIVATE KEY-----",
+        "sk-[A-Za-z0-9]{20,}"
+      ],
+      "message": "Hardcoded secret or private credential detected"
+    },
+    {
+      "id": "EP003",
+      "type": "banned_keywords",
+      "severity": "error",
+      "scope": "code",
+      "patterns": ["\\beval\\s*\\(", "child_process\\.exec\\("],
+      "message": "Unsafe dynamic execution API detected"
+    },
+    {
+      "id": "EP004",
+      "type": "required_files",
+      "severity": "error",
+      "match": "any",
+      "patterns": ["**/*.{test,spec}.{ts,tsx,js,jsx}"],
+      "message": "Changed implementation must include a regression test",
+      "stage": "final"
+    },
+    {
+      "id": "EP005",
+      "type": "regex_forbidden",
+      "severity": "error",
+      "scope": "all",
+      "patterns": ["(?m)^<{7}(?: |$)", "(?m)^={7}$", "(?m)^>{7}(?: |$)", "\\[AGENT FILL\\]", "\\[PLACEHOLDER\\]"],
+      "message": "Conflict marker or unfilled scaffold remains"
+    },
+    {
+      "id": "EP101",
+      "type": "llm_judge",
+      "severity": "error",
+      "scope": "code",
+      "criteria": [
+        "Does the implementation cover every requirement in the FSA-CLS control/data-plane specification?",
+        "Are authentication, tenant ownership, and database boundaries enforced server-side?",
+        "Is migration non-destructive, repeatable, and free of plaintext credential handling?"
+      ],
+      "message": "Implementation must satisfy the approved design and security boundaries",
+      "stage": "final"
+    },
+    {
+      "id": "EP102",
+      "type": "llm_judge",
+      "severity": "warning",
+      "scope": "file:**/*.{test,spec}.*",
+      "criteria": [
+        "Do tests assert meaningful default, compatibility, and migration mapping behavior?",
+        "Do verification results include an idempotent migration and preserved assessment row counts?"
+      ],
+      "message": "Regression tests and migration evidence should cover principal failure modes",
+      "stage": "final"
+    }
+  ]
+}

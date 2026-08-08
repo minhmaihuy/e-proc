@@ -69,4 +69,5 @@ test('tenant Terraform module exposes the application over IPv6 end to end', () 
   assert.match(main, /resource\s+"aws_route53_record"\s+"app_ipv6"/);
   assert.match(outputs, /output\s+"ipv6_address"/);
   assert.match(userData, /listen \[::\]:80 default_server;/);
+  assert.match(userData, /"DATABASE_URL", "CONTROL_DATABASE_URL"/);
 });

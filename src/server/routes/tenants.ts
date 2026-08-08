@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
-import db from '../db/postgres.js';
+import db from '../db/controlPlane.js';
 import { authMiddleware, requireSuperAdmin } from '../middleware/auth.js';
 import { ProvisionAction, ProvisionableTenant, runTenantProvisioning } from '../services/tenantProvisioner.js';
 

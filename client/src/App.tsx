@@ -39,7 +39,8 @@ function App() {
         <Route path="/admin/batches/:id/results" element={<PrivateRoute requirePlatformAdmin><Results /></PrivateRoute>} />
         <Route path="/admin/settings" element={<PrivateRoute requirePlatformAdmin><AISettings /></PrivateRoute>} />
         <Route path="/admin/practice" element={<PrivateRoute requirePlatformAdmin><PracticeManagement /></PrivateRoute>} />
-        <Route path="/admin/tenants" element={<PrivateRoute><TenantManagement /></PrivateRoute>} />
+        <Route path="/admin/tenants" element={<PrivateRoute requireSuperAdmin><TenantManagement scope="control" /></PrivateRoute>} />
+        <Route path="/admin/tenant" element={<PrivateRoute requireTenantAdmin><TenantManagement scope="workspace" /></PrivateRoute>} />
         <Route path="/admin/users" element={<PrivateRoute requireUserManager><UserManagement /></PrivateRoute>} />
       </Routes>
     </AuthProvider>

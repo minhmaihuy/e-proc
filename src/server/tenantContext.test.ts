@@ -4,11 +4,17 @@ import { Request, Response } from 'express';
 import { requirePlatformAdmin } from './middleware/auth.js';
 import { canManageTenantUser, getCurrentTenantConfig } from './tenantContext.js';
 
-test('tenant context defaults legacy installations to FSA', () => {
+test('tenant context binds legacy installations to FSA-CLS', () => {
   const context = getCurrentTenantConfig({});
-  assert.equal(context.slug, 'fsa');
-  assert.equal(context.name, 'FSA');
-  assert.equal(context.contactEmail, 'admin@fsa.local');
+  assert.equal(context.slug, 'fsa-cls');
+  assert.equal(context.name, 'FSA CLS');
+  assert.equal(context.contactEmail, 'admin@fsa-cls.local');
+});
+
+test('tenant context maps an explicit legacy FSA environment to FSA-CLS', () => {
+  const context = getCurrentTenantConfig({ TENANT_SLUG: 'fsa' });
+  assert.equal(context.slug, 'fsa-cls');
+  assert.equal(context.name, 'FSA CLS');
 });
 
 test('tenant context reads the provisioned tenant identity safely', () => {
@@ -58,7 +64,7 @@ test('platform guard accepts only superadmin or an admin from the current server
   process.env.TENANT_SLUG = 'fsa';
   try {
     assert.equal(invokePlatformGuard({ id: 1, username: 'root', role: 'superadmin' }).nextCalled, true);
-    assert.equal(invokePlatformGuard({ id: 2, username: 'fsa-admin', role: 'admin', tenantId: 1, tenantSlug: 'fsa' }).nextCalled, true);
+    assert.equal(invokePlatformGuard({ id: 2, username: 'fsa-admin', role: 'admin', tenantId: 1, tenantSlug: 'fsa-cls' }).nextCalled, true);
     assert.equal(invokePlatformGuard({ id: 3, username: 'other', role: 'admin', tenantId: 2, tenantSlug: 'other' }).statusCode, 403);
     assert.equal(invokePlatformGuard({ id: 4, username: 'legacy', role: 'admin' }).statusCode, 403);
   } finally {

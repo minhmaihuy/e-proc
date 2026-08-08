@@ -7,10 +7,11 @@ interface PrivateRouteProps {
   requireSuperAdmin?: boolean;
   requirePlatformAdmin?: boolean;
   requireUserManager?: boolean;
+  requireTenantAdmin?: boolean;
 }
 
-function PrivateRoute({ children, requireSuperAdmin = false, requirePlatformAdmin = false, requireUserManager = false }: PrivateRouteProps) {
-  const { isAuthenticated, isSuperAdmin, isPlatformAdmin, isUserManager, isLoading } = useAuth();
+function PrivateRoute({ children, requireSuperAdmin = false, requirePlatformAdmin = false, requireUserManager = false, requireTenantAdmin = false }: PrivateRouteProps) {
+  const { isAuthenticated, isSuperAdmin, isPlatformAdmin, isTenantAdmin, isUserManager, isLoading } = useAuth();
 
   // Chờ AuthContext kiểm tra localStorage xong trước khi redirect
   if (isLoading) {
@@ -32,15 +33,19 @@ function PrivateRoute({ children, requireSuperAdmin = false, requirePlatformAdmi
   }
 
   if (requireSuperAdmin && !isSuperAdmin) {
-    return <Navigate to={isPlatformAdmin ? '/admin/dashboard' : '/admin/tenants'} replace />;
+    return <Navigate to={isPlatformAdmin ? '/admin/dashboard' : '/admin/tenant'} replace />;
   }
 
   if (requirePlatformAdmin && !isPlatformAdmin) {
-    return <Navigate to="/admin/tenants" replace />;
+    return <Navigate to="/admin/tenant" replace />;
   }
 
   if (requireUserManager && !isUserManager) {
-    return <Navigate to={isPlatformAdmin ? '/admin/dashboard' : '/admin/tenants'} replace />;
+    return <Navigate to={isPlatformAdmin ? '/admin/dashboard' : '/admin/tenant'} replace />;
+  }
+
+  if (requireTenantAdmin && !isTenantAdmin) {
+    return <Navigate to={isSuperAdmin ? '/admin/tenants' : '/admin/dashboard'} replace />;
   }
 
   return <>{children}</>;

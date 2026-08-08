@@ -8,6 +8,8 @@ interface AuthContextType {
   tenantId: number | null;
   tenantSlug: string | null;
   tenantName: string | null;
+  serverTenantSlug: string;
+  serverTenantName: string;
   isAuthenticated: boolean;
   isSuperAdmin: boolean;
   isPlatformAdmin: boolean;
@@ -20,6 +22,8 @@ interface AuthContextType {
     tenantId: number | null;
     tenantSlug: string | null;
     tenantName: string | null;
+    serverTenantSlug: string;
+    serverTenantName: string;
   }>;
   logout: () => void;
 }
@@ -33,6 +37,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [tenantId, setTenantId] = useState<number | null>(null);
   const [tenantSlug, setTenantSlug] = useState<string | null>(null);
   const [tenantName, setTenantName] = useState<string | null>(null);
+  const [serverTenantSlug, setServerTenantSlug] = useState('fsa-cls');
+  const [serverTenantName, setServerTenantName] = useState('FSA CLS');
   const [isLoading, setIsLoading] = useState(true);
 
   // Restore session từ localStorage khi app mount
@@ -44,6 +50,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const storedTenantId = localStorage.getItem('adminTenantId');
     const storedTenantSlug = localStorage.getItem('adminTenantSlug');
     const storedTenantName = localStorage.getItem('adminTenantName');
+    const storedServerTenantSlug = localStorage.getItem('adminServerTenantSlug');
+    const storedServerTenantName = localStorage.getItem('adminServerTenantName');
 
     if (stored && expiresAt) {
       // Kiểm tra token có còn hạn không
@@ -54,6 +62,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setTenantId(storedTenantId ? Number(storedTenantId) : null);
         setTenantSlug(storedTenantSlug);
         setTenantName(storedTenantName);
+        setServerTenantSlug(storedServerTenantSlug || 'fsa-cls');
+        setServerTenantName(storedServerTenantName || 'FSA CLS');
       } else {
         // Token đã hết hạn — xóa đi
         localStorage.removeItem('adminToken');
@@ -63,6 +73,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         localStorage.removeItem('adminTenantId');
         localStorage.removeItem('adminTenantSlug');
         localStorage.removeItem('adminTenantName');
+        localStorage.removeItem('adminServerTenantSlug');
+        localStorage.removeItem('adminServerTenantName');
       }
     }
     setIsLoading(false);
@@ -78,6 +90,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       tenantId: newTenantId,
       tenantSlug: newTenantSlug,
       tenantName: newTenantName,
+      serverTenantSlug: newServerTenantSlug,
+      serverTenantName: newServerTenantName,
     } = res.data;
 
     localStorage.setItem('adminToken', newToken);
@@ -90,18 +104,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     else localStorage.removeItem('adminTenantSlug');
     if (newTenantName) localStorage.setItem('adminTenantName', newTenantName);
     else localStorage.removeItem('adminTenantName');
+    localStorage.setItem('adminServerTenantSlug', newServerTenantSlug || 'fsa-cls');
+    localStorage.setItem('adminServerTenantName', newServerTenantName || 'FSA CLS');
     setToken(newToken);
     setRole(newRole || 'admin');
     setUserId(Number(newUserId));
     setTenantId(newTenantId || null);
     setTenantSlug(newTenantSlug || null);
     setTenantName(newTenantName || null);
+    setServerTenantSlug(newServerTenantSlug || 'fsa-cls');
+    setServerTenantName(newServerTenantName || 'FSA CLS');
     return {
       role: newRole || 'admin',
       userId: Number(newUserId),
       tenantId: newTenantId || null,
       tenantSlug: newTenantSlug || null,
       tenantName: newTenantName || null,
+      serverTenantSlug: newServerTenantSlug || 'fsa-cls',
+      serverTenantName: newServerTenantName || 'FSA CLS',
     };
   };
 
@@ -114,12 +134,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('adminTenantId');
     localStorage.removeItem('adminTenantSlug');
     localStorage.removeItem('adminTenantName');
+    localStorage.removeItem('adminServerTenantSlug');
+    localStorage.removeItem('adminServerTenantName');
     setToken(null);
     setRole(null);
     setUserId(null);
     setTenantId(null);
     setTenantSlug(null);
     setTenantName(null);
+    setServerTenantSlug('fsa-cls');
+    setServerTenantName('FSA CLS');
   };
 
   return (
@@ -131,6 +155,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         tenantId,
         tenantSlug,
         tenantName,
+        serverTenantSlug,
+        serverTenantName,
         isAuthenticated: !!token,
         isSuperAdmin: role === 'superadmin',
         isPlatformAdmin: role === 'superadmin' || (role === 'admin' && Boolean(tenantId) && Boolean(tenantSlug)),

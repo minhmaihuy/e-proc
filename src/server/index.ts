@@ -3,6 +3,7 @@ import cors from 'cors';
 import session from 'express-session';
 import dotenv from 'dotenv';
 import { initDatabase } from './db/postgres.js';
+import { initControlPlaneDatabase } from './db/controlPlane.js';
 import adminRoutes from './routes/admin.js';
 import tenantRoutes from './routes/tenants.js';
 import studentRoutes from './routes/student.js';
@@ -162,11 +163,12 @@ process.on('SIGTERM', () => {
   process.exit(0);
 });
 
-initDatabase()
-  .then(() => console.log('Database initialized'))
+export const initialization = initDatabase()
+  .then(() => console.log('Assessment data-plane initialized'))
+  .then(() => initControlPlaneDatabase())
+  .then(() => console.log('Tenant control-plane initialized'))
   .then(() => cache.init())
   .then(() => cache.processQueue(5))
-  .then(() => console.log('Initial queue processed'))
-  .catch(err => console.error('Init error:', err));
+  .then(() => console.log('Initial queue processed'));
 
 export default app;

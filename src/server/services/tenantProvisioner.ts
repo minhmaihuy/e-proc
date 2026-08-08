@@ -2,7 +2,7 @@ import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
-import db from '../db/postgres.js';
+import db from '../db/controlPlane.js';
 
 const execFileAsync = promisify(execFile);
 const SLUG_PATTERN = /^[a-z][a-z0-9-]{2,30}$/;

@@ -3,6 +3,7 @@ import multer from 'multer';
 import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
 import db from '../db/postgres.js';
+import controlDb from '../db/controlPlane.js';
 import { normalizeUnicode, stripHtml, sanitizeFilename, buildContentDisposition } from '../../utils/string.js';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
@@ -34,7 +35,7 @@ const loginRateLimit = rateLimit({
 // =============================================
 // Lưu ý: chức năng tự đăng ký admin (/is-initialized, /setup) đã bị gỡ bỏ vì lý
 // do bảo mật. Tài khoản superadmin đầu tiên được seed tự động khi admin_users
-// còn trống (xem seedSuperAdmin() trong src/server/db/postgres.ts); các tài
+// còn trống (xem seedSuperAdmin() trong src/server/db/controlPlane.ts); các tài
 // khoản admin khác chỉ được tạo bởi superadmin qua /api/admin/users.
 
 // POST /api/admin/login — Đăng nhập, nhận JWT
@@ -49,7 +50,7 @@ router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Invalid login request' });
     }
 
-    const result = await db.query(
+    const result = await controlDb.query(
       `SELECT u.*, t.slug AS tenant_slug, t.name AS tenant_name, t.status AS tenant_status,
               t.app_url AS tenant_app_url
        FROM admin_users u
@@ -103,7 +104,12 @@ router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
 
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     console.log('[Auth] Login success:', username, 'role:', role, 'tenant:', tenantSlug || 'global');
-    return res.json({ token, expiresAt, userId: Number(user.id), role, tenantId, tenantSlug, tenantName });
+    const serverTenant = getCurrentTenantConfig();
+    return res.json({
+      token, expiresAt, userId: Number(user.id), role, tenantId, tenantSlug, tenantName,
+      serverTenantSlug: serverTenant.slug,
+      serverTenantName: serverTenant.name,
+    });
   } catch (err: any) {
     console.error('[Auth] Login error:', err);
     return res.status(500).json({ error: 'Login failed' });
@@ -133,7 +139,7 @@ router.put('/change-password', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'New password must be at least 8 characters' });
     }
 
-    const result = await db.query(
+    const result = await controlDb.query(
       'SELECT * FROM admin_users WHERE id = ?',
       [adminUser!.id]
     );
@@ -148,7 +154,7 @@ router.put('/change-password', async (req: Request, res: Response) => {
     }
 
     const newHash = await bcrypt.hash(newPassword, 10);
-    await db.query(
+    await controlDb.query(
       'UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [newHash, adminUser!.id]
     );
@@ -194,13 +200,13 @@ function canManageUser(req: Request, target: ManagedUserRow): boolean {
 
 async function tenantExists(tenantId: number): Promise<boolean> {
   if (!Number.isInteger(tenantId) || tenantId <= 0) return false;
-  const result = await db.query('SELECT id FROM tenants WHERE id = ?', [tenantId]);
+  const result = await controlDb.query('SELECT id FROM tenants WHERE id = ?', [tenantId]);
   return Boolean(result.rows[0]);
 }
 
 async function auditUserChange(tenantId: number | null, actorId: number, action: string, detail: Record<string, unknown>) {
   if (!tenantId) return;
-  await db.query(
+  await controlDb.query(
     'INSERT INTO tenant_audit_events (tenant_id, actor_id, action, detail) VALUES (?, ?, ?, ?)',
     [tenantId, actorId, action, JSON.stringify(detail)],
   );
@@ -208,8 +214,8 @@ async function auditUserChange(tenantId: number | null, actorId: number, action:
 
 async function isLastRoleHolder(role: 'superadmin' | 'tenant_admin', tenantId?: number | null): Promise<boolean> {
   const result = role === 'superadmin'
-    ? await db.query("SELECT COUNT(*) AS count FROM admin_users WHERE role = 'superadmin'")
-    : await db.query("SELECT COUNT(*) AS count FROM admin_users WHERE role = 'tenant_admin' AND tenant_id = ?", [tenantId]);
+    ? await controlDb.query("SELECT COUNT(*) AS count FROM admin_users WHERE role = 'superadmin'")
+    : await controlDb.query("SELECT COUNT(*) AS count FROM admin_users WHERE role = 'tenant_admin' AND tenant_id = ?", [tenantId]);
   return Number(result.rows[0]?.count ?? result.rows[0]?.COUNT ?? 0) <= 1;
 }
 
@@ -224,8 +230,8 @@ router.get('/users', requireUserManager, async (req: Request, res: Response) => 
                            t.slug AS tenant_slug, t.name AS tenant_name
                     FROM admin_users u LEFT JOIN tenants t ON t.id = u.tenant_id`;
     const result = req.adminUser!.role === 'superadmin'
-      ? await db.query(`${select} ORDER BY COALESCE(t.name, ''), u.created_at ASC`)
-      : await db.query(`${select} WHERE u.tenant_id = ? AND u.role <> 'superadmin' ORDER BY u.created_at ASC`, [req.adminUser!.tenantId]);
+      ? await controlDb.query(`${select} ORDER BY COALESCE(t.name, ''), u.created_at ASC`)
+      : await controlDb.query(`${select} WHERE u.tenant_id = ? AND u.role <> 'superadmin' ORDER BY u.created_at ASC`, [req.adminUser!.tenantId]);
     return res.json(result.rows);
   } catch (err: any) {
     console.error('[Users] List error:', err);
@@ -255,13 +261,13 @@ router.post('/users', requireUserManager, async (req: Request, res: Response) =>
       return res.status(400).json({ error: 'A valid tenant is required for non-superadmin accounts.' });
     }
 
-    const existing = await db.query('SELECT id FROM admin_users WHERE username = ?', [username]);
+    const existing = await controlDb.query('SELECT id FROM admin_users WHERE username = ?', [username]);
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: 'Username already exists' });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    await db.query(
+    await controlDb.query(
       'INSERT INTO admin_users (username, password_hash, role, tenant_id) VALUES (?, ?, ?, ?)',
       [username, passwordHash, role, tenantId]
     );
@@ -281,7 +287,7 @@ router.put('/users/:id', requireUserManager, async (req: Request, res: Response)
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid user ID.' });
 
-    const existing = await db.query('SELECT * FROM admin_users WHERE id = ?', [id]);
+    const existing = await controlDb.query('SELECT * FROM admin_users WHERE id = ?', [id]);
     const target = existing.rows[0];
     if (!target || !canManageUser(req, target)) {
       return res.status(404).json({ error: 'Admin user not found' });
@@ -322,12 +328,12 @@ router.put('/users/:id', requireUserManager, async (req: Request, res: Response)
     }
     if (password !== undefined) {
       const passwordHash = await bcrypt.hash(password, 12);
-      await db.query(
+      await controlDb.query(
         'UPDATE admin_users SET role = ?, tenant_id = ?, password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [role, tenantId, passwordHash, id],
       );
     } else {
-      await db.query(
+      await controlDb.query(
         'UPDATE admin_users SET role = ?, tenant_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [role, tenantId, id],
       );
@@ -358,7 +364,7 @@ router.delete('/users/:id', requireUserManager, async (req: Request, res: Respon
       return res.status(400).json({ error: 'You cannot delete your own account' });
     }
 
-    const existing = await db.query('SELECT * FROM admin_users WHERE id = ?', [id]);
+    const existing = await controlDb.query('SELECT * FROM admin_users WHERE id = ?', [id]);
     const target = existing.rows[0];
     if (!target || !canManageUser(req, target)) {
       return res.status(404).json({ error: 'Admin user not found' });
@@ -372,7 +378,7 @@ router.delete('/users/:id', requireUserManager, async (req: Request, res: Respon
       return res.status(400).json({ error: 'Cannot delete the last tenant administrator' });
     }
 
-    await db.query('DELETE FROM admin_users WHERE id = ?', [id]);
+    await controlDb.query('DELETE FROM admin_users WHERE id = ?', [id]);
     await auditUserChange(target.tenant_id ? Number(target.tenant_id) : null, req.adminUser!.id, 'tenant_user.deleted', {
       username: target.username, role: target.role,
     });

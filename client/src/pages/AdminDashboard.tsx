@@ -7,7 +7,7 @@ import AdminNav from '../components/AdminNav';
 function AdminDashboard() {
   const [batches, setBatches] = useState<any[]>([]);
   const [stats, setStats] = useState({ totalBatches: 0, totalStudents: 0 });
-  const { logout } = useAuth();
+  const { logout, tenantName, tenantSlug, serverTenantName, serverTenantSlug, isSuperAdmin } = useAuth();
 
   // Đổi mật khẩu (admin & mod đều dùng được — backend dùng id từ token)
   const [showChangePw, setShowChangePw] = useState(false);
@@ -123,6 +123,16 @@ function AdminDashboard() {
       </div>
 
       <AdminNav />
+
+      <div className="card" style={{ marginBottom: 20 }}>
+        <span className="eyebrow">ASSESSMENT DATA-PLANE</span>
+        <h2 style={{ marginBottom: 6 }}>{serverTenantName}</h2>
+        <p style={{ margin: 0, color: 'var(--text-light)' }}>
+          Dashboard, batches, students and results shown here belong to <code>{serverTenantSlug}</code>.
+          {isSuperAdmin && ' Global tenant configuration is managed separately in Tenant control plane.'}
+          {!isSuperAdmin && tenantSlug && ` Signed in as ${tenantName || tenantSlug} (${tenantSlug}).`}
+        </p>
+      </div>
 
       <div className="card">
         <h3>Recent Batches</h3>

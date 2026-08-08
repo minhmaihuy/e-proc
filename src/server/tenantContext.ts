@@ -33,19 +33,20 @@ function decodeBase64(value: string | undefined): string {
 }
 
 export function getCurrentTenantConfig(env: NodeJS.ProcessEnv = process.env): CurrentTenantConfig {
-  const requestedSlug = (env.TENANT_SLUG || env.DEFAULT_TENANT_SLUG || 'fsa').trim().toLowerCase();
-  const slug = TENANT_SLUG_PATTERN.test(requestedSlug) ? requestedSlug : 'fsa';
-  const fallbackName = slug === 'fsa'
-    ? 'FSA'
+  const legacySlug = (env.TENANT_SLUG || env.DEFAULT_TENANT_SLUG || 'fsa-cls').trim().toLowerCase();
+  const requestedSlug = legacySlug === 'fsa' ? 'fsa-cls' : legacySlug;
+  const slug = TENANT_SLUG_PATTERN.test(requestedSlug) ? requestedSlug : 'fsa-cls';
+  const fallbackName = slug === 'fsa-cls'
+    ? 'FSA CLS'
     : slug.replace(/(^|-)([a-z])/g, (_match, prefix, letter) => `${prefix}${letter.toUpperCase()}`);
   const requestedName = decodeBase64(env.DEFAULT_TENANT_NAME_B64) || env.DEFAULT_TENANT_NAME || fallbackName;
-  const requestedEmail = (decodeBase64(env.DEFAULT_TENANT_CONTACT_EMAIL_B64) || env.DEFAULT_TENANT_CONTACT_EMAIL || 'admin@fsa.local').trim().toLowerCase();
+  const requestedEmail = (decodeBase64(env.DEFAULT_TENANT_CONTACT_EMAIL_B64) || env.DEFAULT_TENANT_CONTACT_EMAIL || 'admin@fsa-cls.local').trim().toLowerCase();
   const allowedOrigin = (env.ALLOWED_ORIGINS || '').split(',').map(value => value.trim()).find(Boolean) || '';
 
   return {
     slug,
     name: requestedName.trim().replace(/[\r\n]/g, ' ').slice(0, 160) || fallbackName,
-    contactEmail: EMAIL_PATTERN.test(requestedEmail) ? requestedEmail : 'admin@fsa.local',
+    contactEmail: EMAIL_PATTERN.test(requestedEmail) ? requestedEmail : 'admin@fsa-cls.local',
     awsRegion: (env.AWS_REGION || 'ap-southeast-1').trim(),
     domainName: (env.DEFAULT_TENANT_DOMAIN || '').trim().toLowerCase(),
     appUrl: (env.DEFAULT_TENANT_APP_URL || allowedOrigin).trim(),

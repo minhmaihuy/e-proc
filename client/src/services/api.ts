@@ -118,6 +118,8 @@ api.interceptors.response.use(
       localStorage.removeItem('adminTenantId');
       localStorage.removeItem('adminTenantSlug');
       localStorage.removeItem('adminTenantName');
+      localStorage.removeItem('adminServerTenantSlug');
+      localStorage.removeItem('adminServerTenantName');
       window.location.href = '/admin';
     }
     return Promise.reject(error);

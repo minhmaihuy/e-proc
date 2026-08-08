@@ -17,7 +17,7 @@ function AdminLogin() {
 
     try {
       const session = await login(username, password);
-      navigate(session.role === 'tenant_admin' ? '/admin/tenants' : '/admin/dashboard');
+      navigate(session.role === 'tenant_admin' ? '/admin/tenant' : '/admin/dashboard');
     } catch (err: any) {
       const msg = err.response?.data?.error || 'Login failed. Please try again.';
       setError(msg);
@@ -42,7 +42,7 @@ function AdminLogin() {
         <div className="login-mark">EP</div>
         <span className="eyebrow">SECURE ACCESS</span>
         <h2>Welcome back</h2>
-        <p className="login-subtitle">Your account selects its tenant automatically. Legacy accounts use FSA.</p>
+        <p className="login-subtitle">Your account selects its tenant automatically. Existing platform data belongs to FSA CLS.</p>
         <form onSubmit={handleSubmit}>
           <div className="form-group">
             <label htmlFor="admin-username">Username</label>

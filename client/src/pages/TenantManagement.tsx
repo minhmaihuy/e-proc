@@ -58,8 +58,9 @@ function statusLabel(status: string): string {
   return status.replace(/_/g, ' ').replace(/\b\w/g, (letter: string) => letter.toUpperCase());
 }
 
-function TenantManagement() {
+function TenantManagement({ scope }: { scope: 'control' | 'workspace' }) {
   const { isSuperAdmin, isTenantAdmin, logout } = useAuth();
+  const isControlPlane = scope === 'control' && isSuperAdmin;
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [form, setForm] = useState<TenantConfiguration>(EMPTY_CONFIG);
@@ -229,11 +230,11 @@ function TenantManagement() {
       <header className="admin-topbar">
         <div>
           <span className="eyebrow">E-PROC CONTROL PLANE</span>
-          <h1>{isSuperAdmin ? 'Tenant operations' : 'My tenant workspace'}</h1>
-          <p>{isSuperAdmin ? 'Approve customer environments and control every Terraform deployment.' : 'Configure your environment and submit changes for platform approval.'}</p>
+          <h1>{isControlPlane ? 'Tenant operations' : 'My tenant workspace'}</h1>
+          <p>{isControlPlane ? 'Approve customer environments and control every Terraform deployment.' : 'Configure your environment and submit changes for platform approval.'}</p>
         </div>
         <div className="topbar-actions">
-          {isSuperAdmin && <button className="btn btn-primary" onClick={() => setShowCreate(true)}>New tenant</button>}
+          {isControlPlane && <button className="btn btn-primary" onClick={() => setShowCreate(true)}>New tenant</button>}
           <button className="btn btn-secondary" onClick={logout}>Sign out</button>
         </div>
       </header>
@@ -254,11 +255,11 @@ function TenantManagement() {
           <div className="empty-icon">T</div>
           <h2>No tenants yet</h2>
           <p>Create the first customer workspace and its tenant administrator account.</p>
-          {isSuperAdmin && <button className="btn btn-primary" onClick={() => setShowCreate(true)}>Create tenant</button>}
+          {isControlPlane && <button className="btn btn-primary" onClick={() => setShowCreate(true)}>Create tenant</button>}
         </section>
       ) : (
         <div className={`tenant-layout ${isTenantAdmin ? 'tenant-layout-single' : ''}`}>
-          {isSuperAdmin && (
+          {isControlPlane && (
             <aside className="tenant-list" aria-label="Tenant list">
               <div className="section-heading"><div><span className="eyebrow">CUSTOMERS</span><h2>Environments</h2></div><span className="count-pill">{tenants.length}</span></div>
               {tenants.map((tenant) => (
@@ -292,7 +293,7 @@ function TenantManagement() {
               {selectedTenant.status === 'pending' && (
                 <div className="approval-banner">
                   <span>Configuration waiting for platform review.</span>
-                  {isSuperAdmin && <button className="btn btn-primary" disabled={!!action} onClick={handleApprove}>Approve tenant</button>}
+                  {isControlPlane && <button className="btn btn-primary" disabled={!!action} onClick={handleApprove}>Approve tenant</button>}
                 </div>
               )}
 
@@ -311,8 +312,8 @@ function TenantManagement() {
                   <label className="field"><span>Domain name</span><input placeholder="customer.example.com" value={form.domain_name} onChange={(event) => handleConfigChange('domain_name', event.target.value)} /></label>
                   <label className="field"><span>Repository</span><input value={form.repository_url} onChange={(event) => handleConfigChange('repository_url', event.target.value)} required /></label>
                   <label className="field"><span>Branch / tag</span><input value={form.repository_ref} onChange={(event) => handleConfigChange('repository_ref', event.target.value)} required /></label>
-                  {isSuperAdmin && <label className="field"><span>Route53 zone ID</span><input value={form.route53_zone_id || ''} onChange={(event) => handleConfigChange('route53_zone_id', event.target.value)} /></label>}
-                  {isSuperAdmin && <label className="field field-wide"><span>AWS Secrets Manager ARN</span><input type="password" autoComplete="off" placeholder="arn:aws:secretsmanager:..." value={form.secret_arn || ''} onChange={(event) => handleConfigChange('secret_arn', event.target.value)} /></label>}
+                  {isControlPlane && <label className="field"><span>Route53 zone ID</span><input value={form.route53_zone_id || ''} onChange={(event) => handleConfigChange('route53_zone_id', event.target.value)} /></label>}
+                  {isControlPlane && <label className="field field-wide"><span>AWS Secrets Manager ARN</span><input type="password" autoComplete="off" placeholder="arn:aws:secretsmanager:..." value={form.secret_arn || ''} onChange={(event) => handleConfigChange('secret_arn', event.target.value)} /></label>}
                 </div>
                 <div className="form-footer">
                   <p>Secrets remain in AWS Secrets Manager. Only the ARN is stored here.</p>
@@ -330,7 +331,7 @@ function TenantManagement() {
                   <div><span>State</span><strong>{selectedTenant.terraform_state_key || `tenants/${selectedTenant.slug}/terraform.tfstate`}</strong></div>
                 </div>
                 {selectedTenant.last_error && <div className="notice notice-error"><strong>Last error:</strong> {selectedTenant.last_error}</div>}
-                {isSuperAdmin && (
+                {isControlPlane && (
                   <div className="provision-actions">
                     <button className="btn btn-secondary" disabled={selectedTenant.status !== 'approved' || !!action} onClick={handlePlan}>{action === 'plan' ? 'Queuing...' : 'Run plan'}</button>
                     <button className="btn btn-primary" disabled={selectedTenant.status !== 'approved' || !hasReviewedPlan || !!action} onClick={handleProvision}>{action === 'provision' ? 'Queuing...' : 'Create / update server'}</button>
@@ -349,7 +350,7 @@ function TenantManagement() {
         </div>
       )}
 
-      {showCreate && isSuperAdmin && (
+      {showCreate && isControlPlane && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowCreate(false)}>
           <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="create-tenant-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="section-heading"><div><span className="eyebrow">ONBOARD CUSTOMER</span><h2 id="create-tenant-title">Create tenant</h2></div><button className="icon-button" type="button" aria-label="Close" onClick={() => setShowCreate(false)}>×</button></div>

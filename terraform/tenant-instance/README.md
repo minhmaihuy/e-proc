@@ -28,7 +28,8 @@ key = tenants/<tenant-slug>/terraform.tfstate
 3. AWS credentials on the control-plane host with least-privilege access to state
    storage and the resources in this module.
 4. One Secrets Manager secret per tenant. Its JSON may contain:
-   `DATABASE_URL`, `JWT_SECRET`, `SESSION_SECRET`, `GEMINI_API_KEY`,
+   `DATABASE_URL` (tenant assessment data), `CONTROL_DATABASE_URL` (global tenant/admin control plane),
+   `JWT_SECRET`, `SESSION_SECRET`, `GEMINI_API_KEY`,
    `OPENAI_API_KEY`, and `GROQ_API_KEY`.
 5. Terraform CLI 1.5 or newer on a persistent self-hosted control-plane machine.
 6. For compiler-enabled tenants, a reviewed compiler image published to ECR and
