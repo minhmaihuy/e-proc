@@ -1,4 +1,4 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
@@ -9,7 +9,7 @@ import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
-import { authMiddleware, requirePlatformAdmin } from '../middleware/auth.js';
+import { authMiddleware, requireTenantDataAdmin, requireTenantUserManager } from '../middleware/auth.js';
 import { canManageTenantUser, getCurrentTenantConfig } from '../tenantContext.js';
 
 dotenv.config();
@@ -87,7 +87,7 @@ router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
       console.warn('[Security] Blocked login for suspended tenant', { userId: user.id, tenantId });
       return res.status(403).json({ error: 'Tenant access is suspended.' });
     }
-    if (role === 'admin' && user.tenant_slug !== getCurrentTenantConfig().slug) {
+    if (!isSuperAdmin && user.tenant_slug !== getCurrentTenantConfig().slug) {
       return res.status(403).json({
         error: user.tenant_app_url
           ? `Use your tenant application to sign in: ${user.tenant_app_url}`
@@ -169,26 +169,15 @@ router.put('/change-password', async (req: Request, res: Response) => {
 
 // User-management routes are intentionally registered before the platform-admin
 // gate so tenant_admin can manage identities in its own JWT tenant.
-type ManagedAdminRole = 'admin' | 'tenant_admin' | 'superadmin';
+type ManagedAdminRole = 'admin' | 'tenant_admin';
 interface ManagedUserRow {
   id: number;
   username: string;
   role: string;
   tenant_id?: number | null;
 }
-const MANAGED_ADMIN_ROLES = new Set<ManagedAdminRole>(['admin', 'tenant_admin', 'superadmin']);
+const MANAGED_ADMIN_ROLES = new Set<ManagedAdminRole>(['admin', 'tenant_admin']);
 const USERNAME_PATTERN = /^[A-Za-z0-9_.@-]{3,100}$/;
-
-function requireUserManager(req: Request, res: Response, next: NextFunction) {
-  if (req.adminUser?.role !== 'superadmin' && req.adminUser?.role !== 'tenant_admin') {
-    console.warn('[Security] Blocked user-management action', { userId: req.adminUser?.id, role: req.adminUser?.role });
-    return res.status(403).json({ error: 'Forbidden: User manager access required' });
-  }
-  if (req.adminUser.role === 'tenant_admin' && !req.adminUser.tenantId) {
-    return res.status(403).json({ error: 'Tenant membership is required' });
-  }
-  next();
-}
 
 function canManageUser(req: Request, target: ManagedUserRow): boolean {
   if (!req.adminUser) return false;
@@ -212,26 +201,28 @@ async function auditUserChange(tenantId: number | null, actorId: number, action:
   );
 }
 
-async function isLastRoleHolder(role: 'superadmin' | 'tenant_admin', tenantId?: number | null): Promise<boolean> {
-  const result = role === 'superadmin'
-    ? await controlDb.query("SELECT COUNT(*) AS count FROM admin_users WHERE role = 'superadmin'")
-    : await controlDb.query("SELECT COUNT(*) AS count FROM admin_users WHERE role = 'tenant_admin' AND tenant_id = ?", [tenantId]);
+async function isLastTenantAdmin(tenantId?: number | null): Promise<boolean> {
+  const result = await controlDb.query(
+    "SELECT COUNT(*) AS count FROM admin_users WHERE role = 'tenant_admin' AND tenant_id = ?",
+    [tenantId],
+  );
   return Number(result.rows[0]?.count ?? result.rows[0]?.COUNT ?? 0) <= 1;
 }
 
 // =============================================
-// USER MANAGEMENT — superadmin sees all; tenant_admin is tenant-scoped
+// USER MANAGEMENT — tenant_admin is scoped to the current tenant
 // =============================================
 
 // GET /api/admin/users — Danh sách tài khoản admin (không trả password_hash)
-router.get('/users', requireUserManager, async (req: Request, res: Response) => {
+router.get('/users', requireTenantUserManager, async (req: Request, res: Response) => {
   try {
     const select = `SELECT u.id, u.username, u.role, u.tenant_id, u.created_at, u.updated_at,
                            t.slug AS tenant_slug, t.name AS tenant_name
                     FROM admin_users u LEFT JOIN tenants t ON t.id = u.tenant_id`;
-    const result = req.adminUser!.role === 'superadmin'
-      ? await controlDb.query(`${select} ORDER BY COALESCE(t.name, ''), u.created_at ASC`)
-      : await controlDb.query(`${select} WHERE u.tenant_id = ? AND u.role <> 'superadmin' ORDER BY u.created_at ASC`, [req.adminUser!.tenantId]);
+    const result = await controlDb.query(
+      `${select} WHERE u.tenant_id = ? AND u.role <> 'superadmin' ORDER BY u.created_at ASC`,
+      [req.adminUser!.tenantId],
+    );
     return res.json(result.rows);
   } catch (err: any) {
     console.error('[Users] List error:', err);
@@ -240,7 +231,7 @@ router.get('/users', requireUserManager, async (req: Request, res: Response) => 
 });
 
 // POST /api/admin/users — Tạo tài khoản admin mới
-router.post('/users', requireUserManager, async (req: Request, res: Response) => {
+router.post('/users', requireTenantUserManager, async (req: Request, res: Response) => {
   try {
     const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
@@ -249,16 +240,9 @@ router.post('/users', requireUserManager, async (req: Request, res: Response) =>
     if (!USERNAME_PATTERN.test(username)) return res.status(400).json({ error: 'Username must be 3-100 valid characters.' });
     if (password.length < 8 || password.length > 128) return res.status(400).json({ error: 'Password must be 8-128 characters.' });
     if (!MANAGED_ADMIN_ROLES.has(role)) return res.status(400).json({ error: 'Invalid role.' });
-    if (req.adminUser!.role !== 'superadmin' && role === 'superadmin') {
-      return res.status(403).json({ error: 'Only superadmin can create superadmin accounts.' });
-    }
-
-    const requestedTenantId = Number(req.body?.tenant_id ?? req.body?.tenantId);
-    const tenantId = role === 'superadmin'
-      ? null
-      : req.adminUser!.role === 'superadmin' ? requestedTenantId : req.adminUser!.tenantId!;
-    if (role !== 'superadmin' && !(await tenantExists(Number(tenantId)))) {
-      return res.status(400).json({ error: 'A valid tenant is required for non-superadmin accounts.' });
+    const tenantId = req.adminUser!.tenantId!;
+    if (!(await tenantExists(Number(tenantId)))) {
+      return res.status(400).json({ error: 'A valid tenant is required for tenant accounts.' });
     }
 
     const existing = await controlDb.query('SELECT id FROM admin_users WHERE username = ?', [username]);
@@ -282,7 +266,7 @@ router.post('/users', requireUserManager, async (req: Request, res: Response) =>
 });
 
 // PUT /api/admin/users/:id — Đổi role và/hoặc reset password của một tài khoản admin
-router.put('/users/:id', requireUserManager, async (req: Request, res: Response) => {
+router.put('/users/:id', requireTenantUserManager, async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid user ID.' });
@@ -295,30 +279,17 @@ router.put('/users/:id', requireUserManager, async (req: Request, res: Response)
 
     const role = (req.body?.role ?? target.role) as ManagedAdminRole;
     if (!MANAGED_ADMIN_ROLES.has(role)) return res.status(400).json({ error: 'Invalid role.' });
-    if (req.adminUser!.role !== 'superadmin' && role === 'superadmin') {
-      return res.status(403).json({ error: 'Only superadmin can grant superadmin access.' });
-    }
-
-    const hasTenantInput = req.body?.tenant_id !== undefined || req.body?.tenantId !== undefined;
-    const requestedTenantId = Number(req.body?.tenant_id ?? req.body?.tenantId);
-    const tenantId = role === 'superadmin'
-      ? null
-      : req.adminUser!.role === 'superadmin'
-        ? (hasTenantInput ? requestedTenantId : Number(target.tenant_id))
-        : req.adminUser!.tenantId!;
-    if (role !== 'superadmin' && !(await tenantExists(Number(tenantId)))) {
-      return res.status(400).json({ error: 'A valid tenant is required for non-superadmin accounts.' });
+    const tenantId = req.adminUser!.tenantId!;
+    if (!(await tenantExists(Number(tenantId)))) {
+      return res.status(400).json({ error: 'A valid tenant is required for tenant accounts.' });
     }
     // Self-service password changes require the current password on /change-password.
     if (id === req.adminUser!.id && (role !== target.role || Number(tenantId) !== Number(target.tenant_id) || req.body?.password !== undefined)) {
       return res.status(400).json({ error: 'Use Change Password for your own account; you cannot change your own role or tenant.' });
     }
-    if (target.role === 'superadmin' && role !== 'superadmin' && await isLastRoleHolder('superadmin')) {
-      return res.status(400).json({ error: 'Cannot demote the last remaining superadmin.' });
-    }
     const leavesTenantAdminRole = target.role === 'tenant_admin'
       && (role !== 'tenant_admin' || Number(tenantId) !== Number(target.tenant_id));
-    if (leavesTenantAdminRole && await isLastRoleHolder('tenant_admin', Number(target.tenant_id))) {
+    if (leavesTenantAdminRole && await isLastTenantAdmin(Number(target.tenant_id))) {
       return res.status(400).json({ error: 'Cannot remove the last tenant administrator.' });
     }
 
@@ -355,7 +326,7 @@ router.put('/users/:id', requireUserManager, async (req: Request, res: Response)
 });
 
 // DELETE /api/admin/users/:id — Xoá tài khoản admin
-router.delete('/users/:id', requireUserManager, async (req: Request, res: Response) => {
+router.delete('/users/:id', requireTenantUserManager, async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid user ID.' });
@@ -370,11 +341,7 @@ router.delete('/users/:id', requireUserManager, async (req: Request, res: Respon
       return res.status(404).json({ error: 'Admin user not found' });
     }
 
-    // Không cho xoá superadmin cuối cùng — tránh khoá toàn bộ hệ thống quản trị
-    if (target.role === 'superadmin' && await isLastRoleHolder('superadmin')) {
-      return res.status(400).json({ error: 'Cannot delete the last remaining superadmin' });
-    }
-    if (target.role === 'tenant_admin' && await isLastRoleHolder('tenant_admin', Number(target.tenant_id))) {
+    if (target.role === 'tenant_admin' && await isLastTenantAdmin(Number(target.tenant_id))) {
       return res.status(400).json({ error: 'Cannot delete the last tenant administrator' });
     }
 
@@ -391,9 +358,9 @@ router.delete('/users/:id', requireUserManager, async (req: Request, res: Respon
 });
 
 // Client gửi UTC ISO string, server chỉ cần validate và normalize
-// Existing exam, question-bank and platform-management routes stay isolated to
-// superadmin and the `admin` role of this server's current tenant.
-router.use(requirePlatformAdmin);
+// Assessment routes belong only to admin/tenant_admin accounts of this server's tenant.
+// A global superadmin is deliberately excluded from tenant assessment data.
+router.use(requireTenantDataAdmin);
 
 const toStorageTime = (isoStr: string): string => {
   if (!isoStr) return isoStr;
@@ -1121,11 +1088,11 @@ router.post('/batches', async (req: Request, res: Response) => {
     const endUTC = toStorageTime(end_time);
     console.log('[CreateBatch] Times (UTC stored):', { start_time: startUTC, end_time: endUTC });
 
-    // Chế độ record ('none' | 'local' | 's3') chỉ được đặt khác 'none' bởi role 'superadmin'.
-    // Admin thường tạo batch → luôn ép 'none'. record_enabled giữ đồng bộ (= mode==='s3') để tương thích ngược.
+    // Only tenant_admin may set recording to local or S3. Regular admin is forced to none.
+    // record_enabled remains synchronized (= mode==='s3') for backward compatibility.
     const RECORD_MODES = ['none', 'local', 's3'];
     let recordMode = RECORD_MODES.includes(record_mode) ? record_mode : 'none';
-    if (req.adminUser?.role !== 'superadmin') recordMode = 'none';
+    if (req.adminUser?.role !== 'tenant_admin') recordMode = 'none';
     const recordFlag = recordMode === 's3' ? 1 : 0;
 
     const practiceExamId = isPractice ? parseInt(practice_exam_id) : null;
@@ -1145,7 +1112,7 @@ router.post('/batches', async (req: Request, res: Response) => {
     res.json({ success: true, id: result.lastInsertRowid || result.rows?.[0]?.id });
   } catch (error: any) {
     console.error('[CreateBatch] Error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to create batch' });
   }
 });
 
@@ -1201,10 +1168,10 @@ router.put('/batches/:id', async (req: Request, res: Response) => {
     const blueprintJson = isPractice ? null : JSON.stringify(blueprint);
     const practiceExamId = isPractice ? parseInt(practice_exam_id) : null;
 
-    // Chế độ record: superadmin dùng giá trị client gửi; admin thường KHÔNG đổi được → giữ nguyên mode cũ trong DB.
+    // tenant_admin may change recording; regular admin keeps the current database value.
     const RECORD_MODES = ['none', 'local', 's3'];
     let recordMode: string;
-    if (req.adminUser?.role === 'superadmin') {
+    if (req.adminUser?.role === 'tenant_admin') {
       recordMode = RECORD_MODES.includes(record_mode) ? record_mode : 'none';
     } else {
       const cur = await db.query('SELECT record_mode FROM batches WHERE id = ?', [parseInt(id)]);

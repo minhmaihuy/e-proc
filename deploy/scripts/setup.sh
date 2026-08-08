@@ -14,8 +14,8 @@ if [ -f /etc/nginx/sites-available/eaudit ]; then
     DOMAIN=$(grep -oP 'server_name\s+\K[^\s;]+' /etc/nginx/sites-available/eaudit | head -n 1)
     ALT_DOMAIN=$(grep -oP 'server_name\s+[^\s;]+\s+\K[^\s;]+' /etc/nginx/sites-available/eaudit | head -n 1)
 else
-    DOMAIN="devfatstrack.cloud"
-    ALT_DOMAIN="www.devfatstrack.cloud"
+    DOMAIN="epoc.devfasttrack.com"
+    ALT_DOMAIN=""
 fi
 
 DOMAIN_ARGS="-d $DOMAIN"

@@ -3,9 +3,16 @@ import bcrypt from 'bcryptjs';
 import db from '../db/controlPlane.js';
 import { authMiddleware, requireSuperAdmin } from '../middleware/auth.js';
 import { ProvisionAction, ProvisionableTenant, runTenantProvisioning } from '../services/tenantProvisioner.js';
+import {
+  TenantIssueFilterError,
+  parseTenantIssueFilters,
+} from '../services/tenantIssueQuery.js';
+import { TenantLogAccessError, readTenantIssues } from '../services/tenantLogReader.js';
+import { isTenantDomainForSlug, tenantDomainForSlug } from '../tenantContext.js';
 
 const router = Router();
 router.use(authMiddleware);
+router.use(requireSuperAdmin);
 
 const SLUG_PATTERN = /^[a-z][a-z0-9-]{2,30}$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -43,9 +50,11 @@ interface TenantRow extends ProvisionableTenant {
 
 function normalizeTenantInput(body: unknown, existing?: Partial<TenantRow>): TenantInput {
   const input = body && typeof body === 'object' ? body as Record<string, unknown> : {};
+  const slug = String(input.slug ?? existing?.slug ?? '').trim().toLowerCase();
+  const configuredDomain = String(input.domain_name ?? input.domainName ?? existing?.domain_name ?? '').trim().toLowerCase();
   return {
     name: String(input.name ?? existing?.name ?? '').trim(),
-    slug: String(input.slug ?? existing?.slug ?? '').trim().toLowerCase(),
+    slug,
     contactEmail: String(input.contact_email ?? input.contactEmail ?? existing?.contact_email ?? '').trim().toLowerCase(),
     awsRegion: String(input.aws_region ?? input.awsRegion ?? existing?.aws_region ?? 'ap-southeast-1').trim(),
     instanceType: String(input.instance_type ?? input.instanceType ?? existing?.instance_type ?? 't3.micro').trim(),
@@ -54,7 +63,7 @@ function normalizeTenantInput(body: unknown, existing?: Partial<TenantRow>): Ten
     compilerMemoryMb: Number(input.compiler_memory_mb ?? input.compilerMemoryMb ?? existing?.compiler_memory_mb ?? 512),
     compilerTimeoutSeconds: Number(input.compiler_timeout_seconds ?? input.compilerTimeoutSeconds ?? existing?.compiler_timeout_seconds ?? 15),
     compilerConcurrency: Number(input.compiler_concurrency ?? input.compilerConcurrency ?? existing?.compiler_concurrency ?? 2),
-    domainName: String(input.domain_name ?? input.domainName ?? existing?.domain_name ?? '').trim().toLowerCase(),
+    domainName: configuredDomain || tenantDomainForSlug(slug),
     route53ZoneId: String(input.route53_zone_id ?? input.route53ZoneId ?? existing?.route53_zone_id ?? '').trim(),
     secretArn: String(input.secret_arn ?? input.secretArn ?? existing?.secret_arn ?? '').trim(),
     repositoryUrl: String(input.repository_url ?? input.repositoryUrl ?? existing?.repository_url ?? 'https://github.com/minhmaihuy/e-proc.git').trim(),
@@ -73,18 +82,19 @@ function validateTenantInput(input: TenantInput, requireSecret: boolean): string
   if (!Number.isInteger(input.compilerTimeoutSeconds) || input.compilerTimeoutSeconds < 10 || input.compilerTimeoutSeconds > 30) return 'Compiler timeout must be 10-30 seconds.';
   if (!Number.isInteger(input.compilerConcurrency) || input.compilerConcurrency < 1 || input.compilerConcurrency > 20) return 'Compiler concurrency must be 1-20.';
   if (input.domainName && !DOMAIN_PATTERN.test(input.domainName)) return 'Domain name must be a valid FQDN.';
+  const requiredDomain = tenantDomainForSlug(input.slug);
+  if (input.domainName && !isTenantDomainForSlug(input.domainName, input.slug)) return `Domain name must be ${requiredDomain}.`;
   if (input.route53ZoneId && !/^[A-Z0-9]{6,64}$/.test(input.route53ZoneId)) return 'Invalid Route53 hosted zone ID.';
   if (input.secretArn && !SECRET_ARN_PATTERN.test(input.secretArn)) return 'Invalid AWS Secrets Manager ARN.';
   if (requireSecret && !input.secretArn) return 'A Secrets Manager ARN is required.';
+  if (requireSecret && !input.domainName) return 'A dedicated tenant domain is required before approval.';
   if (!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git$/.test(input.repositoryUrl)) return 'Repository must be an HTTPS GitHub .git URL.';
   if (!/^[A-Za-z0-9._/-]{1,100}$/.test(input.repositoryRef) || input.repositoryRef.includes('..')) return 'Invalid repository ref.';
   return null;
 }
 
 function canAccessTenant(req: Request, tenantId: number): boolean {
-  return req.adminUser?.role === 'superadmin' || (
-    req.adminUser?.role === 'tenant_admin' && req.adminUser.tenantId === tenantId
-  );
+  return req.adminUser?.role === 'superadmin' && Number.isInteger(tenantId) && tenantId > 0;
 }
 
 function publicTenant(row: TenantRow, isSuperAdmin: boolean) {
@@ -103,22 +113,49 @@ async function audit(tenantId: number, actorId: number, action: string, detail?:
 
 router.get('/', async (req: Request, res: Response) => {
   try {
-    if (req.adminUser?.role === 'superadmin') {
-      const result = await db.query(`
-        SELECT t.*,
-          (SELECT COUNT(*) FROM admin_users u WHERE u.tenant_id = t.id AND u.role = 'tenant_admin') AS admin_count
-        FROM tenants t ORDER BY t.created_at DESC
-      `);
-      return res.json(result.rows.map((row) => publicTenant(row as TenantRow, true)));
-    }
-    if (req.adminUser?.role === 'tenant_admin' && req.adminUser.tenantId) {
-      const result = await db.query('SELECT * FROM tenants WHERE id = ?', [req.adminUser.tenantId]);
-      return res.json(result.rows.map((row) => publicTenant(row as TenantRow, false)));
-    }
-    return res.status(403).json({ error: 'Tenant access required.' });
+    const result = await db.query(`
+      SELECT t.*,
+        (SELECT COUNT(*) FROM admin_users u WHERE u.tenant_id = t.id AND u.role = 'tenant_admin') AS admin_count
+      FROM tenants t ORDER BY t.created_at DESC
+    `);
+    return res.json(result.rows.map((row) => publicTenant(row as TenantRow, true)));
   } catch (error) {
     console.error('[Tenants] List failed:', error);
     return res.status(500).json({ error: 'Failed to load tenants.' });
+  }
+});
+
+router.get('/:id/issues', async (req: Request, res: Response) => {
+  const tenantId = Number(req.params.id);
+  if (!Number.isInteger(tenantId) || tenantId <= 0) return res.status(400).json({ error: 'Invalid tenant ID.' });
+  try {
+    const filters = parseTenantIssueFilters(req.query as Record<string, unknown>);
+    const result = await db.query(
+      'SELECT id, slug, aws_region, secret_arn FROM tenants WHERE id = ?',
+      [tenantId],
+    );
+    const tenant = result.rows[0] as Pick<TenantRow, 'id' | 'slug' | 'aws_region' | 'secret_arn'> | undefined;
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found.' });
+    const issues = await readTenantIssues({
+      slug: tenant.slug,
+      awsRegion: tenant.aws_region,
+      secretArn: tenant.secret_arn,
+    }, filters);
+    await audit(tenantId, req.adminUser!.id, 'tenant.logs_viewed', {
+      status: filters.status || 'all',
+      severity: filters.severity || 'all',
+      limit: filters.limit,
+      result_count: issues.length,
+    });
+    return res.json(issues);
+  } catch (error) {
+    if (error instanceof TenantIssueFilterError) return res.status(400).json({ error: error.message });
+    if (error instanceof TenantLogAccessError) {
+      console.error('[Tenants] Log observation failed:', { tenantId, code: error.code });
+      return res.status(error.code === 'NOT_CONFIGURED' ? 409 : 502).json({ error: error.message });
+    }
+    console.error('[Tenants] Log observation failed:', { tenantId, code: 'UNEXPECTED' });
+    return res.status(500).json({ error: 'Failed to load tenant issues.' });
   }
 });
 
@@ -194,10 +231,7 @@ router.put('/:id', async (req: Request, res: Response) => {
       return res.status(409).json({ error: 'Configuration cannot change while Terraform is running.' });
     }
 
-    const body = req.adminUser?.role === 'superadmin'
-      ? req.body
-      : { ...req.body, secret_arn: existing.secret_arn, route53_zone_id: existing.route53_zone_id };
-    const input = normalizeTenantInput(body, existing);
+    const input = normalizeTenantInput(req.body, existing);
     input.slug = existing.slug;
     const validationError = validateTenantInput(input, false);
     if (validationError) return res.status(400).json({ error: validationError });

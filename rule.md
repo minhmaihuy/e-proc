@@ -1,0 +1,48 @@
+# E-PROC maintenance rules
+
+These rules record defects found while implementing tenant isolation, operational logs, and tenant domains. Treat them as regression-prevention requirements, not optional guidance.
+
+## Requirement precedence
+
+- The latest explicit product decision wins over a previously inferred convention. Do not generalize a domain, role, or ownership rule when the user has named an exception.
+- FSA-CLS currently uses the default domain `epoc.devfasttrack.com`. Do not change it to `epoc.fsa.devfasttrack.com` or another tenant-labelled form unless a later requirement explicitly requests that migration.
+- Non-FSA tenants use `epoc.<tenant-slug>.devfasttrack.com`. The backend must derive this value from the trusted slug; the browser must never be the authority for tenant/domain ownership.
+
+## Defects and mandatory prevention
+
+| Defect found | Root cause | Rule that prevents recurrence | Required regression evidence |
+| --- | --- | --- | --- |
+| FSA-CLS was incorrectly converted to a tenant-labelled domain | A general subdomain convention was applied after an explicit request to retain the default FSA domain | Keep the FSA-only exception in `tenantDomainForSlug()` and document it in environment, deployment, Terraform, and maintenance files | Assert `fsa` and `fsa-cls` resolve to `epoc.devfasttrack.com`; assert `epoc.fsa.devfasttrack.com` is rejected for FSA-CLS |
+| Existing FSA rows kept the old domain after source defaults changed | The startup update only replaced empty/localhost values | Migrations may replace only an explicit allowlist of known legacy FSA domains and URLs; never rewrite arbitrary customer domains | Run initialization twice, verify the second run makes no change, and verify assessment row counts before/after are identical |
+| Domain changes could appear correct in UI while deployment still used stale values | Domain configuration is duplicated across application and infrastructure layers | Update the coupling set together: tenant context, control-plane validation/migration, provisioning validation, tenant UI, `.env.example`, nginx, Terraform variables/templates/examples, `AGENTS.md`, `rule.md`, and the E-PROC skill | Backend tests, frontend type-check, `terraform fmt -check`, `terraform validate`, and full build must pass |
+| A valid-looking domain could belong to another tenant | Generic FQDN validation did not bind the label to the tenant slug | Backend approval and provisioning must compare the exact derived domain with the trusted tenant slug. Terraform validates allowed shape only; it does not replace backend ownership checks | Reject a correctly formatted domain whose label belongs to another tenant |
+| Operational log controls could grant excess authority | UI role checks were treated as authorization | `admin` is read-only; matching `tenant_admin` may resolve, reopen, archive, and restore; superadmin observes selected-tenant logs only through the read-only control API. Enforce every rule in backend middleware and tenant-scoped SQL | Test regular-admin, cross-tenant tenant-admin, and superadmin mutation rejection |
+| Archiving could destroy evidence | Full control was interpreted as physical deletion/edit access | Operational event content is immutable. Archive is a retained lifecycle state with actor/time metadata; there is no content-edit or physical-delete API | Verify archive preserves row/message and restore clears archive metadata without recreating the event |
+| Remote log observation could expose credentials or cross tenant boundaries | Remote database access requires transient secrets and dynamic connections | Resolve slug/secret ARN from the control database, allow only PostgreSQL `LOG_DATABASE_URL`, scope every query by trusted slug, close the pool in `finally`, and return bounded safe errors | Test secret parsing, tenant parameterization, pool closure, and sanitized failure output |
+| Changed documentation caused the harness to fail | Example documentation contained debug-like placeholders and realistic credential strings | Documentation examples must use visibly non-secret placeholders such as `<set-locally>` and must not contain unresolved debug markers or credential-shaped sample values | Run the same final harness against all changed code and documentation |
+
+## Source-of-truth boundaries
+
+- `src/server/tenantContext.ts` owns runtime tenant-domain derivation and the FSA-CLS exception.
+- `src/server/routes/tenants.ts` and `src/server/services/tenantProvisioner.ts` are the authoritative domain validation boundaries.
+- `src/server/db/controlPlane.ts` owns the idempotent allowlisted legacy-domain migration.
+- `client/src/pages/TenantManagement.tsx` mirrors the derived domain for UX only.
+- `terraform/tenant-instance/**` owns provisioned DNS/application configuration. Legacy Terraform examples must not contradict the supported module.
+- `src/server/middleware/auth.ts`, `src/server/routes/issues.ts`, and tenant-scoped issue SQL own log authorization; hidden buttons are never sufficient.
+
+## Required maintenance workflow
+
+1. Inspect `git status` and preserve user-owned files, especially `data/Practice_M3_test.docx`.
+2. Update the applicable design spec before a cross-layer behavior change.
+3. Update every file in the relevant coupling set and add regression coverage for the original defect.
+4. For schema/default migrations, use a temporary or local compatibility fixture, run initialization twice, and compare assessment row counts.
+5. Run tenant tests, frontend type-check, full build, `git diff --check`, Terraform format/validation when infrastructure changes, and skill validation when maintenance knowledge changes.
+6. Run `scripts/run-code-harness.py` with `--spec`; include every changed code/document file and exclude unrelated user-owned artifacts.
+7. Do not commit, merge, push, provision, or change public DNS unless the user explicitly requests that action.
+
+## Current acceptance anchors
+
+- FSA-CLS default URL: `https://epoc.devfasttrack.com/`.
+- Non-FSA example: slug `acme-vietnam` maps to `https://epoc.acme-vietnam.devfasttrack.com/`.
+- Log ownership: `admin` reads, `tenant_admin` manages lifecycle for its own tenant, superadmin observes selected tenants read-only.
+- Data ownership: assessment, global control, and per-tenant operational logs remain separate database planes.

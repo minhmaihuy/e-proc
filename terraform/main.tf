@@ -1,7 +1,7 @@
 # =============================================================================
 # E-Audit Platform — Terraform Configuration
 # Architecture: EC2 (App) + Supabase (DB) + Route53 (DNS)
-# Domain: devfatstrack.cloud
+# Domain: epoc.devfasttrack.com
 # Budget: ~$9.49/month (after Free Tier)
 # =============================================================================
 

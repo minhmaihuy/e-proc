@@ -13,11 +13,11 @@ variable "aws_region" {
 variable "domain_name" {
   description = "Root domain name"
   type        = string
-  default     = "devfasttrack.cloud"
+  default     = "devfasttrack.com"
 }
 
 variable "app_subdomain" {
-  description = "Subdomain for the app (e.g. 'epoc' → epoc.devfasttrack.cloud)"
+  description = "Subdomain for the app (e.g. 'epoc' → epoc.devfasttrack.com for FSA-CLS)"
   type        = string
   default     = "epoc"
 }

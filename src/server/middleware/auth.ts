@@ -97,14 +97,54 @@ export function requireSuperAdmin(req: Request, res: Response, next: NextFunctio
   next();
 }
 
-export function requirePlatformAdmin(req: Request, res: Response, next: NextFunction) {
+export function requireTenantDataAdmin(req: Request, res: Response, next: NextFunction) {
   const user = req.adminUser;
-  const isCurrentTenantAdmin = user?.role === 'admin'
+  const isTenantRole = user?.role === 'admin' || user?.role === 'tenant_admin';
+  const isCurrentTenantAdmin = isTenantRole
     && Boolean(user.tenantId)
     && user.tenantSlug === getCurrentTenantConfig().slug;
-  if (user?.role !== 'superadmin' && !isCurrentTenantAdmin) {
-    console.warn('[Security] Blocked platform-admin action', { userId: req.adminUser?.id, role: req.adminUser?.role });
-    return res.status(403).json({ error: 'Forbidden: Platform admin access required' });
+  if (!isCurrentTenantAdmin) {
+    console.warn('[Security] Blocked tenant data action', {
+      userId: user?.id,
+      role: user?.role,
+      tenantSlug: user?.tenantSlug,
+      serverTenant: getCurrentTenantConfig().slug,
+    });
+    return res.status(403).json({ error: 'Forbidden: Current tenant administrator access required' });
   }
   next();
 }
+
+export function requireTenantUserManager(req: Request, res: Response, next: NextFunction) {
+  const user = req.adminUser;
+  if (user?.role !== 'tenant_admin'
+      || !user.tenantId
+      || user.tenantSlug !== getCurrentTenantConfig().slug) {
+    console.warn('[Security] Blocked tenant user-management action', {
+      userId: user?.id,
+      role: user?.role,
+      tenantSlug: user?.tenantSlug,
+    });
+    return res.status(403).json({ error: 'Forbidden: Tenant administrator access required' });
+  }
+  next();
+}
+
+export function requireTenantLogManager(req: Request, res: Response, next: NextFunction) {
+  const user = req.adminUser;
+  if (user?.role !== 'tenant_admin'
+      || !user.tenantId
+      || user.tenantSlug !== getCurrentTenantConfig().slug) {
+    console.warn('[Security] Blocked tenant log-management action', {
+      userId: user?.id,
+      role: user?.role,
+      tenantSlug: user?.tenantSlug,
+    });
+    return res.status(403).json({ error: 'Forbidden: Tenant log administrator access required' });
+  }
+  next();
+}
+
+// Compatibility export for older imports. Its semantics intentionally exclude
+// superadmin: global control operators must never access tenant assessment data.
+export const requirePlatformAdmin = requireTenantDataAdmin;

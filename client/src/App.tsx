@@ -1,4 +1,4 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import PrivateRoute from './components/PrivateRoute';
 import AdminLogin from './pages/AdminLogin';
@@ -16,6 +16,7 @@ import StudentPractice from './pages/StudentPractice';
 import StudentConfirm from './pages/StudentConfirm';
 import StudentSubmit from './pages/StudentSubmit';
 import TenantManagement from './pages/TenantManagement';
+import IssueLogs from './pages/IssueLogs';
 
 function App() {
   return (
@@ -39,9 +40,11 @@ function App() {
         <Route path="/admin/batches/:id/results" element={<PrivateRoute requirePlatformAdmin><Results /></PrivateRoute>} />
         <Route path="/admin/settings" element={<PrivateRoute requirePlatformAdmin><AISettings /></PrivateRoute>} />
         <Route path="/admin/practice" element={<PrivateRoute requirePlatformAdmin><PracticeManagement /></PrivateRoute>} />
-        <Route path="/admin/tenants" element={<PrivateRoute requireSuperAdmin><TenantManagement scope="control" /></PrivateRoute>} />
-        <Route path="/admin/tenant" element={<PrivateRoute requireTenantAdmin><TenantManagement scope="workspace" /></PrivateRoute>} />
+        <Route path="/admin/issues" element={<PrivateRoute requirePlatformAdmin><IssueLogs /></PrivateRoute>} />
         <Route path="/admin/users" element={<PrivateRoute requireUserManager><UserManagement /></PrivateRoute>} />
+        <Route path="/tenants" element={<PrivateRoute requireSuperAdmin><TenantManagement /></PrivateRoute>} />
+        <Route path="/admin/tenants" element={<Navigate to="/tenants" replace />} />
+        <Route path="/admin/tenant" element={<Navigate to="/admin/dashboard" replace />} />
       </Routes>
     </AuthProvider>
   );

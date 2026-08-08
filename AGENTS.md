@@ -4,6 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Maintenance contract
 
+- Read `rule.md` before changing tenant domains, role ownership, database planes, operational logs, Terraform, or deployment configuration. Add newly discovered regression risks to that file in the same change.
 - This rule documents behavior observed in source at `main` commit `752448f` (2026-08-08). If code and this file differ, verify the code path and update this rule in the same change.
 - The reusable Codex skill is `D:\Codex-Skills\e-proc-platform`. Keep its `references/features.md`, `references/api-map.md`, architecture, and verification guidance synchronized with material feature, role, schema, infrastructure, or deployment changes.
 - Preserve user-owned modified/untracked files. Inspect `git status` before editing and before delivery.
@@ -34,6 +35,10 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 - Backend: `npx tsc --noEmit` (from project root)
 - Frontend: `npx tsc --noEmit` (from `client/`)
 
+### Maintenance harness
+- Run the project wrapper with the applicable design spec: `python scripts/run-code-harness.py --target <changeset-folder> --rules specs/fullstack-harness.rules.json --spec specs/<feature>-design.md --report <report-folder>`.
+- `--spec` must identify the requirements used by every pending `llm_judge`; do not run the final maintenance gate against an undocumented feature change.
+
 ## Repository structure
 
 This is a full-stack technical assessment platform with a React/Vite frontend and an Express/TypeScript backend.
@@ -59,7 +64,10 @@ This is a full-stack technical assessment platform with a React/Vite frontend an
   - `/exam` → active exam page
   - `/submit` → submission complete page
 - Admin flow routes:
-  - `/admin`, `/admin/dashboard`, `/admin/questions`, `/admin/batches`, `/admin/batches/:id/students`, `/admin/batches/:id/results`, `/admin/settings`, `/admin/users` (superadmin-only, see **Admin authentication** below)
+  - `/admin` is the shared login.
+  - `/tenants` is the superadmin-only global tenant control plane.
+  - `/admin/dashboard`, `/admin/questions`, `/admin/batches`, `/admin/batches/:id/students`, `/admin/batches/:id/results`, `/admin/settings`, `/admin/practice`, and `/admin/issues` belong to the current tenant. Both `admin` and `tenant_admin` may use them; superadmin may not.
+  - `/admin/users` is current-tenant user management and is restricted to `tenant_admin`.
 - API wrapper: `client/src/services/api.ts`
   - `adminApi` contains admin CRUD/reporting endpoints; attaches admin JWT via request interceptor
   - `studentApi` contains exam lifecycle endpoints and violation reporting; attaches student JWT via request interceptor (see **Student auth** section below)
@@ -67,7 +75,7 @@ This is a full-stack technical assessment platform with a React/Vite frontend an
 ### Backend
 - HTTP server entry: `src/server/server.ts`
 - Express app setup: `src/server/index.ts`
-  - mounts `/api/admin` and `/api/student`
+  - mounts `/api/tenants` (global control), `/api/admin` (tenant administration), `/api/admin/issues` (tenant log plane), and `/api/student`
   - exposes health (`/api/health`) and internal diagnostic endpoints (require admin JWT)
 - Admin routes: `src/server/routes/admin.ts`
 - Student routes: `src/server/routes/student.ts`
@@ -76,12 +84,13 @@ This is a full-stack technical assessment platform with a React/Vite frontend an
   - `src/server/middleware/studentAuth.ts` — student JWT middleware (`studentAuthMiddleware`)
 
 ### Data/storage model
-- The database is split into two ownership planes:
+- The database is split into three ownership planes. Never configure one plane to fall back to another:
   - **FSA-CLS assessment data-plane:** `src/server/db/postgres.ts`; `DATABASE_URL` in production or `data/eaudit.db` locally. It owns questions, batches, students, submissions, violations, and assessment/AI state. `data_plane_metadata` identifies this database as tenant `fsa-cls`.
   - **Global tenant control-plane:** `src/server/db/controlPlane.ts`; `CONTROL_DATABASE_URL` in production or `data/control-plane.db` locally. It owns only `admin_users`, `tenants`, `tenant_provision_jobs`, and `tenant_audit_events`.
-- Startup initializes data-plane, then control-plane, then cache/queue. It copies legacy admin/tenant rows without changing password hashes and maps tenant slug `fsa` to `fsa-cls`.
+  - **Per-tenant operational log-plane:** `src/server/db/logPlane.ts`; `LOG_DATABASE_URL` in production or `data/tenant-logs.db` locally. It owns `log_plane_metadata` and `tenant_issue_logs`. It records bounded HTTP 4xx/5xx operational events and is immutably bound to `TENANT_SLUG`. It must not store request/response bodies, headers, query strings, JWTs, secrets, stack traces, or candidate anti-cheat evidence.
+- Startup initializes assessment data-plane, global control-plane, tenant log-plane, then cache/queue. It copies legacy admin/tenant rows without changing password hashes and maps tenant slug `fsa` to `fsa-cls`.
 - Legacy control tables remain in the data database only for rollback. All runtime authentication, tenant configuration, provisioning jobs, and tenant audit writes must use `controlPlane.ts`.
-- If `CONTROL_DATABASE_URL` is absent while `DATABASE_URL` is present, startup uses explicit shared compatibility mode and warns. Production isolation is complete only with a separate control database.
+- Production startup fails if `CONTROL_DATABASE_URL` or `LOG_DATABASE_URL` is missing. Neither may fall back to `DATABASE_URL`.
 - Core tables are created in the DB layer on startup:
   - `question_bank`
   - `batches` (has nullable `practice_exam_id` — set = the batch is a Practice batch, see **Practice exams** below)
@@ -105,20 +114,20 @@ This is a full-stack technical assessment platform with a React/Vite frontend an
 - `POST /api/admin/login` returns a 24-hour HS256 JWT carrying account id, username, role, and tenant context. The frontend stores the token, expiry, role, user id, tenant id/slug/name in `localStorage` and sends `Authorization: Bearer <token>`.
 - All protected admin routes use `authMiddleware`. It verifies the JWT and then reloads the account and tenant from the database on every request, so deleted accounts, changed roles/tenant assignments, and suspended tenants lose effective access immediately.
 - Roles are `superadmin`, `tenant_admin`, and `admin`:
-  - `superadmin` is global, has no `tenant_id`, manages every tenant/user, approves tenants, and queues Terraform plan/apply.
-  - `tenant_admin` belongs to exactly one tenant, edits that tenant configuration and manages only non-superadmin users in that tenant. It cannot approve or provision infrastructure.
-  - `admin` belongs to exactly one tenant and may use question-bank, batch, result, practice, and AI-setting routes only on a server whose current `TENANT_SLUG` matches its tenant.
-- `requirePlatformAdmin` protects assessment-management routes; `requireUserManager` protects user CRUD; `requireSuperAdmin` protects global tenant approval/provisioning.
+  - `superadmin` is global, has no `tenant_id`, and manages tenant configuration/approval/provisioning through `/tenants` and `/api/tenants`. It cannot read or mutate tenant assessment data or tenant users. It may read a selected tenant's safe operational issue rows only through `GET /api/tenants/:id/issues`; it cannot use or mutate `/api/admin/issues`.
+  - `tenant_admin` belongs to exactly one tenant and owns all audit/assessment functions for that tenant, including tenant user management, recording-mode configuration, and operational-log lifecycle management. It does not edit global tenant/Terraform configuration.
+  - `admin` belongs to exactly one tenant and may use question-bank, batch, result, practice, AI-setting, dashboard, and read-only issue-log routes only on a server whose current `TENANT_SLUG` matches its JWT tenant.
+- `requireTenantDataAdmin` protects tenant assessment and issue-list routes; `requireTenantLogManager` protects issue lifecycle mutations; `requireTenantUserManager` protects current-tenant user CRUD; `requireSuperAdmin` protects `/api/tenants`. The legacy `requirePlatformAdmin` export aliases `requireTenantDataAdmin` and therefore excludes superadmin.
 - Frontend `PrivateRoute`, `AdminNav`, and hidden controls are UX only. Backend middleware and tenant-scoped SQL/ownership checks are the security boundary.
 - Every non-superadmin account requires `tenant_id`. Startup assigns null/legacy-FSA non-superadmin accounts to `fsa-cls`; accounts explicitly belonging to another tenant remain unchanged. The data-plane default is `fsa-cls` (`TENANT_SLUG`, then `DEFAULT_TENANT_SLUG`, then `fsa-cls`).
 - A suspended tenant is blocked at login and by authenticated requests. Current code does not block a `pending` tenant from tenant-management login; `approved` is enforced before Terraform plan/apply. Treat this as an implementation fact and a requirement gap if product policy says only approved tenants may use the application.
-- User-management safeguards: no self-delete, self-role/tenant change, or self password reset through user CRUD; preserve the last global superadmin and last tenant admin per tenant; tenant admins cannot access or create superadmins or cross-tenant users.
-- Recording mode per batch (`none`, `local`, `s3`) can only be enabled/changed by `superadmin`; backend enforcement is authoritative and `record_enabled` remains a compatibility mirror for S3.
+- User-management safeguards: no self-delete, self-role/tenant change, or self password reset through user CRUD; preserve the last tenant admin; tenant admins cannot access or create superadmins or cross-tenant users. Superadmin is not a tenant user manager.
+- Recording mode per batch (`none`, `local`, `s3`) can only be enabled/changed by `tenant_admin`; backend enforcement is authoritative and `record_enabled` remains a compatibility mirror for S3.
 - Internal diagnostic endpoints (`/api/test-db`, `/api/queue/*`, `/api/cache/flush`, `/api/stats`) also require admin JWT
 - **Self-service admin registration has been removed** (2026-07 security hardening): `GET /is-initialized` and `POST /setup` no longer exist. Instead:
   - The first `admin_users` row is seeded automatically in the control-plane by `seedSuperAdmin()` in `src/server/db/controlPlane.ts`, **only when the table is empty** — username/password default to `supperadmin` / `superadmin123#2nf` (role `superadmin`), overridable via the `SUPERADMIN_USERNAME` / `SUPERADMIN_PASSWORD` env vars. **Change this password immediately after first login** (`PUT /api/admin/change-password`) — the default lives in git history.
-  - Other administrative accounts are managed through `GET/POST/PUT/DELETE /api/admin/users`. A superadmin sees all tenants; a tenant admin is scoped to its own tenant.
-  - Global tenant control lives at `/admin/tenants` (superadmin only), tenant self-service lives at `/admin/tenant` (tenant_admin only), and user management lives at `/admin/users`. Server-side ownership checks remain authoritative.
+  - Other tenant accounts are managed through `GET/POST/PUT/DELETE /api/admin/users` by that tenant's `tenant_admin` only.
+  - Global tenant control lives at `/tenants`; legacy `/admin/tenants` only redirects there. `/admin/tenant` has been removed and redirects to the tenant dashboard. Server-side ownership checks remain authoritative.
 
 #### Student authentication
 After the security hardening (2026-07), student auth works via a signed JWT rather than an unverified header:
@@ -246,8 +255,8 @@ A second exam mode, fully independent of the question-bank/blueprint pipeline:
 ### Two independent deployment methods — keep both, don't mix them
 This repo intentionally supports **two separate, independent deployment paths**. Neither depends on the other, and a change to one should not assume it applies to the other:
 
-1. **Vercel** (`vercel.json`) — builds `dist/server/index.js` (`@vercel/node`) and serves static assets from `client/dist/**`, with `public/` referenced as the html/asset fallback path in some historical setups. This path is defined and kept in the repo for whoever/whenever Vercel is the target, but is **not what currently serves `epoc.devfasttrack.cloud`**.
-2. **Self-hosted EC2 + nginx + pm2, via `deploy/scripts/deploy.sh`** — this is the method actually used for `epoc.devfasttrack.cloud` today, and it **does not use Vercel in any way**: no `vercel.json` step runs, no Vercel CLI/API is involved, nothing is deployed to Vercel's infrastructure. Building "via deploy.sh" means: SSH/EC2-console into the instance, `git pull`, rebuild `dist/` and `client/dist/` locally on that same box with plain `npm run build:*`, and restart via `pm2`. See below for the full flow.
+1. **Vercel** (`vercel.json`) — builds `dist/server/index.js` (`@vercel/node`) and serves static assets from `client/dist/**`, with `public/` referenced as the html/asset fallback path in some historical setups. This path is defined and kept in the repo for whoever/whenever Vercel is the target, but is **not what currently serves `epoc.devfasttrack.com`**.
+2. **Self-hosted EC2 + nginx + pm2, via `deploy/scripts/deploy.sh`** — this is the method actually used for `epoc.devfasttrack.com` today, and it **does not use Vercel in any way**: no `vercel.json` step runs, no Vercel CLI/API is involved, nothing is deployed to Vercel's infrastructure. Building "via deploy.sh" means: SSH/EC2-console into the instance, `git pull`, rebuild `dist/` and `client/dist/` locally on that same box with plain `npm run build:*`, and restart via `pm2`. See below for the full flow.
 
 When troubleshooting "why doesn't my change show up," first confirm **which of the two** environments you're actually looking at (their URLs differ) — don't assume Vercel-style behavior (auto-deploy on push, `public/` as the served path) applies to the EC2/deploy.sh target, and vice versa.
 
@@ -259,7 +268,7 @@ When troubleshooting "why doesn't my change show up," first confirm **which of t
 - For behavior changes in `StudentExam.tsx`, always confirm which runtime is actually being served before concluding a fix works. If you're testing against the EC2 deployment specifically, that means `client/dist/` (rebuilt by `deploy/scripts/deploy.sh` on the server itself, not by syncing artifacts from a dev machine) — `public/` syncing is irrelevant there. If you're testing against a Vercel deployment, `public/` may matter; check `vercel.json`'s routes.
 
 ### EC2 + nginx + pm2 deployment (`deploy/scripts/deploy.sh`)
-- Production at `epoc.devfasttrack.cloud` (at the time of writing) runs on a self-hosted EC2 instance — accessed via the AWS EC2 console (EC2 Instance Connect / Session Manager), not a persistent SSH key setup.
+- Production at `epoc.devfasttrack.com` (at the time of writing) runs on a self-hosted EC2 instance — accessed via the AWS EC2 console (EC2 Instance Connect / Session Manager), not a persistent SSH key setup.
 - Deploy flow: `deploy/scripts/deploy.sh`, run from `/opt/eaudit/app` on the instance. It does `git pull origin main`, `rm -rf dist client/dist`, rebuilds both (`npm run build:server`, `cd client && npm run build`), then `pm2 delete/start eaudit` running `dist/server/server.js`. It does **not** touch `public/`, and does **not** invoke Vercel in any way.
 - nginx config: `deploy/nginx/eaudit.conf`. `/api/*` reverse-proxies to `http://127.0.0.1:3001` (the pm2-managed Node process); everything else is served as static files from `/opt/eaudit/app/client/dist` with SPA fallback (`try_files $uri $uri/ /index.html`).
 - DB is Postgres via RDS (`DATABASE_URL` set in the EC2 instance's `.env`, not committed to the repo) — so `USE_SQLITE` is `false` on this deployment; the SQLite code paths only run in local dev.
@@ -357,15 +366,25 @@ Batches support two blueprint formats for question assignment:
 - On submit or server auto-submit, quiz answers are scored synchronously by exact normalized answer-set equality and bypass the AI queue. Essay/coding answers are queued for AI grading.
 
 ### Multi-tenant control plane
-- Routes are mounted at `/api/admin/tenants` before the platform-admin router so `tenant_admin` can access tenant configuration without gaining assessment-management access.
+- Global routes are mounted at `/api/tenants` and all require `authMiddleware` plus `requireSuperAdmin` before any control-plane query.
 - Superadmin can list/create all tenants, create the first tenant administrator, approve/suspend, view jobs, run Terraform plan, and apply a reviewed plan.
-- Tenant admin can read/update only its own tenant and view its jobs. Saving configuration resets tenant status to `pending`, clears approval, and resets provisioning status. Route53 zone and Secrets Manager ARN remain superadmin-controlled.
+- Tenant admins cannot call the global tenant API. Their scope is the assessment/audit application under `/admin/*` and current-tenant user management.
 - Tenant configuration includes name/contact, region, EC2 type, root volume, domain/Route53, repository/ref, secret ARN, compiler toggle/limits, provisioning outputs, error/status, and audit metadata.
+- Every non-FSA tenant domain is derived from its trusted slug as `epoc.<tenant-label>.devfasttrack.com`. FSA-CLS temporarily remains at `https://epoc.devfasttrack.com/`. Backend approval/provisioning validates the exact slug/domain mapping and exception; Terraform validates the allowed formats.
 - Approval, plan, and apply are separate transitions. Apply requires a successful plan created after the latest approval. Only one queued/running job per tenant is allowed.
 - Terraform execution is disabled unless `TENANT_PROVISIONING_ENABLED=true`, runs only from a persistent trusted host, redacts logs, caps retained output, and uses isolated remote state key `tenants/<slug>/terraform.tfstate` with S3 encryption and DynamoDB locking.
-- The supported module is `terraform/tenant-instance`, not legacy `terraform-ipv6`. It creates a dedicated dual-stack VPC, AWS-generated IPv6 `/56`, public subnet, public IPv6, Elastic IPv4 fallback, HTTP/HTTPS security group, SSM administration, least-privilege secret access, optional A/AAAA records, and optional tenant Lambda compiler.
-- Each provisioned tenant secret must provide `DATABASE_URL` for that tenant's assessment data and `CONTROL_DATABASE_URL` for global identity/configuration. Keep both in the cloud-init allowlist without logging their values.
-- The UI at `/admin/tenants` shows tenant status, configuration, IPv6/IPv4, DNS/app URL, compiler, state key, Terraform job history/logs, and role-appropriate actions. There is intentionally no destroy button.
+- The supported module is `terraform/tenant-instance`, not legacy `terraform-ipv6`. It creates a dedicated dual-stack VPC, AWS-generated IPv6 `/56`, public subnet, public IPv6, Elastic IPv4 fallback, HTTP/HTTPS security group, SSM administration, least-privilege secret access, A/AAAA records when a Route53 zone is supplied, and optional tenant Lambda compiler.
+- Each provisioned tenant secret must provide `DATABASE_URL` for that tenant's assessment data, `CONTROL_DATABASE_URL` for global identity/configuration, and `LOG_DATABASE_URL` for that tenant's operational issues. Keep all three in the cloud-init allowlist without logging their values.
+- Only the control-plane host may receive the explicit `CONTROL_PLANE_LOG_SECRET_ARNS` IAM allowlist used for remote log observation. Ordinary tenant instances keep access to their own secret only. The control-plane host also needs network reachability to each allowed tenant log database.
+- The UI at `/tenants` shows tenant status, configuration, IPv6/IPv4, DNS/app URL, compiler, state key, Terraform job history/logs, and selected-tenant operational logs. There is intentionally no destroy button.
+
+### Tenant operational issue logs
+- `src/server/middleware/issueLogger.ts` appends HTTP 4xx/5xx outcomes to the current tenant log database after the response finishes. `/api/tenants` and authenticated superadmin traffic are excluded.
+- `GET /api/admin/issues` lists only rows whose `tenant_slug` equals the JWT/current server tenant. Matching `admin` and `tenant_admin` may read; only `tenant_admin` may call `PUT /api/admin/issues/:id/status` or the compatibility `PUT /api/admin/issues/:id/resolve`.
+- Tenant log lifecycle is `open`, `resolved`, or `archived`. Tenant admins may resolve, reopen, archive, and restore only their own tenant rows. Archive is a soft delete: immutable event content remains, while `archived_by`, `archived_at`, `last_managed_by`, and `last_managed_at` record ownership. There is no content-edit or physical-delete API.
+- `GET /api/tenants/:id/issues` is a separate superadmin-only, read-only observation path. The tenant id resolves slug/region/secret ARN from the control database; the client never supplies a slug or database URL. Current-tenant reads reuse initialized `logPlane.ts`; remote reads retrieve `LOG_DATABASE_URL` transiently from the tenant secret, use a one-connection PostgreSQL pool, scope by trusted `tenant_slug`, close it after the request, and record `tenant.logs_viewed` in the control audit table.
+- Remote log errors must be sanitized. Never return or log the secret payload, `LOG_DATABASE_URL`, credentials, headers, tokens, query strings, or stack traces. Superadmin has no resolve/delete endpoint or UI control.
+- The tenant UI is `/admin/issues`: regular `admin` sees read-only controls; `tenant_admin` sees lifecycle actions. This log is for application/operational failures. Candidate cheating/audit evidence remains in `violations` and `violation_events` in the assessment database.
 
 ### Tenant compiler
 - `compiler_enabled` is per tenant. Terraform creates an isolated Lambda from the platform-owned ECR image only when enabled, and writes `PRACTICE_COMPILER_MODE=lambda` plus the tenant function ARN to that server.
@@ -380,7 +399,7 @@ Batches support two blueprint formats for question assignment:
 - Answer buffer and AI queue: `cache.ts`; the older `src/ai/queue.ts` exists but the server uses the cache-owned queue.
 - Recording: `examRecorder.ts`, confirm/exam pages, `/student/exam/recording-url`, and `s3.ts`.
 - Compiler: `localRunner.ts`, `coderunner.ts`, `lambdaCompiler.ts`, and `infra/compiler-lambda/**`.
-- Provisioning: `tenantProvisioner.ts`, `terraform/tenant-instance/**`, and `TenantManagement.tsx`.
+- Provisioning and superadmin log observation: `tenants.ts`, `tenantProvisioner.ts`, `tenantLogReader.ts`, `tenantIssueQuery.ts`, `terraform/tenant-instance/**`, `TenantManagement.tsx`, and `api.ts`.
 
 ## Environment variables
 
@@ -389,9 +408,12 @@ Batches support two blueprint formats for question assignment:
 | `JWT_SECRET` | **Yes** | — | Signs admin and student JWTs. Server exits at startup if missing. Use ≥32 random bytes. |
 | `JWT_EXPIRES_IN` | Unused | — | Present in older documentation, but current admin login hard-codes `24h`. Do not assume changing it has an effect. |
 | `DATABASE_URL` | Prod | — | FSA-CLS assessment PostgreSQL connection. Absent = `data/eaudit.db`. |
-| `CONTROL_DATABASE_URL` | Prod isolation | compatibility fallback | Global admin/tenant PostgreSQL connection. If absent with `DATABASE_URL`, both planes temporarily share PostgreSQL and startup warns. |
+| `CONTROL_DATABASE_URL` | **Prod** | local SQLite only | Global admin/tenant PostgreSQL connection. Required in production; never falls back to `DATABASE_URL`. |
 | `CONTROL_SQLITE_PATH` | No | `data/control-plane.db` | Local control-plane SQLite file. |
 | `CONTROL_DB_POOL_MAX` | No | `5` | Control-plane PostgreSQL pool maximum. |
+| `LOG_DATABASE_URL` | **Prod** | local SQLite only | Current tenant operational issue PostgreSQL connection. Required in production and isolated from both other planes. |
+| `LOG_SQLITE_PATH` | No | `data/tenant-logs.db` | Local current-tenant log-plane SQLite file. |
+| `LOG_DB_POOL_MAX` | No | `5` | Log-plane PostgreSQL pool maximum. |
 | `ALLOWED_ORIGINS` | No | `http://localhost:5173` | CORS whitelist, comma-separated |
 | `SESSION_SECRET` | Prod | local fallback | Must be at least 32 characters in production or startup exits. |
 | `SKIP_TIME_CHECK` | No | — | Set to `'true'` to bypass exam time-window validation in any mode |
@@ -404,8 +426,9 @@ Batches support two blueprint formats for question assignment:
 | `DEFAULT_TENANT_SLUG` | No | `fsa-cls` | Default/current data-plane tenant fallback. |
 | `DEFAULT_TENANT_NAME` / `_B64` | No | derived | Current tenant display name; Terraform uses Base64 form in user data. |
 | `DEFAULT_TENANT_CONTACT_EMAIL` / `_B64` | No | `admin@fsa-cls.local` | Current tenant contact identity. |
-| `DEFAULT_TENANT_DOMAIN` | No | empty | Current tenant domain. |
-| `DEFAULT_TENANT_APP_URL` | No | first allowed origin | Tenant login redirect/application URL. |
+| `DEFAULT_TENANT_DOMAIN` | No | FSA: `epoc.devfasttrack.com` | Current tenant dedicated FQDN. Other tenant domains follow `epoc.<tenant-label>.devfasttrack.com`. |
+| `DEFAULT_TENANT_APP_URL` | No | tenant HTTPS domain, then first allowed origin | Tenant login redirect/application URL. |
+| `CONTROL_PLANE_LOG_SECRET_ARNS` | Control host only | empty | Comma-separated explicit Secrets Manager ARN allowlist for selected remote tenant log reads; maximum 100. |
 | `TENANT_PROVISIONING_ENABLED` | No | `false` | Hard gate for Terraform control-plane execution. |
 | `TERRAFORM_BIN` | No | `terraform` | Terraform executable. |
 | `TERRAFORM_STATE_BUCKET` | Provisioning | — | Encrypted remote-state S3 bucket. |

@@ -21,10 +21,11 @@ test('explicit control database remains separate from the assessment database', 
   assert.equal(config.sharedWithDataPlane, false);
 });
 
-test('missing production control URL uses explicit compatibility mode', () => {
+test('control plane never falls back to the assessment database URL', () => {
   const config = resolveControlPlaneConnection({ DATABASE_URL: 'postgresql://assessment.example/eproc' });
-  assert.equal(config.connectionString, 'postgresql://assessment.example/eproc');
-  assert.equal(config.sharedWithDataPlane, true);
+  assert.equal(config.useSqlite, true);
+  assert.equal(config.connectionString, '');
+  assert.equal(config.sharedWithDataPlane, false);
 });
 
 test('legacy FSA slug migrates to FSA-CLS without changing other tenants', () => {

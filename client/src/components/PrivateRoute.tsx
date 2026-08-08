@@ -13,7 +13,7 @@ interface PrivateRouteProps {
 function PrivateRoute({ children, requireSuperAdmin = false, requirePlatformAdmin = false, requireUserManager = false, requireTenantAdmin = false }: PrivateRouteProps) {
   const { isAuthenticated, isSuperAdmin, isPlatformAdmin, isTenantAdmin, isUserManager, isLoading } = useAuth();
 
-  // Chờ AuthContext kiểm tra localStorage xong trước khi redirect
+  // Wait for the persisted session to load before applying role redirects.
   if (isLoading) {
     return (
       <div style={{
@@ -33,19 +33,19 @@ function PrivateRoute({ children, requireSuperAdmin = false, requirePlatformAdmi
   }
 
   if (requireSuperAdmin && !isSuperAdmin) {
-    return <Navigate to={isPlatformAdmin ? '/admin/dashboard' : '/admin/tenant'} replace />;
+    return <Navigate to={isPlatformAdmin ? '/admin/dashboard' : '/admin'} replace />;
   }
 
   if (requirePlatformAdmin && !isPlatformAdmin) {
-    return <Navigate to="/admin/tenant" replace />;
+    return <Navigate to={isSuperAdmin ? '/tenants' : '/admin'} replace />;
   }
 
   if (requireUserManager && !isUserManager) {
-    return <Navigate to={isPlatformAdmin ? '/admin/dashboard' : '/admin/tenant'} replace />;
+    return <Navigate to={isSuperAdmin ? '/tenants' : '/admin/dashboard'} replace />;
   }
 
   if (requireTenantAdmin && !isTenantAdmin) {
-    return <Navigate to={isSuperAdmin ? '/admin/tenants' : '/admin/dashboard'} replace />;
+    return <Navigate to={isSuperAdmin ? '/tenants' : '/admin/dashboard'} replace />;
   }
 
   return <>{children}</>;

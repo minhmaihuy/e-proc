@@ -17,7 +17,7 @@ function AdminLogin() {
 
     try {
       const session = await login(username, password);
-      navigate(session.role === 'tenant_admin' ? '/admin/tenant' : '/admin/dashboard');
+      navigate(session.role === 'superadmin' ? '/tenants' : '/admin/dashboard');
     } catch (err: any) {
       const msg = err.response?.data?.error || 'Login failed. Please try again.';
       setError(msg);
