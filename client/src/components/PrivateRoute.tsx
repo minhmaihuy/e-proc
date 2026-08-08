@@ -29,15 +29,15 @@ function PrivateRoute({ children, requireSuperAdmin = false, requirePlatformAdmi
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/admin" replace />;
+    return <Navigate to={requireSuperAdmin ? '/tenant/login' : '/admin/login'} replace />;
   }
 
   if (requireSuperAdmin && !isSuperAdmin) {
-    return <Navigate to={isPlatformAdmin ? '/admin/dashboard' : '/admin'} replace />;
+    return <Navigate to={isPlatformAdmin ? '/admin/dashboard' : '/tenant/login'} replace />;
   }
 
   if (requirePlatformAdmin && !isPlatformAdmin) {
-    return <Navigate to={isSuperAdmin ? '/tenants' : '/admin'} replace />;
+    return <Navigate to={isSuperAdmin ? '/tenants' : '/admin/login'} replace />;
   }
 
   if (requireUserManager && !isUserManager) {

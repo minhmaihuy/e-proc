@@ -99,7 +99,7 @@ export interface TenantConfiguration {
   repository_ref: string;
 }
 
-const api = axios.create({
+export const api = axios.create({
   baseURL: API_BASE,
   withCredentials: true
 });
@@ -130,11 +130,11 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (
-      error.response?.status === 401 &&
-      (window.location.pathname.startsWith('/admin') || window.location.pathname.startsWith('/tenants')) &&
-      window.location.pathname !== '/admin'
-    ) {
+    const path = window.location.pathname;
+    const isTenantControlPath = path === '/tenants' || path.startsWith('/tenants/');
+    const isTenantAdminPath = path === '/admin' || path.startsWith('/admin/');
+    const isLoginPath = path === '/admin/login' || path === '/tenant/login';
+    if (error.response?.status === 401 && (isTenantControlPath || isTenantAdminPath) && !isLoginPath) {
       localStorage.removeItem('adminToken');
       localStorage.removeItem('adminTokenExpiry');
       localStorage.removeItem('adminRole');
@@ -144,7 +144,7 @@ api.interceptors.response.use(
       localStorage.removeItem('adminTenantName');
       localStorage.removeItem('adminServerTenantSlug');
       localStorage.removeItem('adminServerTenantName');
-      window.location.href = '/admin';
+      window.location.href = isTenantControlPath ? '/tenant/login' : '/admin/login';
     }
     return Promise.reject(error);
   }
@@ -173,34 +173,6 @@ export const adminApi = {
 
   deleteUser: (id: number) =>
     api.delete(`/admin/users/${id}`),
-
-  // --- Multi-tenant control plane ---
-  getTenants: () =>
-    api.get<Tenant[]>('/tenants'),
-
-  createTenant: (data: TenantConfiguration & { slug: string; admin_username: string; admin_password: string }) =>
-    api.post('/tenants', data),
-
-  updateTenant: (id: number, data: TenantConfiguration) =>
-    api.put(`/tenants/${id}`, data),
-
-  approveTenant: (id: number) =>
-    api.post(`/tenants/${id}/approve`),
-
-  suspendTenant: (id: number) =>
-    api.post(`/tenants/${id}/suspend`),
-
-  planTenant: (id: number) =>
-    api.post(`/tenants/${id}/plan`),
-
-  provisionTenant: (id: number) =>
-    api.post(`/tenants/${id}/provision`),
-
-  getTenantJobs: (id: number) =>
-    api.get<TenantProvisionJob[]>(`/tenants/${id}/jobs`),
-
-  getTenantIssues: (id: number, params?: { status?: 'open' | 'resolved' | 'archived'; severity?: 'warning' | 'error' | 'critical'; limit?: number }) =>
-    api.get<TenantIssue[]>(`/tenants/${id}/issues`, { params }),
 
   getIssues: (params?: { status?: 'open' | 'resolved' | 'archived'; severity?: 'warning' | 'error' | 'critical'; limit?: number }) =>
     api.get<TenantIssue[]>('/admin/issues', { params }),

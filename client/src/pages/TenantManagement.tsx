@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AdminNav from '../components/AdminNav';
-import { adminApi, Tenant, TenantConfiguration, TenantIssue, TenantProvisionJob } from '../services/api';
+import { Tenant, TenantConfiguration, TenantIssue, TenantProvisionJob } from '../services/api';
+import { tenantControlApi } from '../services/tenantControlApi';
 import { useAuth } from '../contexts/AuthContext';
 
 const REGIONS = ['ap-southeast-1', 'ap-southeast-2', 'us-east-1', 'us-west-2', 'eu-west-1'] as const;
@@ -106,7 +107,7 @@ function TenantManagement() {
 
   const loadTenants = useCallback(async () => {
     try {
-      const response = await adminApi.getTenants();
+      const response = await tenantControlApi.getTenants();
       setTenants(response.data);
       setSelectedId((current) => current && response.data.some((tenant) => tenant.id === current)
         ? current
@@ -121,7 +122,7 @@ function TenantManagement() {
 
   const loadJobs = useCallback(async (tenantId: number) => {
     try {
-      const response = await adminApi.getTenantJobs(tenantId);
+      const response = await tenantControlApi.getTenantJobs(tenantId);
       setJobs(response.data);
     } catch (requestError) {
       console.error(requestError);
@@ -133,7 +134,7 @@ function TenantManagement() {
     setIssueLoading(true);
     setIssueError('');
     try {
-      const response = await adminApi.getTenantIssues(tenantId, {
+      const response = await tenantControlApi.getTenantIssues(tenantId, {
         status: issueStatus || undefined,
         severity: issueSeverity || undefined,
         limit: 100,
@@ -196,7 +197,7 @@ function TenantManagement() {
     clearMessages();
     setSaving(true);
     try {
-      await adminApi.updateTenant(selectedTenant.id, form);
+      await tenantControlApi.updateTenant(selectedTenant.id, form);
       setSuccess('Configuration saved and returned to pending approval.');
       await loadTenants();
     } catch (requestError: unknown) {
@@ -211,7 +212,7 @@ function TenantManagement() {
     clearMessages();
     setSaving(true);
     try {
-      const response = await adminApi.createTenant(createForm);
+      const response = await tenantControlApi.createTenant(createForm);
       setShowCreate(false);
       setCreateForm({ ...EMPTY_CONFIG, slug: '', admin_username: '', admin_password: '' });
       setSuccess('Tenant and tenant administrator account created.');
@@ -241,22 +242,22 @@ function TenantManagement() {
 
   const handleApprove = () => {
     if (!selectedTenant) return;
-    void performAction('approve', () => adminApi.approveTenant(selectedTenant.id), 'Tenant approved. You can now run a plan.');
+    void performAction('approve', () => tenantControlApi.approveTenant(selectedTenant.id), 'Tenant approved. You can now run a plan.');
   };
 
   const handleSuspend = () => {
     if (!selectedTenant || !window.confirm(`Suspend ${selectedTenant.name}?`)) return;
-    void performAction('suspend', () => adminApi.suspendTenant(selectedTenant.id), 'Tenant suspended. Existing infrastructure was not destroyed.');
+    void performAction('suspend', () => tenantControlApi.suspendTenant(selectedTenant.id), 'Tenant suspended. Existing infrastructure was not destroyed.');
   };
 
   const handlePlan = () => {
     if (!selectedTenant) return;
-    void performAction('plan', () => adminApi.planTenant(selectedTenant.id), 'Terraform plan queued.');
+    void performAction('plan', () => tenantControlApi.planTenant(selectedTenant.id), 'Terraform plan queued.');
   };
 
   const handleProvision = () => {
     if (!selectedTenant || !window.confirm(`Create or update the AWS server for ${selectedTenant.name}? This may incur AWS costs.`)) return;
-    void performAction('provision', () => adminApi.provisionTenant(selectedTenant.id), 'Terraform apply queued.');
+    void performAction('provision', () => tenantControlApi.provisionTenant(selectedTenant.id), 'Terraform apply queued.');
   };
 
   const pendingCount = tenants.filter((tenant) => tenant.status === 'pending').length;

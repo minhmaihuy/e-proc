@@ -1,5 +1,9 @@
 # Feature: Tenant router isolation and tenant issue log plane
 
+> Historical design note: login routing in this document was superseded by
+> `split-login-boundaries-design.md`. Tenant roles now use `/admin/login`, while
+> superadmin uses `/tenant/login`; backend endpoints enforce the same split.
+
 ## Requirements
 
 - While a superadmin is authenticated, when it opens the control application, the system shall serve tenant management at `/tenants` and deny every tenant assessment route.

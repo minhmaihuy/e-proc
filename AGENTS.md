@@ -64,12 +64,14 @@ This is a full-stack technical assessment platform with a React/Vite frontend an
   - `/exam` → active exam page
   - `/submit` → submission complete page
 - Admin flow routes:
-  - `/admin` is the shared login.
+  - `/admin/login` is the tenant `admin`/`tenant_admin` login. Legacy `/admin` redirects here.
+  - `/tenant/login` is the global `superadmin` login.
   - `/tenants` is the superadmin-only global tenant control plane.
   - `/admin/dashboard`, `/admin/questions`, `/admin/batches`, `/admin/batches/:id/students`, `/admin/batches/:id/results`, `/admin/settings`, `/admin/practice`, and `/admin/issues` belong to the current tenant. Both `admin` and `tenant_admin` may use them; superadmin may not.
   - `/admin/users` is current-tenant user management and is restricted to `tenant_admin`.
 - API wrapper: `client/src/services/api.ts`
-  - `adminApi` contains admin CRUD/reporting endpoints; attaches admin JWT via request interceptor
+  - `adminApi` contains current-tenant auth, CRUD, and reporting endpoints; attaches admin JWT via request interceptor
+  - `client/src/services/tenantControlApi.ts` contains superadmin auth and global tenant-control endpoints
   - `studentApi` contains exam lifecycle endpoints and violation reporting; attaches student JWT via request interceptor (see **Student auth** section below)
 
 ### Backend
@@ -77,7 +79,9 @@ This is a full-stack technical assessment platform with a React/Vite frontend an
 - Express app setup: `src/server/index.ts`
   - mounts `/api/tenants` (global control), `/api/admin` (tenant administration), `/api/admin/issues` (tenant log plane), and `/api/student`
   - exposes health (`/api/health`) and internal diagnostic endpoints (require admin JWT)
-- Admin routes: `src/server/routes/admin.ts`
+- Tenant auth/resource routes: `src/server/routes/adminAuth.ts` and `src/server/routes/admin.ts`
+- Global auth/resource routes: `src/server/routes/tenantAuth.ts` and `src/server/routes/tenants.ts`
+- Shared credential/JWT policy service: `src/server/services/adminAuthentication.ts`
 - Student routes: `src/server/routes/student.ts`
 - Middleware:
   - `src/server/middleware/auth.ts` — admin JWT middleware (`authMiddleware`)
@@ -111,7 +115,8 @@ This is a full-stack technical assessment platform with a React/Vite frontend an
 ### Security model
 
 #### Admin authentication, tenants, and roles
-- `POST /api/admin/login` returns a 24-hour HS256 JWT carrying account id, username, role, and tenant context. The frontend stores the token, expiry, role, user id, tenant id/slug/name in `localStorage` and sends `Authorization: Bearer <token>`.
+- Authentication is split by ownership plane. `/admin/login` calls `POST /api/admin/login` and accepts only matching-tenant `admin`/`tenant_admin`; `/tenant/login` calls `POST /api/tenants/login` and accepts only global `superadmin`. Valid credentials submitted to the wrong endpoint are denied before a JWT is issued.
+- Both endpoints use the shared `adminAuthentication.ts` service and return a 24-hour HS256 JWT carrying account id, username, role, and tenant context. The frontend stores the token, expiry, role, user id, tenant id/slug/name in `localStorage` and sends `Authorization: Bearer <token>`.
 - All protected admin routes use `authMiddleware`. It verifies the JWT and then reloads the account and tenant from the database on every request, so deleted accounts, changed roles/tenant assignments, and suspended tenants lose effective access immediately.
 - Roles are `superadmin`, `tenant_admin`, and `admin`:
   - `superadmin` is global, has no `tenant_id`, and manages tenant configuration/approval/provisioning through `/tenants` and `/api/tenants`. It cannot read or mutate tenant assessment data or tenant users. It may read a selected tenant's safe operational issue rows only through `GET /api/tenants/:id/issues`; it cannot use or mutate `/api/admin/issues`.
@@ -125,9 +130,9 @@ This is a full-stack technical assessment platform with a React/Vite frontend an
 - Recording mode per batch (`none`, `local`, `s3`) can only be enabled/changed by `tenant_admin`; backend enforcement is authoritative and `record_enabled` remains a compatibility mirror for S3.
 - Internal diagnostic endpoints (`/api/test-db`, `/api/queue/*`, `/api/cache/flush`, `/api/stats`) also require admin JWT
 - **Self-service admin registration has been removed** (2026-07 security hardening): `GET /is-initialized` and `POST /setup` no longer exist. Instead:
-  - The first `admin_users` row is seeded automatically in the control-plane by `seedSuperAdmin()` in `src/server/db/controlPlane.ts`, **only when the table is empty** — username/password default to `supperadmin` / `superadmin123#2nf` (role `superadmin`), overridable via the `SUPERADMIN_USERNAME` / `SUPERADMIN_PASSWORD` env vars. **Change this password immediately after first login** (`PUT /api/admin/change-password`) — the default lives in git history.
+  - The first `admin_users` row is seeded automatically in the control-plane by `seedSuperAdmin()` in `src/server/db/controlPlane.ts`, **only when the table is empty** — username/password default to `supperadmin` / `superadmin123#2nf` (role `superadmin`), overridable via the `SUPERADMIN_USERNAME` / `SUPERADMIN_PASSWORD` env vars. **Change this password immediately after first login** (`PUT /api/tenants/change-password`) — the default lives in git history.
   - Other tenant accounts are managed through `GET/POST/PUT/DELETE /api/admin/users` by that tenant's `tenant_admin` only.
-  - Global tenant control lives at `/tenants`; legacy `/admin/tenants` only redirects there. `/admin/tenant` has been removed and redirects to the tenant dashboard. Server-side ownership checks remain authoritative.
+  - Global tenant control login lives at `/tenant/login` and management lives at `/tenants`; legacy `/admin/tenants` only redirects to management. `/admin/tenant` has been removed and redirects to the tenant dashboard. Server-side ownership checks remain authoritative.
 
 #### Student authentication
 After the security hardening (2026-07), student auth works via a signed JWT rather than an unverified header:

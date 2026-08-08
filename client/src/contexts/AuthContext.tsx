@@ -1,5 +1,21 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { adminApi } from '../services/api';
+import { tenantControlApi } from '../services/tenantControlApi';
+
+interface LoginSession {
+  role: string;
+  userId: number;
+  tenantId: number | null;
+  tenantSlug: string | null;
+  tenantName: string | null;
+  serverTenantSlug: string;
+  serverTenantName: string;
+}
+
+interface LoginResponse extends LoginSession {
+  token: string;
+  expiresAt: string;
+}
 
 interface AuthContextType {
   token: string | null;
@@ -16,15 +32,8 @@ interface AuthContextType {
   isTenantAdmin: boolean;
   isUserManager: boolean;
   isLoading: boolean;
-  login: (username: string, password: string) => Promise<{
-    role: string;
-    userId: number;
-    tenantId: number | null;
-    tenantSlug: string | null;
-    tenantName: string | null;
-    serverTenantSlug: string;
-    serverTenantName: string;
-  }>;
+  loginAdmin: (username: string, password: string) => Promise<LoginSession>;
+  loginTenantControl: (username: string, password: string) => Promise<LoginSession>;
   logout: () => void;
 }
 
@@ -80,8 +89,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsLoading(false);
   }, []);
 
-  const login = async (username: string, password: string) => {
-    const res = await adminApi.login(username, password);
+  const loginWith = async (request: () => Promise<{ data: LoginResponse }>): Promise<LoginSession> => {
+    const res = await request();
     const {
       token: newToken,
       expiresAt,
@@ -125,8 +134,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   };
 
+  const loginAdmin = (username: string, password: string) =>
+    loginWith(() => adminApi.login(username, password));
+
+  const loginTenantControl = (username: string, password: string) =>
+    loginWith(() => tenantControlApi.login(username, password));
+
   const logout = () => {
-    adminApi.logout().catch(() => {}); // Fire and forget
+    const request = role === 'superadmin' ? tenantControlApi.logout() : adminApi.logout();
+    request.catch(() => {}); // Fire and forget
     localStorage.removeItem('adminToken');
     localStorage.removeItem('adminTokenExpiry');
     localStorage.removeItem('adminRole');
@@ -163,7 +179,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isTenantAdmin: role === 'tenant_admin',
         isUserManager: role === 'tenant_admin' && Boolean(tenantId) && Boolean(tenantSlug),
         isLoading,
-        login,
+        loginAdmin,
+        loginTenantControl,
         logout,
       }}
     >
