@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import PrivateRoute from './components/PrivateRoute';
 import AdminLogin from './pages/AdminLogin';
+import TenantLogin from './pages/TenantLogin';
 import AdminDashboard from './pages/AdminDashboard';
 import QuestionBank from './pages/QuestionBank';
 import BatchManagement from './pages/BatchManagement';
@@ -29,8 +30,11 @@ function App() {
         <Route path="/practice" element={<StudentPractice />} />
         <Route path="/submit" element={<StudentSubmit />} />
 
-        {/* Admin public routes */}
-        <Route path="/admin" element={<AdminLogin />} />
+        {/* Authentication surfaces are separated by ownership plane. */}
+        <Route path="/admin/login" element={<AdminLogin />} />
+        <Route path="/tenant/login" element={<TenantLogin />} />
+        <Route path="/admin" element={<Navigate to="/admin/login" replace />} />
+        <Route path="/tenant" element={<Navigate to="/tenant/login" replace />} />
 
         {/* Admin protected routes */}
         <Route path="/admin/dashboard" element={<PrivateRoute requirePlatformAdmin><AdminDashboard /></PrivateRoute>} />

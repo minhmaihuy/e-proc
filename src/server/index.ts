@@ -6,7 +6,9 @@ import { initDatabase } from './db/postgres.js';
 import { initControlPlaneDatabase } from './db/controlPlane.js';
 import { initLogPlaneDatabase } from './db/logPlane.js';
 import adminRoutes from './routes/admin.js';
+import adminAuthRoutes from './routes/adminAuth.js';
 import tenantRoutes from './routes/tenants.js';
+import tenantAuthRoutes from './routes/tenantAuth.js';
 import issueRoutes from './routes/issues.js';
 import studentRoutes from './routes/student.js';
 import { cache } from './cache.js';
@@ -87,8 +89,10 @@ app.use(session({
 app.use(tenantIssueRequestLogger);
 
 // Global control-plane and tenant data-plane are deliberately separate route trees.
+app.use('/api/tenants', tenantAuthRoutes);
 app.use('/api/tenants', tenantRoutes);
 app.use('/api/admin/issues', issueRoutes);
+app.use('/api/admin', adminAuthRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/student', studentRoutes);
 

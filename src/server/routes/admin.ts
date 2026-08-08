@@ -6,11 +6,9 @@ import db from '../db/postgres.js';
 import controlDb from '../db/controlPlane.js';
 import { normalizeUnicode, stripHtml, sanitizeFilename, buildContentDisposition } from '../../utils/string.js';
 import dotenv from 'dotenv';
-import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import rateLimit from 'express-rate-limit';
 import { authMiddleware, requireTenantDataAdmin, requireTenantUserManager } from '../middleware/auth.js';
-import { canManageTenantUser, getCurrentTenantConfig } from '../tenantContext.js';
+import { canManageTenantUser } from '../tenantContext.js';
 
 dotenv.config();
 
@@ -21,151 +19,10 @@ console.log('[Admin] USE_SQLITE:', USE_SQLITE, 'NODE_ENV:', process.env.NODE_ENV
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Rate limit riêng cho login: 10 request/phút
-const loginRateLimit = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  message: { error: 'Too many login attempts. Please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-// =============================================
-// AUTH ROUTES (không require JWT)
-// =============================================
-// Lưu ý: chức năng tự đăng ký admin (/is-initialized, /setup) đã bị gỡ bỏ vì lý
-// do bảo mật. Tài khoản superadmin đầu tiên được seed tự động khi admin_users
-// còn trống (xem seedSuperAdmin() trong src/server/db/controlPlane.ts); các tài
-// khoản admin khác chỉ được tạo bởi superadmin qua /api/admin/users.
-
-// POST /api/admin/login — Đăng nhập, nhận JWT
-router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
-  try {
-    const { username, password } = req.body;
-
-    if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
-    }
-    if (username.trim().length > 100 || password.length > 128) {
-      return res.status(400).json({ error: 'Invalid login request' });
-    }
-
-    const result = await controlDb.query(
-      `SELECT u.*, t.slug AS tenant_slug, t.name AS tenant_name, t.status AS tenant_status,
-              t.app_url AS tenant_app_url
-       FROM admin_users u
-       LEFT JOIN tenants t ON t.id = u.tenant_id
-       WHERE u.username = ?`,
-      [username.trim()]
-    );
-
-    const user = result.rows[0];
-    if (!user) {
-      // Trả về cùng message để tránh user enumeration
-      return res.status(401).json({ error: 'Invalid username or password' });
-    }
-
-    const isValid = await bcrypt.compare(password, user.password_hash);
-    if (!isValid) {
-      return res.status(401).json({ error: 'Invalid username or password' });
-    }
-
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-      return res.status(500).json({ error: 'Server configuration error' });
-    }
-
-    const expiresIn = '24h';
-    const role = user.role || 'admin';
-    const tenantId = user.tenant_id ? Number(user.tenant_id) : null;
-    const isSuperAdmin = role === 'superadmin';
-    if (!isSuperAdmin && (!tenantId || !user.tenant_slug)) {
-      console.warn('[Security] Blocked login for account without tenant', { userId: user.id, role });
-      return res.status(403).json({ error: 'Account is not assigned to a tenant. Contact the superadmin.' });
-    }
-    if (!isSuperAdmin && user.tenant_status === 'suspended') {
-      console.warn('[Security] Blocked login for suspended tenant', { userId: user.id, tenantId });
-      return res.status(403).json({ error: 'Tenant access is suspended.' });
-    }
-    if (!isSuperAdmin && user.tenant_slug !== getCurrentTenantConfig().slug) {
-      return res.status(403).json({
-        error: user.tenant_app_url
-          ? `Use your tenant application to sign in: ${user.tenant_app_url}`
-          : 'Use your tenant application to sign in.',
-      });
-    }
-    const tenantSlug = isSuperAdmin ? null : String(user.tenant_slug);
-    const tenantName = isSuperAdmin ? null : String(user.tenant_name);
-    const token = jwt.sign(
-      { id: user.id, username: user.username, role, tenantId, tenantSlug, tenantName },
-      secret,
-      { algorithm: 'HS256', expiresIn }
-    );
-
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-    console.log('[Auth] Login success:', username, 'role:', role, 'tenant:', tenantSlug || 'global');
-    const serverTenant = getCurrentTenantConfig();
-    return res.json({
-      token, expiresAt, userId: Number(user.id), role, tenantId, tenantSlug, tenantName,
-      serverTenantSlug: serverTenant.slug,
-      serverTenantName: serverTenant.name,
-    });
-  } catch (err: any) {
-    console.error('[Auth] Login error:', err);
-    return res.status(500).json({ error: 'Login failed' });
-  }
-});
-
-// POST /api/admin/logout — Client xóa token (stateless)
-router.post('/logout', (req: Request, res: Response) => {
-  return res.json({ success: true });
-});
-
 // =============================================
 // PROTECTED ROUTES — Require JWT từ đây trở xuống
 // =============================================
 router.use(authMiddleware);
-
-// PUT /api/admin/change-password — Đổi password (require JWT)
-router.put('/change-password', async (req: Request, res: Response) => {
-  try {
-    const { currentPassword, newPassword } = req.body;
-    const adminUser = req.adminUser;
-
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'currentPassword and newPassword are required' });
-    }
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'New password must be at least 8 characters' });
-    }
-
-    const result = await controlDb.query(
-      'SELECT * FROM admin_users WHERE id = ?',
-      [adminUser!.id]
-    );
-    const user = result.rows[0];
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const isValid = await bcrypt.compare(currentPassword, user.password_hash);
-    if (!isValid) {
-      return res.status(401).json({ error: 'Current password is incorrect' });
-    }
-
-    const newHash = await bcrypt.hash(newPassword, 10);
-    await controlDb.query(
-      'UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [newHash, adminUser!.id]
-    );
-
-    console.log('[Auth] Password changed for user:', adminUser!.username);
-    return res.json({ success: true, message: 'Password changed successfully' });
-  } catch (err: any) {
-    console.error('[Auth] Change password error:', err);
-    return res.status(500).json({ error: 'Failed to change password' });
-  }
-});
 
 // User-management routes are intentionally registered before the platform-admin
 // gate so tenant_admin can manage identities in its own JWT tenant.

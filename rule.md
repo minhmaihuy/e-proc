@@ -20,6 +20,7 @@ These rules record defects found while implementing tenant isolation, operationa
 | Archiving could destroy evidence | Full control was interpreted as physical deletion/edit access | Operational event content is immutable. Archive is a retained lifecycle state with actor/time metadata; there is no content-edit or physical-delete API | Verify archive preserves row/message and restore clears archive metadata without recreating the event |
 | Remote log observation could expose credentials or cross tenant boundaries | Remote database access requires transient secrets and dynamic connections | Resolve slug/secret ARN from the control database, allow only PostgreSQL `LOG_DATABASE_URL`, scope every query by trusted slug, close the pool in `finally`, and return bounded safe errors | Test secret parsing, tenant parameterization, pool closure, and sanitized failure output |
 | Changed documentation caused the harness to fail | Example documentation contained debug-like placeholders and realistic credential strings | Documentation examples must use visibly non-secret placeholders such as `<set-locally>` and must not contain unresolved debug markers or credential-shaped sample values | Run the same final harness against all changed code and documentation |
+| Tenant and superadmin login shared one public endpoint | Frontend role redirection was mistaken for an authorization boundary, allowing both ownership planes to authenticate through `/api/admin/login` | Keep `/admin/login` + `/api/admin/login` tenant-role only and `/tenant/login` + `/api/tenants/login` superadmin only. Enforce scope after credential validation in the shared backend authentication service; frontend routing is UX only | Assert each role succeeds only at its own endpoint and valid credentials at the wrong endpoint return 403 without a token; assert protected redirects preserve the ownership plane |
 
 ## Source-of-truth boundaries
 
@@ -29,6 +30,7 @@ These rules record defects found while implementing tenant isolation, operationa
 - `client/src/pages/TenantManagement.tsx` mirrors the derived domain for UX only.
 - `terraform/tenant-instance/**` owns provisioned DNS/application configuration. Legacy Terraform examples must not contradict the supported module.
 - `src/server/middleware/auth.ts`, `src/server/routes/issues.ts`, and tenant-scoped issue SQL own log authorization; hidden buttons are never sufficient.
+- `src/server/services/adminAuthentication.ts` owns credential/JWT policy; `adminAuth.ts` and `tenantAuth.ts` expose separate tenant and global login boundaries. Do not move role selection back into a shared frontend login.
 
 ## Required maintenance workflow
 
