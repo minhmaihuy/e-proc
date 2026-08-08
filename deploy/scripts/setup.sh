@@ -59,11 +59,12 @@ fi
 echo ""
 echo ">>> Setting up environment..."
 if [ -f /opt/eaudit/.env ]; then
-    cp /opt/eaudit/.env "$APP_DIR/.env"
+    install -m 600 /opt/eaudit/.env "$APP_DIR/.env"
     echo "    .env copied from /opt/eaudit/.env"
 else
-    echo "    WARNING: No .env found at /opt/eaudit/.env"
-    echo "    Create one manually: nano $APP_DIR/.env"
+    echo "    ERROR: No .env found at /opt/eaudit/.env" >&2
+    echo "    Create it from .env.example before running setup." >&2
+    exit 1
 fi
 
 # --- Install & Build Server ---
@@ -75,6 +76,10 @@ npm ci --production=false
 echo ""
 echo ">>> Building server..."
 npm run build:server
+
+echo ""
+echo ">>> Ensuring isolated PostgreSQL databases..."
+npm run db:ensure
 
 # --- Install & Build Client ---
 echo ""
@@ -99,18 +104,15 @@ pm2 start dist/server/server.js \
     --merge-logs
 pm2 save
 
-# --- Initialize Database Tables ---
-echo ""
-echo ">>> Initializing database tables..."
-sleep 3
-curl -s -X POST http://localhost:3001/api/init-tables | head -c 200
-echo ""
-
 # --- Health Check ---
 echo ""
 echo ">>> Running health check..."
-sleep 2
-HEALTH=$(curl -s http://localhost:3001/api/health)
+sleep 5
+if ! HEALTH=$(curl --fail --silent --show-error --max-time 10 http://localhost:3001/api/health); then
+    echo "    ERROR: Health check failed. Recent bounded PM2 logs follow:" >&2
+    pm2 logs eaudit --lines 50 --nostream || true
+    exit 1
+fi
 echo "    Health: $HEALTH"
 
 # --- Setup SSL ---

@@ -18,6 +18,8 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 - Run backend dev server: `npm run dev`
   - Starts the TypeScript server from `src/server/server.ts` via `tsx`
 - Build backend TypeScript: `npm run build:server`
+- Ensure the three configured PostgreSQL databases exist: `npm run db:ensure`
+  - Requires explicit, distinct `DATABASE_URL`, `CONTROL_DATABASE_URL`, and `LOG_DATABASE_URL`; creates missing databases only and requires PostgreSQL `CREATEDB` privilege
 - Run built backend: `npm start`
 
 ### Frontend
@@ -274,9 +276,9 @@ When troubleshooting "why doesn't my change show up," first confirm **which of t
 
 ### EC2 + nginx + pm2 deployment (`deploy/scripts/deploy.sh`)
 - Production at `epoc.devfasttrack.com` (at the time of writing) runs on a self-hosted EC2 instance — accessed via the AWS EC2 console (EC2 Instance Connect / Session Manager), not a persistent SSH key setup.
-- Deploy flow: `deploy/scripts/deploy.sh`, run from `/opt/eaudit/app` on the instance. It does `git pull origin main`, `rm -rf dist client/dist`, rebuilds both (`npm run build:server`, `cd client && npm run build`), then `pm2 delete/start eaudit` running `dist/server/server.js`. It does **not** touch `public/`, and does **not** invoke Vercel in any way.
+- Deploy flow: `deploy/scripts/deploy.sh`, run from `/opt/eaudit/app` on the instance. A root-run deploy first installs canonical `/opt/eaudit/.env` into the app directory with mode `600`, then drops to the PM2 owner. It refuses tracked local changes, fast-forwards `main`, installs/builds the backend, runs `npm run db:ensure`, builds the frontend, and only then replaces PM2 with `dist/server/server.js`. It fails on an unhealthy origin and prints bounded PM2 diagnostics. It does **not** touch `public/`, and does **not** invoke Vercel in any way.
 - nginx config: `deploy/nginx/eaudit.conf`. `/api/*` reverse-proxies to `http://127.0.0.1:3001` (the pm2-managed Node process); everything else is served as static files from `/opt/eaudit/app/client/dist` with SPA fallback (`try_files $uri $uri/ /index.html`).
-- DB is Postgres via RDS (`DATABASE_URL` set in the EC2 instance's `.env`, not committed to the repo) — so `USE_SQLITE` is `false` on this deployment; the SQLite code paths only run in local dev.
+- DB is Postgres via RDS (all three URLs are set in canonical `/opt/eaudit/.env`, not committed to the repo) — so `USE_SQLITE` is `false` on this deployment; the SQLite code paths only run in local dev. One RDS instance may host the planes, but `DATABASE_URL`, `CONTROL_DATABASE_URL`, and `LOG_DATABASE_URL` must use distinct database names. Bootstrap creates only absent databases; normal application startup creates their tables.
 - **Pushing to `origin/main` does not deploy anything by itself on this path.** There is no CI/CD webhook wired up as of this writing — someone must manually re-run `deploy/scripts/deploy.sh` on the EC2 instance after a push for the change to go live. If a fix "isn't showing up," the first thing to check is whether `deploy.sh` was actually re-run after the relevant commit landed on `main` — e.g. `cd /opt/eaudit/app && git log -1 --oneline` on the instance, compared against the latest commit that should be live.
 - Practical corollary seen in this repo's history: a question-bank import can appear to "not save a field" when the real cause is that the import ran against still-deployed old code (before a deploy), writing an empty value for a newer column, and simply needs to be **re-imported** after the deploy actually lands — re-importing the same file goes through the `ON CONFLICT DO UPDATE` / `INSERT OR REPLACE` path and overwrites the stale empty value correctly (verified: this is not a query bug, `db.query()`'s handling of `question_group` is correct in both DB modes).
 #### Screen recording — three modes: `none` / `local` / `s3` (per-batch `record_mode`)
@@ -419,6 +421,7 @@ Batches support two blueprint formats for question assignment:
 | `LOG_DATABASE_URL` | **Prod** | local SQLite only | Current tenant operational issue PostgreSQL connection. Required in production and isolated from both other planes. |
 | `LOG_SQLITE_PATH` | No | `data/tenant-logs.db` | Local current-tenant log-plane SQLite file. |
 | `LOG_DB_POOL_MAX` | No | `5` | Log-plane PostgreSQL pool maximum. |
+| `DATABASE_MAINTENANCE_DB` | No | `postgres` | Maintenance database used by `npm run db:ensure`; deployment role needs `CONNECT` and `CREATEDB`. |
 | `ALLOWED_ORIGINS` | No | `http://localhost:5173` | CORS whitelist, comma-separated |
 | `SESSION_SECRET` | Prod | local fallback | Must be at least 32 characters in production or startup exits. |
 | `SKIP_TIME_CHECK` | No | — | Set to `'true'` to bypass exam time-window validation in any mode |
