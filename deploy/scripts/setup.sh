@@ -81,6 +81,10 @@ echo ""
 echo ">>> Ensuring isolated PostgreSQL databases..."
 npm run db:ensure
 
+echo ""
+echo ">>> Migrating assessment, control, and log database planes..."
+npm run db:migrate
+
 # --- Install & Build Client ---
 echo ""
 echo ">>> Installing client dependencies..."

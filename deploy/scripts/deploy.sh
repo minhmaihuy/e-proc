@@ -68,6 +68,10 @@ echo ""
 echo ">>> Ensuring isolated PostgreSQL databases..."
 npm run db:ensure
 
+echo ""
+echo ">>> Migrating assessment, control, and log database planes..."
+npm run db:migrate
+
 # --- Rebuild Client ---
 echo ""
 echo ">>> Rebuilding client..."
