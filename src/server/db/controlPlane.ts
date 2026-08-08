@@ -389,8 +389,22 @@ export async function initControlPlaneDatabase() {
   await migrateLegacyControlPlane();
 }
 
+export async function closeControlPlaneDatabase(): Promise<void> {
+  if (pgPool) {
+    const pool = pgPool;
+    pgPool = null;
+    await pool.end();
+  }
+  if (sqliteDb) {
+    const database = sqliteDb;
+    sqliteDb = null;
+    if (database.open) database.close();
+  }
+  connectionConfig = null;
+}
+
 export function getControlPlaneConfig(): ControlPlaneConnectionConfig | null {
   return connectionConfig;
 }
 
-export default { initControlPlaneDatabase, query, getControlPlaneConfig };
+export default { initControlPlaneDatabase, closeControlPlaneDatabase, query, getControlPlaneConfig };

@@ -37,6 +37,7 @@ async function initPostgres() {
   pgPool.on('connect', () => console.log('[DB] New PG connection'));
 
   const client = await pgPool.connect();
+  try {
   console.log('[DB] PostgreSQL connected!');
   
   await client.query(`SET statement_timeout = '${process.env.STATEMENT_TIMEOUT || '30s'}'`);
@@ -199,23 +200,6 @@ await client.query(`
   `);
   console.log('[DB] practice_exams ready');
 
-  // Bài làm practice: 1 học viên = 1 bài làm duy nhất cho batch practice của mình
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS practice_submissions (
-      id SERIAL PRIMARY KEY,
-      student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-      practice_exam_id INTEGER NOT NULL,
-      answer TEXT,
-      ai_score FLOAT,
-      ai_feedback TEXT,
-      trainer_score FLOAT,
-      trainer_feedback TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  console.log('[DB] practice_submissions ready');
-  
   await client.query(`
     CREATE TABLE IF NOT EXISTS students (
       id SERIAL PRIMARY KEY,
@@ -244,6 +228,24 @@ await client.query(`
     } catch (_) { /* already exists */ }
   }
   console.log('[DB] students ready');
+
+  // Bài làm practice: 1 học viên = 1 bài làm duy nhất cho batch practice của mình.
+  // Phải tạo sau students vì PostgreSQL kiểm tra foreign key ngay khi CREATE TABLE.
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS practice_submissions (
+      id SERIAL PRIMARY KEY,
+      student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      practice_exam_id INTEGER NOT NULL,
+      answer TEXT,
+      ai_score FLOAT,
+      ai_feedback TEXT,
+      trainer_score FLOAT,
+      trainer_feedback TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  console.log('[DB] practice_submissions ready');
   
   await client.query(`
     CREATE TABLE IF NOT EXISTS exam_questions (
@@ -408,8 +410,10 @@ await client.query(`
   await client.query(`CREATE INDEX IF NOT EXISTS idx_tenant_audit_tenant ON tenant_audit_events(tenant_id, created_at DESC)`);
   console.log('[DB] multi-tenant control-plane tables ready');
 
-  client.release();
   console.log('[DB] All PostgreSQL tables initialized');
+  } finally {
+    client.release();
+  }
 }
 
 function initSqlite() {
@@ -529,24 +533,6 @@ function initSqlite() {
       )
     `);
 
-    // Bài làm practice: 1 học viên = 1 bài làm duy nhất cho batch practice của mình
-    sqliteDb.exec(`
-      CREATE TABLE IF NOT EXISTS practice_submissions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        practice_exam_id INTEGER NOT NULL,
-        answer TEXT,
-        ai_score REAL,
-        ai_feedback TEXT,
-        trainer_score REAL,
-        trainer_feedback TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
-      )
-    `);
-
-
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS students (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -578,6 +564,23 @@ function initSqlite() {
     if (!colNames.includes('recording_password')) {
       sqliteDb.exec('ALTER TABLE students ADD COLUMN recording_password TEXT');
     }
+
+    // Giữ cùng thứ tự phụ thuộc với PostgreSQL: students trước practice_submissions.
+    sqliteDb.exec(`
+      CREATE TABLE IF NOT EXISTS practice_submissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        practice_exam_id INTEGER NOT NULL,
+        answer TEXT,
+        ai_score REAL,
+        ai_feedback TEXT,
+        trainer_score REAL,
+        trainer_feedback TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+      )
+    `);
     
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS exam_questions (
@@ -804,6 +807,19 @@ export async function initDatabase() {
   await bindDataPlaneTenant();
 }
 
+export async function closeDatabase(): Promise<void> {
+  if (pgPool) {
+    const pool = pgPool;
+    pgPool = null;
+    await pool.end();
+  }
+  if (sqliteDb) {
+    const database = sqliteDb;
+    sqliteDb = null;
+    if (database.open) database.close();
+  }
+}
+
 interface DbResult {
   rows: any[];
   rowCount: number;
@@ -846,4 +862,4 @@ export function getPool() {
   return pgPool;
 }
 
-export default { initDatabase, query, getPool };
+export default { initDatabase, closeDatabase, query, getPool };

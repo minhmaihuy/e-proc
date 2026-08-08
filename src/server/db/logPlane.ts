@@ -263,8 +263,22 @@ export async function initLogPlaneDatabase() {
   await bindLogPlaneTenant();
 }
 
+export async function closeLogPlaneDatabase(): Promise<void> {
+  if (pgPool) {
+    const pool = pgPool;
+    pgPool = null;
+    await pool.end();
+  }
+  if (sqliteDb) {
+    const database = sqliteDb;
+    sqliteDb = null;
+    if (database.open) database.close();
+  }
+  connectionConfig = null;
+}
+
 export function getLogPlaneConfig(): LogPlaneConnectionConfig | null {
   return connectionConfig;
 }
 
-export default { initLogPlaneDatabase, query, recordTenantIssue, getLogPlaneConfig };
+export default { initLogPlaneDatabase, closeLogPlaneDatabase, query, recordTenantIssue, getLogPlaneConfig };
