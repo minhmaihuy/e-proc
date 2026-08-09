@@ -4,6 +4,8 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Maintenance contract
 
+- **Hai file hướng dẫn phải đồng bộ.** `CLAUDE.md` (cho Claude Code) và `AGENTS.md` (cho Codex) dùng chung một thân nội dung: mọi thứ từ `## Commands` tới cuối file phải **giống hệt nhau từng byte**. Chỉ phần tiêu đề và mục Maintenance contract này được phép khác. Sửa kiến thức dự án ở một file thì phải chép sang file kia trong **cùng một thay đổi** — đừng để lần sau mới làm.
+- Kiểm tra bằng máy, đừng tin trí nhớ: `npm run docs:check` (hoặc `npm run test:tenant`) sẽ báo lỗi và chỉ ra dòng đầu tiên bị lệch. Chạy nó trước khi bàn giao bất kỳ thay đổi nào có đụng tới hai file này.
 - Read `rule.md` before changing tenant domains, role ownership, database planes, operational logs, Terraform, or deployment configuration. Add newly discovered regression risks to that file in the same change.
 - This rule documents behavior observed in source at `main` commit `752448f` (2026-08-08). If code and this file differ, verify the code path and update this rule in the same change.
 - The reusable Codex skill is `D:\Codex-Skills\e-proc-platform`. Keep its `references/features.md`, `references/api-map.md`, architecture, and verification guidance synchronized with material feature, role, schema, infrastructure, or deployment changes.

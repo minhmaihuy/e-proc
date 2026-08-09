@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Maintenance contract
+
+- **Hai file hướng dẫn phải đồng bộ.** `CLAUDE.md` (cho Claude Code) và `AGENTS.md` (cho Codex) dùng chung một thân nội dung: mọi thứ từ `## Commands` tới cuối file phải **giống hệt nhau từng byte**. Chỉ phần tiêu đề và mục Maintenance contract này được phép khác. Sửa kiến thức dự án ở một file thì phải chép sang file kia trong **cùng một thay đổi** — đừng để lần sau mới làm.
+- Kiểm tra bằng máy, đừng tin trí nhớ: `npm run docs:check` (hoặc `npm run test:tenant`) sẽ báo lỗi và chỉ ra dòng đầu tiên bị lệch. Chạy nó trước khi bàn giao bất kỳ thay đổi nào có đụng tới hai file này.
+- Read `rule.md` before changing tenant domains, role ownership, database planes, operational logs, Terraform, or deployment configuration. Add newly discovered regression risks to that file in the same change.
+- This rule documents behavior observed in source at `main` commit `752448f` (2026-08-08). If code and this file differ, verify the code path and update this rule in the same change.
+- The reusable Codex skill is `D:\Codex-Skills\e-proc-platform`. Keep its `references/features.md`, `references/api-map.md`, architecture, and verification guidance synchronized with material feature, role, schema, infrastructure, or deployment changes.
+- Preserve user-owned modified/untracked files. Inspect `git status` before editing and before delivery.
+- Treat security-sensitive frontend controls as UX only; enforce the same rule in backend middleware, route ownership checks, and SQL scope.
+- For changes that cross a documented coupling boundary, update every listed file and add regression coverage. Do not patch only the visible UI or only one of the duplicated exam/practice flows.
+
 ## Commands
 
 ### Backend
@@ -9,6 +20,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Run backend dev server: `npm run dev`
   - Starts the TypeScript server from `src/server/server.ts` via `tsx`
 - Build backend TypeScript: `npm run build:server`
+- Verify critical server runtime dependencies: `npm run deps:verify`
+  - Resolves and loads `base64-js` and `mammoth`; deploy must stop before database or PM2 work if this fails
+- Ensure the three configured PostgreSQL databases exist: `npm run db:ensure`
+  - Requires explicit, distinct `DATABASE_URL`, `CONTROL_DATABASE_URL`, and `LOG_DATABASE_URL`; creates missing databases only and requires PostgreSQL `CREATEDB` privilege
+- Migrate all three configured database schemas: `npm run db:migrate`
+  - Runs assessment, global control, then tenant log initialization; stops on the first failure and closes all migration connections
 - Run built backend: `npm start`
 
 ### Frontend
@@ -25,6 +42,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Type-check only (no emit)
 - Backend: `npx tsc --noEmit` (from project root)
 - Frontend: `npx tsc --noEmit` (from `client/`)
+
+### Maintenance harness
+- Run the project wrapper with the applicable design spec: `python scripts/run-code-harness.py --target <changeset-folder> --rules specs/fullstack-harness.rules.json --spec specs/<feature>-design.md --report <report-folder>`.
+- `--spec` must identify the requirements used by every pending `llm_judge`; do not run the final maintenance gate against an undocumented feature change.
 
 ## Repository structure
 
@@ -51,27 +72,37 @@ This is a full-stack technical assessment platform with a React/Vite frontend an
   - `/exam` → active exam page
   - `/submit` → submission complete page
 - Admin flow routes:
-  - `/admin`, `/admin/dashboard`, `/admin/questions`, `/admin/batches`, `/admin/batches/:id/students`, `/admin/batches/:id/results`, `/admin/settings`, `/admin/users` (superadmin-only, see **Admin authentication** below)
+  - `/admin/login` is the tenant `admin`/`tenant_admin` login. Legacy `/admin` redirects here.
+  - `/tenant/login` is the global `superadmin` login.
+  - `/tenants` is the superadmin-only global tenant control plane.
+  - `/admin/dashboard`, `/admin/questions`, `/admin/batches`, `/admin/batches/:id/students`, `/admin/batches/:id/results`, `/admin/settings`, `/admin/practice`, and `/admin/issues` belong to the current tenant. Both `admin` and `tenant_admin` may use them; superadmin may not.
+  - `/admin/users` is current-tenant user management and is restricted to `tenant_admin`.
 - API wrapper: `client/src/services/api.ts`
-  - `adminApi` contains admin CRUD/reporting endpoints; attaches admin JWT via request interceptor
+  - `adminApi` contains current-tenant auth, CRUD, and reporting endpoints; attaches admin JWT via request interceptor
+  - `client/src/services/tenantControlApi.ts` contains superadmin auth and global tenant-control endpoints
   - `studentApi` contains exam lifecycle endpoints and violation reporting; attaches student JWT via request interceptor (see **Student auth** section below)
 
 ### Backend
 - HTTP server entry: `src/server/server.ts`
 - Express app setup: `src/server/index.ts`
-  - mounts `/api/admin` and `/api/student`
+  - mounts `/api/tenants` (global control), `/api/admin` (tenant administration), `/api/admin/issues` (tenant log plane), and `/api/student`
   - exposes health (`/api/health`) and internal diagnostic endpoints (require admin JWT)
-- Admin routes: `src/server/routes/admin.ts`
+- Tenant auth/resource routes: `src/server/routes/adminAuth.ts` and `src/server/routes/admin.ts`
+- Global auth/resource routes: `src/server/routes/tenantAuth.ts` and `src/server/routes/tenants.ts`
+- Shared credential/JWT policy service: `src/server/services/adminAuthentication.ts`
 - Student routes: `src/server/routes/student.ts`
 - Middleware:
   - `src/server/middleware/auth.ts` — admin JWT middleware (`authMiddleware`)
   - `src/server/middleware/studentAuth.ts` — student JWT middleware (`studentAuthMiddleware`)
 
 ### Data/storage model
-- DB layer: `src/server/db/postgres.ts`
-- Runtime chooses DB mode from environment:
-  - if `DATABASE_URL` is absent, local dev uses SQLite via `better-sqlite3`
-  - if `DATABASE_URL` is present, production-style PostgreSQL path is used
+- The database is split into three ownership planes. Never configure one plane to fall back to another:
+  - **FSA-CLS assessment data-plane:** `src/server/db/postgres.ts`; `DATABASE_URL` in production or `data/eaudit.db` locally. It owns questions, batches, students, submissions, violations, and assessment/AI state. `data_plane_metadata` identifies this database as tenant `fsa-cls`.
+  - **Global tenant control-plane:** `src/server/db/controlPlane.ts`; `CONTROL_DATABASE_URL` in production or `data/control-plane.db` locally. It owns only `admin_users`, `tenants`, `tenant_provision_jobs`, and `tenant_audit_events`.
+  - **Per-tenant operational log-plane:** `src/server/db/logPlane.ts`; `LOG_DATABASE_URL` in production or `data/tenant-logs.db` locally. It owns `log_plane_metadata` and `tenant_issue_logs`. It records bounded HTTP 4xx/5xx operational events and is immutably bound to `TENANT_SLUG`. It must not store request/response bodies, headers, query strings, JWTs, secrets, stack traces, or candidate anti-cheat evidence.
+- Startup initializes assessment data-plane, global control-plane, tenant log-plane, then cache/queue. It copies legacy admin/tenant rows without changing password hashes and maps tenant slug `fsa` to `fsa-cls`.
+- Legacy control tables remain in the data database only for rollback. All runtime authentication, tenant configuration, provisioning jobs, and tenant audit writes must use `controlPlane.ts`.
+- Production startup fails if `CONTROL_DATABASE_URL` or `LOG_DATABASE_URL` is missing. Neither may fall back to `DATABASE_URL`.
 - Core tables are created in the DB layer on startup:
   - `question_bank`
   - `batches` (has nullable `practice_exam_id` — set = the batch is a Practice batch, see **Practice exams** below)
@@ -82,26 +113,34 @@ This is a full-stack technical assessment platform with a React/Vite frontend an
   - `ai_queue` (has `kind` column: `'exam'` grades an `exam_questions` row, `'practice'` grades a `practice_submissions` row — for practice jobs, `exam_question_id` actually holds the `practice_submissions.id`)
   - `ai_settings`
   - `practice_exams` / `practice_submissions` (see **Practice exams** below)
+  - `data_plane_metadata`
+- Control-plane tables are `admin_users`, `tenants`, `tenant_provision_jobs`, and `tenant_audit_events`.
 - `question_bank` columns relevant to import/grading/export (see "Question bank: groups and HTML-safe plain text" below):
   - `module` — topic/category (e.g. "Pointers", "OOP")
   - `question_group` — nullable, names the question set a question belongs to (e.g. `CPP_PRINT_IOT`, `CPP_EMB_AUTOSAR`), used to disambiguate question sets that otherwise share the same `module`/`level`/`type` framework
   - `question_sample` — original content as imported, may contain HTML markup (rendered to students via sanitized `dangerouslySetInnerHTML`)
   - `question_plain` — nullable, HTML-stripped plain-text version of `question_sample`, auto-generated at import time; used anywhere the question text is consumed by something other than the student-facing renderer (AI grading prompts, Excel export)
-  - `admin_users`
-
 ### Security model
 
-#### Admin authentication & roles
-- `POST /api/admin/login` → returns JWT (`expiresIn: 24h`) **and** the account's `role` (`'admin'` | `'superadmin'`), both in the response body and inside the JWT payload (read from `admin_users.role`, no longer hard-coded)
-- Stored in `localStorage.adminToken` (+ `localStorage.adminRole`); sent as `Authorization: Bearer <token>` header
-- All `/api/admin/*` routes after `/login` require `authMiddleware`
-- **Roles:** `admin_users.role` ∈ `{'admin', 'superadmin'}`. `requireSuperAdmin` (`src/server/middleware/auth.ts`) gates privileged routes with 403.
-  - **Recording mode per batch** (`batches.record_mode` ∈ `{'none','local','s3'}`, default `'none'`; replaced the old boolean `batches.record_enabled` toggle): only `role === 'superadmin'` may set it to anything other than `'none'`. Enforced server-side in `POST/PUT /api/admin/batches` — on create a plain admin's requested mode is **forced to `'none'`**; on update it **keeps the existing DB `record_mode` unchanged** (a plain admin can neither enable nor change it, for `local` OR `s3`). The batch form dropdown is `disabled` for non-superadmins (UX only). `record_enabled` is kept in sync (`= record_mode === 's3'`) for backward compat but `record_mode` is the source of truth.
+#### Admin authentication, tenants, and roles
+- Authentication is split by ownership plane. `/admin/login` calls `POST /api/admin/login` and accepts only matching-tenant `admin`/`tenant_admin`; `/tenant/login` calls `POST /api/tenants/login` and accepts only global `superadmin`. Valid credentials submitted to the wrong endpoint are denied before a JWT is issued.
+- Both endpoints use the shared `adminAuthentication.ts` service and return a 24-hour HS256 JWT carrying account id, username, role, and tenant context. The frontend stores the token, expiry, role, user id, tenant id/slug/name in `localStorage` and sends `Authorization: Bearer <token>`.
+- All protected admin routes use `authMiddleware`. It verifies the JWT and then reloads the account and tenant from the database on every request, so deleted accounts, changed roles/tenant assignments, and suspended tenants lose effective access immediately.
+- Roles are `superadmin`, `tenant_admin`, and `admin`:
+  - `superadmin` is global, has no `tenant_id`, and manages tenant configuration/approval/provisioning through `/tenants` and `/api/tenants`. It cannot read or mutate tenant assessment data or tenant users. It may read a selected tenant's safe operational issue rows only through `GET /api/tenants/:id/issues`; it cannot use or mutate `/api/admin/issues`.
+  - `tenant_admin` belongs to exactly one tenant and owns all audit/assessment functions for that tenant, including tenant user management, recording-mode configuration, and operational-log lifecycle management. It does not edit global tenant/Terraform configuration.
+  - `admin` belongs to exactly one tenant and may use question-bank, batch, result, practice, AI-setting, dashboard, and read-only issue-log routes only on a server whose current `TENANT_SLUG` matches its JWT tenant.
+- `requireTenantDataAdmin` protects tenant assessment and issue-list routes; `requireTenantLogManager` protects issue lifecycle mutations; `requireTenantUserManager` protects current-tenant user CRUD; `requireSuperAdmin` protects `/api/tenants`. The legacy `requirePlatformAdmin` export aliases `requireTenantDataAdmin` and therefore excludes superadmin.
+- Frontend `PrivateRoute`, `AdminNav`, and hidden controls are UX only. Backend middleware and tenant-scoped SQL/ownership checks are the security boundary.
+- Every non-superadmin account requires `tenant_id`. Startup assigns null/legacy-FSA non-superadmin accounts to `fsa-cls`; accounts explicitly belonging to another tenant remain unchanged. The data-plane default is `fsa-cls` (`TENANT_SLUG`, then `DEFAULT_TENANT_SLUG`, then `fsa-cls`).
+- A suspended tenant is blocked at login and by authenticated requests. Current code does not block a `pending` tenant from tenant-management login; `approved` is enforced before Terraform plan/apply. Treat this as an implementation fact and a requirement gap if product policy says only approved tenants may use the application.
+- User-management safeguards: no self-delete, self-role/tenant change, or self password reset through user CRUD; preserve the last tenant admin; tenant admins cannot access or create superadmins or cross-tenant users. Superadmin is not a tenant user manager.
+- Recording mode per batch (`none`, `local`, `s3`) can only be enabled/changed by `tenant_admin`; backend enforcement is authoritative and `record_enabled` remains a compatibility mirror for S3.
 - Internal diagnostic endpoints (`/api/test-db`, `/api/queue/*`, `/api/cache/flush`, `/api/stats`) also require admin JWT
 - **Self-service admin registration has been removed** (2026-07 security hardening): `GET /is-initialized` and `POST /setup` no longer exist. Instead:
-  - The first `admin_users` row is seeded automatically at DB startup by `seedSuperAdmin()` in `src/server/db/postgres.ts`, **only when the table is empty** — username/password default to `supperadmin` / `superadmin123#2nf` (role `superadmin`), overridable via the `SUPERADMIN_USERNAME` / `SUPERADMIN_PASSWORD` env vars. **Change this password immediately after first login** (`PUT /api/admin/change-password`) — the default lives in git history.
-  - All other admin accounts can only be created/edited/deleted by an existing `superadmin`, via `GET/POST/PUT/DELETE /api/admin/users` (`src/server/routes/admin.ts`), gated by the `requireSuperAdmin` middleware (`src/server/middleware/auth.ts`) which checks `req.adminUser.role === 'superadmin'`. Guards in place: an account cannot demote or delete itself, and the last remaining `superadmin` cannot be deleted.
-  - Frontend: `client/src/pages/UserManagement.tsx` (route `/admin/users`) is the only UI for this — gated both by `PrivateRoute`'s `requireSuperAdmin` prop (`client/src/components/PrivateRoute.tsx`) and by conditionally rendering the "User Management" nav link (`isSuperAdmin` from `AuthContext`) across all admin pages. Non-superadmin accounts never see the link and are bounced to `/admin/dashboard` if they navigate to the URL directly — though the real enforcement is server-side (`requireSuperAdmin`), since client-side gating alone is not a security boundary.
+  - The first `admin_users` row is seeded automatically in the control-plane by `seedSuperAdmin()` in `src/server/db/controlPlane.ts`, **only when the table is empty** — username/password default to `supperadmin` / `superadmin123#2nf` (role `superadmin`), overridable via the `SUPERADMIN_USERNAME` / `SUPERADMIN_PASSWORD` env vars. **Change this password immediately after first login** (`PUT /api/tenants/change-password`) — the default lives in git history.
+  - Other tenant accounts are managed through `GET/POST/PUT/DELETE /api/admin/users` by that tenant's `tenant_admin` only.
+  - Global tenant control login lives at `/tenant/login` and management lives at `/tenants`; legacy `/admin/tenants` only redirects to management. `/admin/tenant` has been removed and redirects to the tenant dashboard. Server-side ownership checks remain authoritative.
 
 #### Student authentication
 After the security hardening (2026-07), student auth works via a signed JWT rather than an unverified header:
@@ -243,15 +282,14 @@ When troubleshooting "why doesn't my change show up," first confirm **which of t
 
 ### EC2 + nginx + pm2 deployment (`deploy/scripts/deploy.sh`)
 - Production at `epoc.devfasttrack.com` (at the time of writing) runs on a self-hosted EC2 instance — accessed via the AWS EC2 console (EC2 Instance Connect / Session Manager), not a persistent SSH key setup.
-- Deploy flow: `deploy/scripts/deploy.sh`, run from `/opt/eaudit/app` on the instance. It does `git pull origin main`, `rm -rf dist client/dist`, rebuilds both (`npm run build:server`, `cd client && npm run build`), then `pm2 delete/start eaudit` running `dist/server/server.js`. It does **not** touch `public/`, and does **not** invoke Vercel in any way.
+- Deploy flow: `deploy/scripts/deploy.sh`, run from `/opt/eaudit/app` on the instance. A root-run deploy first installs canonical `/opt/eaudit/.env` into the app directory with mode `600`, then drops to the PM2 owner. It refuses tracked local changes, fast-forwards `main`, runs deterministic root install plus `npm run deps:verify`, builds the backend, runs `npm run db:ensure`, migrates assessment/control/log through `npm run db:migrate`, builds the frontend, and only then replaces PM2 with `dist/server/server.js`. It fails on dependency, migration, or origin-health checks and prints bounded diagnostics. It does **not** touch `public/`, and does **not** invoke Vercel in any way.
 - nginx config: `deploy/nginx/eaudit.conf`. `/api/*` reverse-proxies to `http://127.0.0.1:3001` (the pm2-managed Node process); everything else is served as static files from `/opt/eaudit/app/client/dist` with SPA fallback (`try_files $uri $uri/ /index.html`).
-- DB is Postgres via RDS (`DATABASE_URL` set in the EC2 instance's `.env`, not committed to the repo) — so `USE_SQLITE` is `false` on this deployment; the SQLite code paths only run in local dev.
+- DB is Postgres via RDS (all three URLs are set in canonical `/opt/eaudit/.env`, not committed to the repo) — so `USE_SQLITE` is `false` on this deployment; the SQLite code paths only run in local dev. One RDS instance may host the planes, but `DATABASE_URL`, `CONTROL_DATABASE_URL`, and `LOG_DATABASE_URL` must use distinct database names. Bootstrap creates only absent databases; deploy migrates all three schemas explicitly, and normal startup repeats idempotent initialization as a safety check.
 - **Pushing to `origin/main` does not deploy anything by itself on this path.** There is no CI/CD webhook wired up as of this writing — someone must manually re-run `deploy/scripts/deploy.sh` on the EC2 instance after a push for the change to go live. If a fix "isn't showing up," the first thing to check is whether `deploy.sh` was actually re-run after the relevant commit landed on `main` — e.g. `cd /opt/eaudit/app && git log -1 --oneline` on the instance, compared against the latest commit that should be live.
 - Practical corollary seen in this repo's history: a question-bank import can appear to "not save a field" when the real cause is that the import ran against still-deployed old code (before a deploy), writing an empty value for a newer column, and simply needs to be **re-imported** after the deploy actually lands — re-importing the same file goes through the `ON CONFLICT DO UPDATE` / `INSERT OR REPLACE` path and overwrites the stale empty value correctly (verified: this is not a query bug, `db.query()`'s handling of `question_group` is correct in both DB modes).
-
 #### Screen recording — three modes: `none` / `local` / `s3` (per-batch `record_mode`)
 
-The exam can record the candidate's full screen. Since 2026-07-30 the per-batch setting is a **3-value `record_mode`** (`batches.record_mode`, replacing the old boolean `record_enabled` — superadmin-only, see Admin roles):
+The exam can record the candidate's full screen. Since 2026-07-30 the per-batch setting is a **3-value `record_mode`** (`batches.record_mode`, replacing the old boolean `record_enabled` — admin-only, see Admin roles):
 
 - **`none`** — no recording. `StudentConfirm` skips screen-share entirely; `StudentExam` skips the `recording_stopped` handler and resume-after-reload guard.
 - **`s3`** — records and uploads **directly to AWS S3** via presigned PUT URLs during the exam (details below). The video never resides on the candidate's machine.
@@ -284,7 +322,7 @@ Deletion: S3 Lifecycle rule auto-expires objects after N days (no backend script
 - **Client-side zip encryption:** `client/src/services/examRecorder.ts` uses **`@zip.js/zip.js`** (`ZipWriter` with `password`, `encryptionStrength: 3` = AES-256, `level: 0` — no recompression since webm is already compressed). Each 5-min part becomes `exam_{stamp}_part{NNN}.zip` written to the folder via File System Access API.
 - **Password provenance:** `POST /api/student/verify` generates `crypto.randomBytes(24).toString('base64url')` **once per `students` row** and stores it in `students.recording_password` (reused on subsequent `/verify` calls for that row, so resume uses the same password). It is returned to the client **only for `local` mode** (needed to encrypt) and **never displayed to the candidate**.
 - **Password scope:** keyed by `students.id`, and since a `students` row is one **(person × batch)**, the same person in different batches gets **different** passwords; all zip parts of one exam attempt share **one** password.
-- **Admin retrieval:** the password is surfaced on the **Results page** (`Results.tsx`) next to each student (`r.student.recording_password`, admin view) so an admin can decrypt the GitLab-committed zip. It rides along in the `/batches/:id/results` payload via `SELECT s.*`.
+- **Admin retrieval:** the password is surfaced on the **Results page** (`Results.tsx`) next to each student (`r.student.recording_password`, admin-only) so an admin can decrypt the GitLab-committed zip. It rides along in the `/batches/:id/results` payload via `SELECT s.*`.
 - **DB columns:** `batches.record_mode` (VARCHAR(16)/TEXT default `'none'`) and `students.recording_password` (TEXT), created + migrated in `src/server/db/postgres.ts` for both Postgres and SQLite. Migration backfills `record_mode='s3'` where the old `record_enabled` was true. **Deploy note (Vercel + Supabase):** these `ALTER TABLE`s run automatically at DB init on cold-start (idempotent, `IF NOT EXISTS` + try/catch), but to avoid a race on the first few requests after deploy, prefer running them manually in the Supabase SQL Editor **before** deploying.
 
 ### Queue / AI grading
@@ -294,14 +332,12 @@ Deletion: S3 Lifecycle rule auto-expires objects after N days (no backend script
 - The AI grading prompt (built in `src/server/cache.ts`, inside the queue-processing job) uses `eq.question_plain` (falling back to `stripHtml(eq.question_sample)` for rows imported before this column existed) — never the raw HTML `question_sample`. Rubric fields (`rubric_must_have`/`rubric_nice_to_have`/`rubric_optional`) are still passed as-is (not HTML-stripped); they are expected to be entered as plain text via the Excel rubric columns.
 
 ### Question bank: groups and HTML-safe plain text
-- **A question is identified by the PAIR `(id, question_group)`, not by `id` alone** (changed 2026-08-02). Two different question sets legitimately reuse the same IDs — the real `QB_Output_CPP_EMB_PRINT_IOT_ch6-10.xlsx` and `QB_Output_CPP_EMB_AUTOSAR_ch6-10.xlsx` files share **all 100** IDs (`CH6-E-01` … `CH10-H-18`). While `question_bank.id` was the sole primary key, importing the second file `UPDATE`d all 100 rows of the first instead of inserting — the first set was silently destroyed. Consequences to preserve:
-  - `question_bank` PK is `(id, question_group)`; `question_group` is `NOT NULL DEFAULT ''` in both DB modes. The SQLite branch cannot `ALTER` a PK, so `postgres.ts` **rebuilds the table** (create `question_bank_new` → copy → drop → rename) when it detects the old single-column PK. The Postgres branch drops/re-adds the PK constraint. Both migrations are idempotent (they check the current PK first).
-  - Both import routes upsert on `ON CONFLICT (id, question_group)` / `INSERT OR REPLACE` with `question_group` supplied, and their "already exists?" probe filters on both columns.
-  - `exam_questions` carries a `question_group` column, written when questions are assigned (`pickQuestionIds()` returns `{ id, questionGroup }` pairs). **Every join to `question_bank` must match on both columns** — `JOIN question_bank q ON eq.question_id = q.id AND COALESCE(eq.question_group,'') = COALESCE(q.question_group,'')`. There are 6 such joins (`src/ai/queue.ts`, `src/server/cache.ts`, `admin.ts` ×2, `student.ts` ×2). Joining on `question_id` alone silently **doubles** the row count when two sets share an ID, so a student's exam shows duplicated questions and AI grading picks an arbitrary set's rubric.
-  - Delete endpoints take the group too: `DELETE /questions/:id?group=<question_group>`, and bulk-delete accepts `"id|||group"` keys (plain `id` still means "all groups", for older clients). The frontend keys row selection with `questionKey(q)` = `` `${id}|||${group}` `` for the same reason.
-  - `scripts/check-question-bank.ts` (read-only) reports per-group counts and diffs the DB against source `.xlsx` files: `npx tsx scripts/check-question-bank.ts "path/A.xlsx" "path/B.xlsx"`.
+- A question is identified by `(id, question_group)`, not `id` alone. Preserve the composite primary key and include both columns in import upserts, existence checks, deletes, exam assignment, and every `exam_questions` → `question_bank` join.
+- `question_group` is `NOT NULL DEFAULT ''`. SQLite migrates the primary key by rebuilding the table; PostgreSQL replaces the primary-key constraint. Both paths must remain idempotent.
+- Delete one grouped question through `DELETE /questions/:id?group=<group>`; bulk-delete uses `id|||group` keys. A plain id remains backward-compatible and means all groups.
+- `scripts/check-question-bank.ts` compares database groups/counts with source workbooks and is the preferred read-only integrity check after import changes.
 - Import happens via `POST /api/admin/questions/import` in `src/server/routes/admin.ts`, parsing an uploaded `.xlsx`/`.xls` with `xlsx`.
-- Quiz questions import through a separate route `POST /api/admin/questions/quiz/import` (`SingleChoice`/`MultipleChoice`, `options`/`correct_answers`/`score` columns). It reads the same `QuestionGroup` aliases and computes `question_plain` like the essay route. Its existence probe must use `?` placeholders — it once used `$1`, which crashed every quiz import under local SQLite with "Too many parameter values were provided" (see the placeholder note in the notes section).
+- Quiz questions use the separate `POST /api/admin/questions/quiz/import` route and the same `(id, question_group)` identity.
 - Excel header column for question group: `QuestionGroup` (aliases also accepted: `Question Set`, `Bộ đề`). If absent/blank, `question_group` is stored as an empty string.
 - `question_plain` is always (re)computed at import time from `question_sample` via `stripHtml()` in `src/utils/string.ts` — it is not user-supplied. `stripHtml()` converts block-level tags (`<br>`, `</p>`, `</li>`, `</tr>`, headings) to newlines, list items to `- ` prefixes, strips all remaining tags, and decodes a small set of HTML entities (`&nbsp;`, `&amp;`, etc.).
 - Frontend: `client/src/pages/QuestionBank.tsx` shows a "Question Group" column and an independent filter dropdown (combinable with the Module filter). Distinct values come from `GET /api/admin/questions/question-groups`.
@@ -334,18 +370,59 @@ Batches support two blueprint formats for question assignment:
 - **New (object)**: `{ blueprintMode: 'module' | 'type', items: [...] }` — `'type'` mode selects by module + question type
 - `parseBlueprintCompat()` in `admin.ts` normalizes both formats
 
-### AWS Secrets Manager cho cấu hình ứng dụng (thêm 2026-08-09, MẶC ĐỊNH TẮT)
+### Quiz exams
+- `batches.exam_type` is `essay` or `quiz`. Essay batches allow up to 20 questions; quiz batches allow up to 100.
+- Quiz import is separate from essay import: `POST /api/admin/questions/quiz/import`. Supported question types are `SingleChoice` and `MultipleChoice`, with JSON-backed `options`, `correct_answers`, and per-question `score`.
+- Quiz and essay selection are separated server-side even when one module contains both types.
+- Question order is randomized per student. Quiz option order is also randomized and persisted in `exam_questions.option_order`, so reload/resume retains the same order.
+- `GET /api/student/exam/questions` never returns `correct_answers`.
+- On submit or server auto-submit, quiz answers are scored synchronously by exact normalized answer-set equality and bypass the AI queue. Essay/coding answers are queued for AI grading.
 
-`src/server/services/appSecrets.ts` nạp cấu hình nhạy cảm từ Secrets Manager thay cho `.env`.
+### Multi-tenant control plane
+- Global routes are mounted at `/api/tenants` and all require `authMiddleware` plus `requireSuperAdmin` before any control-plane query.
+- Superadmin can list/create all tenants, create the first tenant administrator, approve/suspend, view jobs, run Terraform plan, and apply a reviewed plan.
+- Tenant admins cannot call the global tenant API. Their scope is the assessment/audit application under `/admin/*` and current-tenant user management.
+- Tenant configuration includes name/contact, region, EC2 type, root volume, domain/Route53, repository/ref, secret ARN, compiler toggle/limits, provisioning outputs, error/status, and audit metadata.
+- Every non-FSA tenant domain is derived from its trusted slug as `epoc.<tenant-label>.devfasttrack.com`. FSA-CLS temporarily remains at `https://epoc.devfasttrack.com/`. Backend approval/provisioning validates the exact slug/domain mapping and exception; Terraform validates the allowed formats.
+- Approval, plan, and apply are separate transitions. Apply requires a successful plan created after the latest approval. Only one queued/running job per tenant is allowed.
+- Terraform execution is disabled unless `TENANT_PROVISIONING_ENABLED=true`, runs only from a persistent trusted host, redacts logs, caps retained output, and uses isolated remote state key `tenants/<slug>/terraform.tfstate` with S3 encryption and DynamoDB locking.
+- The supported module is `terraform/tenant-instance`, not legacy `terraform-ipv6`. It creates a dedicated dual-stack VPC, AWS-generated IPv6 `/56`, public subnet, public IPv6, Elastic IPv4 fallback, HTTP/HTTPS security group, SSM administration, least-privilege secret access, A/AAAA records when a Route53 zone is supplied, and optional tenant Lambda compiler.
+- Each provisioned tenant secret must provide `DATABASE_URL` for that tenant's assessment data, `CONTROL_DATABASE_URL` for global identity/configuration, and `LOG_DATABASE_URL` for that tenant's operational issues. Keep all three in the cloud-init allowlist without logging their values.
+- Only the control-plane host may receive the explicit `CONTROL_PLANE_LOG_SECRET_ARNS` IAM allowlist used for remote log observation. Ordinary tenant instances keep access to their own secret only. The control-plane host also needs network reachability to each allowed tenant log database.
+- The UI at `/tenants` shows tenant status, configuration, IPv6/IPv4, DNS/app URL, compiler, state key, Terraform job history/logs, and selected-tenant operational logs. There is intentionally no destroy button.
 
-- **Tắt là mặc định và là đường đi hiện tại của production.** Khi `APP_SECRETS_ENABLED !== 'true'`, `loadAppSecrets()` trả về `null` ngay, không khởi tạo `SecretsManagerClient`, không sửa `process.env`. Có test khẳng định điều này (`appSecrets.test.ts`).
-- **Thứ tự khởi động rất quan trọng:** `src/server/server.ts` gọi `loadAppSecrets()` rồi mới `await import('./index.js')`. Bắt buộc phải là **dynamic import** — `index.ts` kiểm tra `JWT_SECRET` và `postgres.ts` đọc `DATABASE_URL` ngay lúc load module, nên static import sẽ chạy trước khi secret kịp nạp. Đừng đổi lại thành `import app from './index.js'` ở đầu file.
-- **Chỉ các khóa trong `MANAGED_SECRET_KEYS` được áp dụng**; khóa lạ bị bỏ qua và báo lại qua `ignoredKeys` (bắt lỗi gõ sai tên). Điều này cũng chặn secret ghi đè những biến như `PATH`/`NODE_ENV`.
-- **Nạp lỗi thì server dừng hẳn** (`process.exit(1)`), không âm thầm chạy tiếp bằng `.env` cũ — tránh việc trỏ nhầm sang database môi trường khác.
-- **Không bao giờ log/trả về giá trị secret**, chỉ tên khóa. Lỗi AWS được thay bằng thông báo chung vì nguyên văn có chứa ARN/account của tài nguyên khác.
-- **Giao diện superadmin:** `client/src/pages/SecretsManagement.tsx` tại `/secrets` (nhánh superadmin, cạnh `/tenants`), API `GET /api/admin/secrets/status` + `POST /api/admin/secrets/test` (`src/server/routes/secrets.ts`, gated `requireSuperAdmin`). Nút test chỉ đọc secret để kiểm tra ARN/region/quyền IAM, **không** áp dụng vào cấu hình đang chạy.
-- **Bật/tắt cố ý KHÔNG làm qua API** — chỉ sửa được trong `.env` của máy chủ. Nếu bật được qua giao diện thì một tài khoản superadmin bị chiếm quyền có thể trỏ ứng dụng sang secret của kẻ tấn công.
-- IAM role của EC2 cần `secretsmanager:GetSecretValue` trên đúng ARN đó. Không cần `ListSecrets` (`terraform/tenant-instance/main.tf` cố ý không cấp).
+### Tenant operational issue logs
+- `src/server/middleware/issueLogger.ts` appends HTTP 4xx/5xx outcomes to the current tenant log database after the response finishes. `/api/tenants` and authenticated superadmin traffic are excluded.
+- `GET /api/admin/issues` lists only rows whose `tenant_slug` equals the JWT/current server tenant. Matching `admin` and `tenant_admin` may read; only `tenant_admin` may call `PUT /api/admin/issues/:id/status` or the compatibility `PUT /api/admin/issues/:id/resolve`.
+- Tenant log lifecycle is `open`, `resolved`, or `archived`. Tenant admins may resolve, reopen, archive, and restore only their own tenant rows. Archive is a soft delete: immutable event content remains, while `archived_by`, `archived_at`, `last_managed_by`, and `last_managed_at` record ownership. There is no content-edit or physical-delete API.
+- `GET /api/tenants/:id/issues` is a separate superadmin-only, read-only observation path. The tenant id resolves slug/region/secret ARN from the control database; the client never supplies a slug or database URL. Current-tenant reads reuse initialized `logPlane.ts`; remote reads retrieve `LOG_DATABASE_URL` transiently from the tenant secret, use a one-connection PostgreSQL pool, scope by trusted `tenant_slug`, close it after the request, and record `tenant.logs_viewed` in the control audit table.
+- Remote log errors must be sanitized. Never return or log the secret payload, `LOG_DATABASE_URL`, credentials, headers, tokens, query strings, or stack traces. Superadmin has no resolve/delete endpoint or UI control.
+- The tenant UI is `/admin/issues`: regular `admin` sees read-only controls; `tenant_admin` sees lifecycle actions. This log is for application/operational failures. Candidate cheating/audit evidence remains in `violations` and `violation_events` in the assessment database.
+
+### Tenant compiler
+- `compiler_enabled` is per tenant. Terraform creates an isolated Lambda from the platform-owned ECR image only when enabled, and writes `PRACTICE_COMPILER_MODE=lambda` plus the tenant function ARN to that server.
+- Lambda mode supports C, C++, Python, and Java; validates ARN/language/input, limits code to 100 KB, stdin to 10 KB, output to 64 KB, one in-flight run per student, and 10 runs/student/minute.
+- Lambda image child processes receive a clean environment. Terraform bounds memory (256–3008 MB), timeout (10–30 seconds), and reserved concurrency (1–20), and grants the app permission to invoke only its tenant function.
+- Local mode keeps browser-local Python/C/C++ and the EC2 runner for C/C++/Python/COBOL/Java. COBOL is not currently supported in Lambda mode.
+
+### API ownership map
+- Tenant/global identity: `src/server/routes/tenants.ts`, user routes at the top of `admin.ts`, `auth.ts`, `tenantContext.ts`, `TenantManagement.tsx`, `UserManagement.tsx`.
+- Assessment administration: remaining `admin.ts` routes plus Question Bank, Batch, Practice, Student, Results, Dashboard, and AI Settings pages.
+- Candidate lifecycle: `student.ts`, `studentAuth.ts`, login/confirm/exam/practice/submit pages, `api.ts`.
+- Answer buffer and AI queue: `cache.ts`; the older `src/ai/queue.ts` exists but the server uses the cache-owned queue.
+- Recording: `examRecorder.ts`, confirm/exam pages, `/student/exam/recording-url`, and `s3.ts`.
+- Compiler: `localRunner.ts`, `coderunner.ts`, `lambdaCompiler.ts`, and `infra/compiler-lambda/**`.
+- Provisioning and superadmin log observation: `tenants.ts`, `tenantProvisioner.ts`, `tenantLogReader.ts`, `tenantIssueQuery.ts`, `terraform/tenant-instance/**`, `TenantManagement.tsx`, and `api.ts`.
+
+### Application secrets (AWS Secrets Manager, disabled by default)
+- `src/server/services/appSecrets.ts` can load sensitive configuration from Secrets Manager instead of `.env`. It is **off by default and off in production today**; when `APP_SECRETS_ENABLED !== 'true'`, `loadAppSecrets()` returns immediately, constructs no `SecretsManagerClient`, and never touches `process.env`.
+- **Startup order is load-bearing.** `server.ts` awaits `loadAppSecrets()` and only then runs `await import('./index.js')`. The dynamic import is required: `index.ts` validates `JWT_SECRET` and `postgres.ts` reads `DATABASE_URL` at module load, so a static import would evaluate before secrets are applied. Do not convert it back to a top-level import.
+- Only keys listed in `MANAGED_SECRET_KEYS` are applied; anything else is reported through `ignoredKeys` so a mistyped key is visible instead of silently inert. This also prevents a secret from overwriting `PATH`, `NODE_ENV`, or other operational variables.
+- A failed load exits the process rather than continuing on stale `.env` values — silently running against another environment's database is the worse failure.
+- Values are never logged or returned; status and test responses expose key names only, and raw AWS errors are replaced with a generic message because they embed ARNs and account ids.
+- Superadmin surface: `/secrets` (`client/src/pages/SecretsManagement.tsx`) with `GET /api/admin/secrets/status` and `POST /api/admin/secrets/test` in `src/server/routes/secrets.ts`, both behind `requireSuperAdmin`. The test action only reads a secret to validate ARN, region, and IAM permission; it never applies it to the running process.
+- Enabling is deliberately **not** an API action — it lives in the server `.env`. A compromised superadmin session must not be able to repoint the application at an attacker-controlled secret.
+- The EC2 role needs `secretsmanager:GetSecretValue` on that exact ARN. `ListSecrets` is intentionally not granted (`terraform/tenant-instance/main.tf`), so `aws secretsmanager list-secrets` from the instance is expected to fail.
 
 
 ## Environment variables
@@ -353,22 +430,45 @@ Batches support two blueprint formats for question assignment:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `JWT_SECRET` | **Yes** | — | Signs admin and student JWTs. Server exits at startup if missing. Use ≥32 random bytes. |
-| `JWT_EXPIRES_IN` | No | `24h` | Admin token expiry |
-| `DATABASE_URL` | Prod | — | PostgreSQL connection string. Absent = SQLite mode. |
+| `JWT_EXPIRES_IN` | Unused | — | Present in older documentation, but current admin login hard-codes `24h`. Do not assume changing it has an effect. |
+| `DATABASE_URL` | Prod | — | FSA-CLS assessment PostgreSQL connection. Absent = `data/eaudit.db`. |
+| `CONTROL_DATABASE_URL` | **Prod** | local SQLite only | Global admin/tenant PostgreSQL connection. Required in production; never falls back to `DATABASE_URL`. |
+| `CONTROL_SQLITE_PATH` | No | `data/control-plane.db` | Local control-plane SQLite file. |
+| `CONTROL_DB_POOL_MAX` | No | `5` | Control-plane PostgreSQL pool maximum. |
+| `LOG_DATABASE_URL` | **Prod** | local SQLite only | Current tenant operational issue PostgreSQL connection. Required in production and isolated from both other planes. |
+| `LOG_SQLITE_PATH` | No | `data/tenant-logs.db` | Local current-tenant log-plane SQLite file. |
+| `LOG_DB_POOL_MAX` | No | `5` | Log-plane PostgreSQL pool maximum. |
+| `DATABASE_MAINTENANCE_DB` | No | `postgres` | Maintenance database used by `npm run db:ensure`; deployment role needs `CONNECT` and `CREATEDB`. |
 | `ALLOWED_ORIGINS` | No | `http://localhost:5173` | CORS whitelist, comma-separated |
-| `SESSION_SECRET` | No | `'secret'` | Express session secret. **Set this in production.** |
+| `SESSION_SECRET` | Prod | local fallback | Must be at least 32 characters in production or startup exits. |
 | `SKIP_TIME_CHECK` | No | — | Set to `'true'` to bypass exam time-window validation in any mode |
 | `GEMINI_API_KEY` | No | — | Fallback AI key if `ai_settings` table is empty |
 | `ANSWER_FLUSH_INTERVAL` | No | `5000` | Milliseconds between answer buffer flushes |
 | `QUEUE_PROCESS_INTERVAL` | No | `10000` | Milliseconds between AI queue processing ticks |
 | `DB_POOL_MAX` | No | `10` | PostgreSQL connection pool max size |
 | `DB_POOL_MIN` | No | `2` | PostgreSQL connection pool min size |
+| `TENANT_SLUG` | No | `fsa-cls` | Current assessment data-plane tenant; takes precedence over `DEFAULT_TENANT_SLUG`. |
+| `DEFAULT_TENANT_SLUG` | No | `fsa-cls` | Default/current data-plane tenant fallback. |
+| `DEFAULT_TENANT_NAME` / `_B64` | No | derived | Current tenant display name; Terraform uses Base64 form in user data. |
+| `DEFAULT_TENANT_CONTACT_EMAIL` / `_B64` | No | `admin@fsa-cls.local` | Current tenant contact identity. |
+| `DEFAULT_TENANT_DOMAIN` | No | FSA: `epoc.devfasttrack.com` | Current tenant dedicated FQDN. Other tenant domains follow `epoc.<tenant-label>.devfasttrack.com`. |
+| `DEFAULT_TENANT_APP_URL` | No | tenant HTTPS domain, then first allowed origin | Tenant login redirect/application URL. |
+| `CONTROL_PLANE_LOG_SECRET_ARNS` | Control host only | empty | Comma-separated explicit Secrets Manager ARN allowlist for selected remote tenant log reads; maximum 100. |
+| `TENANT_PROVISIONING_ENABLED` | No | `false` | Hard gate for Terraform control-plane execution. |
+| `TERRAFORM_BIN` | No | `terraform` | Terraform executable. |
+| `TERRAFORM_STATE_BUCKET` | Provisioning | — | Encrypted remote-state S3 bucket. |
+| `TERRAFORM_STATE_REGION` | No | `ap-southeast-1` | Remote-state region. |
+| `TERRAFORM_LOCK_TABLE` | Provisioning | — | DynamoDB state-lock table. |
+| `TENANT_TERRAFORM_WORKDIR` | No | `data/tenant-terraform` | Persistent per-tenant Terraform work root. |
+| `TENANT_COMPILER_IMAGE_URI` | Compiler tenants | — | Versioned platform-owned ECR image used for tenant Lambda compilers. |
+| `PRACTICE_COMPILER_MODE` | No | `local` | `lambda` routes Practice Run Code to Lambda; any other value is local mode. |
+| `PRACTICE_COMPILER_LAMBDA_ARN` | Lambda mode | — | Current tenant compiler function ARN, normally written by Terraform. |
 | `ENABLE_SERVER_CODE_RUN` | No | enabled | Set to `'false'` to disable server-side code execution (`POST /api/student/run` returns 503). Browser-local runs (python/c/cpp) are unaffected. |
 | `SUPERADMIN_USERNAME` | No | `supperadmin` | Username seeded as the first `admin_users` row (role `superadmin`) when the table is empty. See **Admin authentication**. |
 | `SUPERADMIN_PASSWORD` | No | `superadmin123#2nf` | Password for the seeded superadmin account above. Set this explicitly in production instead of relying on the hardcoded default. |
-| `APP_SECRETS_ENABLED` | No | `false` | Bật nạp cấu hình từ AWS Secrets Manager. Khi khác `'true'`, module `appSecrets` không gọi AWS và không đụng `process.env` — hành vi y hệt trước khi có tính năng này. |
-| `APP_SECRETS_ARN` | Khi bật | — | ARN của secret chứa cấu hình (object JSON). Bắt buộc khi `APP_SECRETS_ENABLED=true`. |
-| `APP_SECRETS_REGION` | No | `AWS_REGION` | Region của secret. |
+| `APP_SECRETS_ENABLED` | No | `false` | Load configuration from AWS Secrets Manager. Any value other than `'true'` keeps the `.env`-only path with no AWS calls. |
+| `APP_SECRETS_ARN` | When enabled | — | ARN of the JSON secret holding configuration. Required if `APP_SECRETS_ENABLED=true`; startup fails fast when missing or malformed. |
+| `APP_SECRETS_REGION` | No | `AWS_REGION` | Region of that secret. |
 | `AWS_ACCESS_KEY_ID` | Rec | — | IAM key for S3 recording uploads. Absent → recording endpoint returns 503. |
 | `AWS_SECRET_ACCESS_KEY` | Rec | — | IAM secret for S3. |
 | `AWS_REGION` | No | `us-east-1` | S3 bucket region. |
@@ -376,11 +476,17 @@ Batches support two blueprint formats for question assignment:
 
 ## Important project-specific notes
 
+- **Control/data-plane boundary rule:** admin authentication, `admin_users`, tenant configuration, Terraform jobs, and tenant audit events must import `src/server/db/controlPlane.ts`. Assessment questions, batches, students, answers, results, violations, and AI grading must import `src/server/db/postgres.ts`. Never join across these connections; resolve tenant/admin identity in middleware, then enforce access before querying the FSA-CLS data-plane.
+- **Data-plane binding rule:** `data_plane_metadata.tenant_slug` is immutable after initialization (legacy `fsa` may normalize once to `fsa-cls`). Startup must fail if `TENANT_SLUG` attempts to rebind an existing assessment database to another tenant.
+- **Migration rule:** do not delete legacy control tables or assessment rows as part of startup migration. Preserve bcrypt hashes, map only legacy slug `fsa` to `fsa-cls`, keep superadmin global (`tenant_id=NULL`), and keep explicitly assigned non-FSA users in their existing tenant.
 - There is drift between current TypeScript source and legacy/generated JS checked into the repo. Prefer `src/**` and `client/src/**` when reasoning about behavior.
 - The frontend build uses hashed filenames, so any manual static sync to `public/` must update `public/index.html` to the new hash.
-- There is no dedicated lint or test script in the current package files. Validation is primarily via `npx tsc --noEmit` (both backend and frontend) and manual runtime verification.
+- There is no lint script. Tenant/provisioning/compiler regression coverage runs through `npm run test:tenant`; all other areas still rely on both TypeScript checks, full build, and targeted runtime verification.
 - For frontend changes that affect actual exam behavior, verify against the runtime path being served, not just against source edits or `client/dist` output.
-- `src/server/routes/student.ts` contains a non-obvious exam-state hazard: `POST /exam/answer` currently changes student status from `in_progress` to `submitted` on the first buffered save. Any work on resume logic, anti-cheat, or submission flow should re-check this behavior before assuming the status model is correct.
+- **Known question-group hazard:** `POST /student/exam/start` currently deletes preassigned questions for a pending student and regenerates them by module without carrying `question_group`; its insert also omits `exam_questions.question_group`. This conflicts with the composite `(id, question_group)` design used by admin student import. Any work on exam start/assignment must reconcile these paths and add regression tests before relying on cross-group isolation.
+- **Known fresh-Postgres initialization risk:** `practice_submissions` is created before `students` in the PostgreSQL initialization sequence even though it references `students(id)`. Existing upgraded databases may hide this ordering issue; verify initialization against a brand-new PostgreSQL database when changing schema startup.
+- **Known approval gap:** tenant `pending` status gates Terraform but is not rejected by admin login/auth middleware; only `suspended` is blocked. If approved-only application access is required, enforce it server-side and test both new and existing JWTs.
+- **Credential hygiene:** `terraform-ipv6/eaudit-key.pem` is tracked in the legacy Terraform tree. Do not read, print, copy, or reuse it. Treat it as compromised, rotate/remove it through a separately approved security change, and never add private keys to Git.
 - The DB layer and route layer mix SQLite-style `?` placeholders and PostgreSQL-style `$1` placeholders depending on code path. Before changing queries, verify which runtime path (`DATABASE_URL` present vs absent) is intended. `db.query()` in `src/server/db/postgres.ts` auto-translates `?` → `$N` for the Postgres branch, so **`?` is always the safe/portable choice** for any query that can run under both DB modes (i.e. anything not already inside a `USE_SQLITE` / `else` Postgres-only branch); a stray `$1` in a shared code path (not inside an explicit non-SQLite branch) will crash under SQLite with "Too many parameter values were provided." One such bug (the duplicate-ID check in `POST /questions/import`) was found and fixed this way — if you add new shared queries, default to `?`.
 - `FileCache` in `src/server/cache.ts` initializes `dataDir`/`queueFile` as class field defaults (`path.join(process.cwd(), 'data')` / `.../data/queue.json`) so the constructor's `ensureDataDir()` has a valid path outside Vercel/production. If these fields are ever refactored, keep them initialized before `ensureDataDir()` runs — leaving them unassigned crashes `npm run dev` immediately on startup (`ERR_INVALID_ARG_TYPE` in `fs.mkdirSync`).
 - **Fixed:** `query()` in `src/server/db/postgres.ts` used to decide how to run a SQLite statement purely by checking `text.trim().toUpperCase().startsWith('SELECT')` — anything else (including `INSERT ... RETURNING id`) went through `stmt.run(...)`, which always returns `rows: []`. This silently broke any `INSERT ... RETURNING` under local SQLite dev: `POST /batches/:id/students/import` in `admin.ts` reads `studentResult.rows[0]?.id` after such an insert, got `undefined`, and `if (!studentId) continue;` skipped exam_questions assignment for every invited student (student row created, but with zero questions assigned). Fix: the SQLite branch now also routes through `.all()` when the SQL text contains `RETURNING` (case-insensitive), not just when it starts with `SELECT`. Postgres was never affected (its branch always returns real rows regardless of statement type). If similar "insert succeeded but the returned row is empty" symptoms show up again in local SQLite dev, check this function first.
@@ -394,6 +500,7 @@ Batches support two blueprint formats for question assignment:
 
 ## Verification expectations
 
+- For control-plane changes, run `npm run test:tenant`, both TypeScript builds, and verify local startup creates/uses `data/control-plane.db` while `data/eaudit.db` retains assessment data and `data_plane_metadata.tenant_slug` equals `fsa-cls`.
 - Frontend exam changes should be verified against the actual served runtime, not just via source inspection. For local manual testing, run both `npm run dev` (backend) and `cd client && npm run dev` (Vite) and exercise the real flow in a browser — this matches production's `client/dist` + Node backend split more closely than editing source and assuming it works.
 - Syncing to `public/assets` + `public/index.html` is only relevant if you've confirmed the environment you're testing against actually serves from `public/` (uncommon — see "Static runtime path" above). Don't do it by default for this project's real deployment; instead rely on `deploy/scripts/deploy.sh` rebuilding `client/dist/` on the server.
 - For anti-cheat changes, verify both browser behavior and backend recording:
