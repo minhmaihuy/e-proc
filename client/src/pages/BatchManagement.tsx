@@ -90,6 +90,241 @@ const decodeComboKey = (key: string): { module: string; question_group: string }
 /** Human-readable label for a (module, question_group) combo, e.g. "Chapter 10: Unit Testing (CPP_EMB_PRINT_IOT)" */
 const comboLabel = (module: string, group: string) => (group ? `${module} (${group})` : module);
 
+
+/**
+ * Ba component dưới đây TRƯỚC ĐÂY được định nghĩa bên trong BatchManagement.
+ *
+ * Mỗi lần component cha render, JS tạo ra một hàm mới → với React đó là một KIỂU
+ * component khác → nó unmount toàn bộ cây con rồi mount lại. Hậu quả thấy rõ nhất ở
+ * ValidatedInput: ô nhập số câu bị remount sau mỗi ký tự nên MẤT FOCUS, admin phải
+ * click lại vào ô để gõ tiếp. Các <select> module cũng bị dựng lại liên tục.
+ *
+ * Đặt ở module scope thì kiểu component ổn định, React chỉ cập nhật props.
+ */
+
+const BlueprintModeToggle = ({
+
+  value,
+  onChange,
+}: {
+  value: BlueprintMode;
+  onChange: (m: BlueprintMode) => void;
+}) => (
+  <div style={{ display: 'flex', gap: 0, marginBottom: 16, border: '1.5px solid #6366f1', borderRadius: 8, overflow: 'hidden', width: 'fit-content' }}>
+    {(['module', 'type'] as BlueprintMode[]).map(mode => (
+      <button
+        key={mode}
+        type="button"
+        onClick={() => onChange(mode)}
+        style={{
+          padding: '7px 22px',
+          fontSize: 13,
+          fontWeight: 600,
+          border: 'none',
+          cursor: 'pointer',
+          background: value === mode ? '#6366f1' : '#f5f3ff',
+          color: value === mode ? '#fff' : '#6366f1',
+          transition: 'background 0.18s, color 0.18s',
+        }}
+      >
+        {mode === 'module' ? '🗂 By Module' : '🏷 By Type'}
+      </button>
+    ))}
+  </div>
+);
+
+/** <select> of (module, question_group) combos, labeled "module (group)" */
+const ModuleGroupSelect = ({
+  value,
+  onChange,
+  style,
+  moduleGroups,
+}: {
+  value: { module: string; question_group: string };
+  onChange: (module: string, question_group: string) => void;
+  style?: React.CSSProperties;
+  moduleGroups: ModuleGroupOption[];
+}) => (
+  <select
+    style={{ width: '100%', padding: '8px', ...style }}
+    value={comboKey(value.module, value.question_group)}
+    onChange={e => {
+      const decoded = decodeComboKey(e.target.value);
+      onChange(decoded.module, decoded.question_group);
+    }}
+  >
+    {moduleGroups.map(mg => (
+      <option key={comboKey(mg.module, mg.question_group)} value={comboKey(mg.module, mg.question_group)}>
+        {comboLabel(mg.module, mg.question_group)}
+      </option>
+    ))}
+  </select>
+);
+
+const ValidatedInput = ({
+
+  value,
+  max,
+  onChange,
+}: {
+  value: number;
+  max: number;
+  onChange: (v: string) => void;
+}) => {
+  const exceeded = value > max;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+      <input
+        type="number"
+        min={0}
+        max={max}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        style={{
+          width: 70,
+          padding: '6px 8px',
+          border: exceeded ? '2px solid #ef4444' : '1px solid #d1d5db',
+          borderRadius: 6,
+          background: exceeded ? '#fef2f2' : 'white',
+          color: exceeded ? '#b91c1c' : '#111827',
+          fontWeight: exceeded ? 700 : 400,
+          textAlign: 'center',
+          outline: 'none',
+        }}
+      />
+      {exceeded && (
+        <span style={{ fontSize: 10, color: '#ef4444', whiteSpace: 'nowrap' }}>
+          ⚠️ Max: {max}
+        </span>
+      )}
+    </div>
+  );
+};
+
+
+
+/** Bảng "số câu có sẵn" theo (module, question_group). Không có ô nhập nên không dính
+ *  bug mất focus, nhưng vẫn nâng ra module scope để React không dựng lại bảng sau mỗi
+ *  lần gõ ở nơi khác trong form. */
+const QuestionBankStatsPanel = ({ moduleGroupStats }: { moduleGroupStats: ModuleGroupStats[] }) => {
+  if (moduleGroupStats.length === 0) return null;
+  return (
+    <div style={{
+      marginBottom: 20,
+      padding: '14px 18px',
+      background: 'linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%)',
+      border: '1px solid #93c5fd',
+      borderRadius: 10,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <span style={{ fontSize: 18 }}>📊</span>
+        <strong style={{ color: '#1e40af', fontSize: 14 }}>Question Bank – By Module</strong>
+        <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 4 }}>
+          — Available question counts by Module (and Question Group)
+        </span>
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <thead>
+          <tr style={{ background: 'rgba(59,130,246,0.1)' }}>
+            <th style={{ padding: '6px 10px', textAlign: 'left', color: '#1e3a5f' }}>Module</th>
+            <th style={{ padding: '6px 10px', textAlign: 'left', color: '#1e3a5f' }}>Question Group</th>
+            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#15803d' }}>🟢 Easy</th>
+            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b45309' }}>🟡 Medium</th>
+            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b91c1c' }}>🔴 Hard</th>
+            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#374151' }}>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {moduleGroupStats.map((stat, i) => (
+            <tr key={comboKey(stat.module, stat.question_group)} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.5)', borderTop: '1px solid #e5e7eb' }}>
+              <td style={{ padding: '5px 10px', fontWeight: 500, color: '#1f2937' }}>{stat.module}</td>
+              <td style={{ padding: '5px 10px', color: '#4b5563' }}>{stat.question_group || '-'}</td>
+              <td style={{ padding: '5px 10px', textAlign: 'center', color: '#166534', fontWeight: 600 }}>{stat.easy}</td>
+              <td style={{ padding: '5px 10px', textAlign: 'center', color: '#92400e', fontWeight: 600 }}>{stat.medium}</td>
+              <td style={{ padding: '5px 10px', textAlign: 'center', color: '#991b1b', fontWeight: 600 }}>{stat.hard}</td>
+              <td style={{ padding: '5px 10px', textAlign: 'center', color: '#374151', fontWeight: 700 }}>
+                {stat.easy + stat.medium + stat.hard}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+/** Panel showing available question counts by module × question group × type */
+const QuestionBankTypeStatsPanel = ({
+  moduleGroupTypeStats,
+  moduleGroups,
+}: {
+  moduleGroupTypeStats: ModuleGroupTypeStats[];
+  moduleGroups: ModuleGroupOption[];
+}) => {
+  if (moduleGroupTypeStats.length === 0) return null;
+  const typeEmoji: Record<string, string> = { Coding: '💻', Conceptual: '🧠', 'Fill-in': '✏️', Debug: '🐛' };
+  return (
+    <div style={{
+      marginBottom: 20,
+      padding: '14px 18px',
+      background: 'linear-gradient(135deg, #faf5ff 0%, #f0fdf4 100%)',
+      border: '1px solid #c4b5fd',
+      borderRadius: 10,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <span style={{ fontSize: 18 }}>🏷</span>
+        <strong style={{ color: '#6d28d9', fontSize: 14 }}>Question Bank – By Module + Type</strong>
+        <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 4 }}>
+          — Available question counts by Module (Question Group) × Type
+        </span>
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <thead>
+          <tr style={{ background: 'rgba(139,92,246,0.1)' }}>
+            <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Module</th>
+            <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Question Group</th>
+            <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Type</th>
+            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#15803d' }}>🟢 Easy</th>
+            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b45309' }}>🟡 Medium</th>
+            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b91c1c' }}>🔴 Hard</th>
+            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#374151' }}>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {moduleGroups.map(mg => {
+            const stats = moduleGroupTypeStats.filter(
+              s => s.module === mg.module && (s.question_group || '') === (mg.question_group || '')
+            );
+            return stats.map((stat, i) => (
+              <tr key={`${comboKey(mg.module, mg.question_group)}-${stat.type}`} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.5)', borderTop: '1px solid #e5e7eb' }}>
+                {i === 0 && (
+                  <>
+                    <td rowSpan={stats.length} style={{ padding: '5px 10px', fontWeight: 600, color: '#1f2937', verticalAlign: 'top', borderRight: '1px solid #e5e7eb' }}>
+                      {mg.module}
+                    </td>
+                    <td rowSpan={stats.length} style={{ padding: '5px 10px', color: '#4b5563', verticalAlign: 'top', borderRight: '1px solid #e5e7eb' }}>
+                      {mg.question_group || '-'}
+                    </td>
+                  </>
+                )}
+                <td style={{ padding: '5px 10px', color: '#374151' }}>{typeEmoji[stat.type] || '❓'} {stat.type}</td>
+                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#166534', fontWeight: 600 }}>{stat.easy}</td>
+                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#92400e', fontWeight: 600 }}>{stat.medium}</td>
+                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#991b1b', fontWeight: 600 }}>{stat.hard}</td>
+                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#374151', fontWeight: 700 }}>
+                  {stat.easy + stat.medium + stat.hard}
+                </td>
+              </tr>
+            ));
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+/** A number input cell with inline validation warning */
+
 function BatchManagement() {
   const { isTenantAdmin } = useAuth();
   const [batches, setBatches] = useState<any[]>([]);
@@ -602,213 +837,10 @@ function BatchManagement() {
   // ─── Sub-components ─────────────────────────────────────────────────────────
 
   /** Tab-style blueprint mode toggle */
-  const BlueprintModeToggle = ({
-    value,
-    onChange,
-  }: {
-    value: BlueprintMode;
-    onChange: (m: BlueprintMode) => void;
-  }) => (
-    <div style={{ display: 'flex', gap: 0, marginBottom: 16, border: '1.5px solid #6366f1', borderRadius: 8, overflow: 'hidden', width: 'fit-content' }}>
-      {(['module', 'type'] as BlueprintMode[]).map(mode => (
-        <button
-          key={mode}
-          type="button"
-          onClick={() => onChange(mode)}
-          style={{
-            padding: '7px 22px',
-            fontSize: 13,
-            fontWeight: 600,
-            border: 'none',
-            cursor: 'pointer',
-            background: value === mode ? '#6366f1' : '#f5f3ff',
-            color: value === mode ? '#fff' : '#6366f1',
-            transition: 'background 0.18s, color 0.18s',
-          }}
-        >
-          {mode === 'module' ? '🗂 By Module' : '🏷 By Type'}
-        </button>
-      ))}
-    </div>
-  );
 
   /** <select> of (module, question_group) combos, labeled "module (group)" */
-  const ModuleGroupSelect = ({
-    value,
-    onChange,
-    style,
-  }: {
-    value: { module: string; question_group: string };
-    onChange: (module: string, question_group: string) => void;
-    style?: React.CSSProperties;
-  }) => (
-    <select
-      style={{ width: '100%', padding: '8px', ...style }}
-      value={comboKey(value.module, value.question_group)}
-      onChange={e => {
-        const decoded = decodeComboKey(e.target.value);
-        onChange(decoded.module, decoded.question_group);
-      }}
-    >
-      {moduleGroups.map(mg => (
-        <option key={comboKey(mg.module, mg.question_group)} value={comboKey(mg.module, mg.question_group)}>
-          {comboLabel(mg.module, mg.question_group)}
-        </option>
-      ))}
-    </select>
-  );
 
   /** Panel showing available question counts by module (+ question group) */
-  const QuestionBankStatsPanel = () => {
-    if (moduleGroupStats.length === 0) return null;
-    return (
-      <div style={{
-        marginBottom: 20,
-        padding: '14px 18px',
-        background: 'linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%)',
-        border: '1px solid #93c5fd',
-        borderRadius: 10,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-          <span style={{ fontSize: 18 }}>📊</span>
-          <strong style={{ color: '#1e40af', fontSize: 14 }}>Question Bank – By Module</strong>
-          <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 4 }}>
-            — Available question counts by Module (and Question Group)
-          </span>
-        </div>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr style={{ background: 'rgba(59,130,246,0.1)' }}>
-              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#1e3a5f' }}>Module</th>
-              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#1e3a5f' }}>Question Group</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#15803d' }}>🟢 Easy</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b45309' }}>🟡 Medium</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b91c1c' }}>🔴 Hard</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#374151' }}>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {moduleGroupStats.map((stat, i) => (
-              <tr key={comboKey(stat.module, stat.question_group)} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.5)', borderTop: '1px solid #e5e7eb' }}>
-                <td style={{ padding: '5px 10px', fontWeight: 500, color: '#1f2937' }}>{stat.module}</td>
-                <td style={{ padding: '5px 10px', color: '#4b5563' }}>{stat.question_group || '-'}</td>
-                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#166534', fontWeight: 600 }}>{stat.easy}</td>
-                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#92400e', fontWeight: 600 }}>{stat.medium}</td>
-                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#991b1b', fontWeight: 600 }}>{stat.hard}</td>
-                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#374151', fontWeight: 700 }}>
-                  {stat.easy + stat.medium + stat.hard}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  };
-
-  /** Panel showing available question counts by module × question group × type */
-  const QuestionBankTypeStatsPanel = () => {
-    if (moduleGroupTypeStats.length === 0) return null;
-    const typeEmoji: Record<string, string> = { Coding: '💻', Conceptual: '🧠', 'Fill-in': '✏️', Debug: '🐛' };
-    return (
-      <div style={{
-        marginBottom: 20,
-        padding: '14px 18px',
-        background: 'linear-gradient(135deg, #faf5ff 0%, #f0fdf4 100%)',
-        border: '1px solid #c4b5fd',
-        borderRadius: 10,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-          <span style={{ fontSize: 18 }}>🏷</span>
-          <strong style={{ color: '#6d28d9', fontSize: 14 }}>Question Bank – By Module + Type</strong>
-          <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 4 }}>
-            — Available question counts by Module (Question Group) × Type
-          </span>
-        </div>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr style={{ background: 'rgba(139,92,246,0.1)' }}>
-              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Module</th>
-              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Question Group</th>
-              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Type</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#15803d' }}>🟢 Easy</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b45309' }}>🟡 Medium</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b91c1c' }}>🔴 Hard</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#374151' }}>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {moduleGroups.map(mg => {
-              const stats = moduleGroupTypeStats.filter(
-                s => s.module === mg.module && (s.question_group || '') === (mg.question_group || '')
-              );
-              return stats.map((stat, i) => (
-                <tr key={`${comboKey(mg.module, mg.question_group)}-${stat.type}`} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.5)', borderTop: '1px solid #e5e7eb' }}>
-                  {i === 0 && (
-                    <>
-                      <td rowSpan={stats.length} style={{ padding: '5px 10px', fontWeight: 600, color: '#1f2937', verticalAlign: 'top', borderRight: '1px solid #e5e7eb' }}>
-                        {mg.module}
-                      </td>
-                      <td rowSpan={stats.length} style={{ padding: '5px 10px', color: '#4b5563', verticalAlign: 'top', borderRight: '1px solid #e5e7eb' }}>
-                        {mg.question_group || '-'}
-                      </td>
-                    </>
-                  )}
-                  <td style={{ padding: '5px 10px', color: '#374151' }}>{typeEmoji[stat.type] || '❓'} {stat.type}</td>
-                  <td style={{ padding: '5px 10px', textAlign: 'center', color: '#166534', fontWeight: 600 }}>{stat.easy}</td>
-                  <td style={{ padding: '5px 10px', textAlign: 'center', color: '#92400e', fontWeight: 600 }}>{stat.medium}</td>
-                  <td style={{ padding: '5px 10px', textAlign: 'center', color: '#991b1b', fontWeight: 600 }}>{stat.hard}</td>
-                  <td style={{ padding: '5px 10px', textAlign: 'center', color: '#374151', fontWeight: 700 }}>
-                    {stat.easy + stat.medium + stat.hard}
-                  </td>
-                </tr>
-              ));
-            })}
-          </tbody>
-        </table>
-      </div>
-    );
-  };
-
-  /** A number input cell with inline validation warning */
-  const ValidatedInput = ({
-    value,
-    max,
-    onChange,
-  }: {
-    value: number;
-    max: number;
-    onChange: (v: string) => void;
-  }) => {
-    const exceeded = value > max;
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-        <input
-          type="number"
-          min={0}
-          max={max}
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          style={{
-            width: 70,
-            padding: '6px 8px',
-            border: exceeded ? '2px solid #ef4444' : '1px solid #d1d5db',
-            borderRadius: 6,
-            background: exceeded ? '#fef2f2' : 'white',
-            color: exceeded ? '#b91c1c' : '#111827',
-            fontWeight: exceeded ? 700 : 400,
-            textAlign: 'center',
-            outline: 'none',
-          }}
-        />
-        {exceeded && (
-          <span style={{ fontSize: 10, color: '#ef4444', whiteSpace: 'nowrap' }}>
-            ⚠️ Max: {max}
-          </span>
-        )}
-      </div>
-    );
-  };
 
   // ─── Render ──────────────────────────────────────────────────────────────────
 
@@ -966,7 +998,7 @@ function BatchManagement() {
             ) : blueprintMode === 'module' ? (
               <>
                 {/* Stats panel – By Module */}
-                <QuestionBankStatsPanel />
+                <QuestionBankStatsPanel moduleGroupStats={moduleGroupStats} />
 
                 <table className="matrix-table">
                   <thead>
@@ -986,6 +1018,7 @@ function BatchManagement() {
                         <tr key={index}>
                           <td>
                             <ModuleGroupSelect
+                              moduleGroups={moduleGroups}
                               value={item}
                               onChange={(module, question_group) => updateBlueprintModuleGroup(index, module, question_group)}
                             />
@@ -1022,7 +1055,7 @@ function BatchManagement() {
             ) : (
               <>
                 {/* Stats panel – By Module + Type */}
-                <QuestionBankTypeStatsPanel />
+                <QuestionBankTypeStatsPanel moduleGroupTypeStats={moduleGroupTypeStats} moduleGroups={moduleGroups} />
 
                 <table className="matrix-table">
                   <thead>
@@ -1047,6 +1080,7 @@ function BatchManagement() {
                         <tr key={index}>
                           <td style={{ minWidth: 160 }}>
                             <ModuleGroupSelect
+                              moduleGroups={moduleGroups}
                               value={item}
                               onChange={(module, question_group) => updateTypeBlueprintModuleGroup(index, module, question_group)}
                             />
@@ -1375,7 +1409,7 @@ function BatchManagement() {
               <p className="error">No modules available</p>
             ) : (
               <>
-                <QuestionBankStatsPanel />
+                <QuestionBankStatsPanel moduleGroupStats={moduleGroupStats} />
                 <table className="matrix-table">
                   <thead>
                     <tr>
@@ -1393,6 +1427,7 @@ function BatchManagement() {
                         <tr key={index}>
                           <td>
                             <ModuleGroupSelect
+                              moduleGroups={moduleGroups}
                               value={{ module: item.module, question_group: item.question_group || '' }}
                               onChange={(module, question_group) => {
                                 const newBlueprint = [...editingBatch.blueprint];
@@ -1444,7 +1479,7 @@ function BatchManagement() {
               <p className="error">No type data available</p>
             ) : (
               <>
-                <QuestionBankTypeStatsPanel />
+                <QuestionBankTypeStatsPanel moduleGroupTypeStats={moduleGroupTypeStats} moduleGroups={moduleGroups} />
                 <table className="matrix-table">
                   <thead>
                     <tr>
@@ -1466,6 +1501,7 @@ function BatchManagement() {
                         <tr key={index}>
                           <td style={{ minWidth: 160 }}>
                             <ModuleGroupSelect
+                              moduleGroups={moduleGroups}
                               value={{ module: item.module, question_group: item.question_group || '' }}
                               onChange={(module, question_group) => {
                                 const nb = [...editingBatch.blueprintByType];

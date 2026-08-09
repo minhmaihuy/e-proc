@@ -12,7 +12,12 @@ export default defineConfig({
     // ở mức nặng vì làm bundle chậm & to, và dễ gây lỗi khó chẩn đoán trên máy thí sinh.
     obfuscator({
       apply: 'build',
-      exclude: [/node_modules/, /monaco-editor/],
+      // App.tsx PHẢI được loại trừ: nó chứa các import() động của lazy-route, mà
+      // stringArrayThreshold:1 sẽ mã hóa luôn đường dẫn module bên trong import().
+      // Khi đó rollup không phân giải tĩnh được nữa → KHÔNG emit chunk nào cho các
+      // trang, build vẫn "thành công" nhưng app 404 chunk ngay khi điều hướng.
+      // App.tsx chỉ có bảng route, không chứa ngưỡng chống gian lận nào cần giấu.
+      exclude: [/node_modules/, /monaco-editor/, /src[\/]App\.tsx$/],
       options: {
         compact: true,
         stringArray: true,
