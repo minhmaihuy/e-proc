@@ -61,6 +61,7 @@ git pull --ff-only origin main
 echo ""
 echo ">>> Rebuilding server..."
 npm ci --include=dev
+npm run deps:verify
 npm run build:server
 
 # --- Ensure Database Planes ---

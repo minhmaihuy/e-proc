@@ -72,6 +72,7 @@ echo ""
 echo ">>> Installing server dependencies..."
 cd "$APP_DIR"
 npm ci --production=false
+npm run deps:verify
 
 echo ""
 echo ">>> Building server..."
