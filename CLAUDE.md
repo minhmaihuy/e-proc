@@ -334,6 +334,20 @@ Batches support two blueprint formats for question assignment:
 - **New (object)**: `{ blueprintMode: 'module' | 'type', items: [...] }` — `'type'` mode selects by module + question type
 - `parseBlueprintCompat()` in `admin.ts` normalizes both formats
 
+### AWS Secrets Manager cho cấu hình ứng dụng (thêm 2026-08-09, MẶC ĐỊNH TẮT)
+
+`src/server/services/appSecrets.ts` nạp cấu hình nhạy cảm từ Secrets Manager thay cho `.env`.
+
+- **Tắt là mặc định và là đường đi hiện tại của production.** Khi `APP_SECRETS_ENABLED !== 'true'`, `loadAppSecrets()` trả về `null` ngay, không khởi tạo `SecretsManagerClient`, không sửa `process.env`. Có test khẳng định điều này (`appSecrets.test.ts`).
+- **Thứ tự khởi động rất quan trọng:** `src/server/server.ts` gọi `loadAppSecrets()` rồi mới `await import('./index.js')`. Bắt buộc phải là **dynamic import** — `index.ts` kiểm tra `JWT_SECRET` và `postgres.ts` đọc `DATABASE_URL` ngay lúc load module, nên static import sẽ chạy trước khi secret kịp nạp. Đừng đổi lại thành `import app from './index.js'` ở đầu file.
+- **Chỉ các khóa trong `MANAGED_SECRET_KEYS` được áp dụng**; khóa lạ bị bỏ qua và báo lại qua `ignoredKeys` (bắt lỗi gõ sai tên). Điều này cũng chặn secret ghi đè những biến như `PATH`/`NODE_ENV`.
+- **Nạp lỗi thì server dừng hẳn** (`process.exit(1)`), không âm thầm chạy tiếp bằng `.env` cũ — tránh việc trỏ nhầm sang database môi trường khác.
+- **Không bao giờ log/trả về giá trị secret**, chỉ tên khóa. Lỗi AWS được thay bằng thông báo chung vì nguyên văn có chứa ARN/account của tài nguyên khác.
+- **Giao diện superadmin:** `client/src/pages/SecretsManagement.tsx` tại `/secrets` (nhánh superadmin, cạnh `/tenants`), API `GET /api/admin/secrets/status` + `POST /api/admin/secrets/test` (`src/server/routes/secrets.ts`, gated `requireSuperAdmin`). Nút test chỉ đọc secret để kiểm tra ARN/region/quyền IAM, **không** áp dụng vào cấu hình đang chạy.
+- **Bật/tắt cố ý KHÔNG làm qua API** — chỉ sửa được trong `.env` của máy chủ. Nếu bật được qua giao diện thì một tài khoản superadmin bị chiếm quyền có thể trỏ ứng dụng sang secret của kẻ tấn công.
+- IAM role của EC2 cần `secretsmanager:GetSecretValue` trên đúng ARN đó. Không cần `ListSecrets` (`terraform/tenant-instance/main.tf` cố ý không cấp).
+
+
 ## Environment variables
 
 | Variable | Required | Default | Description |
@@ -352,6 +366,9 @@ Batches support two blueprint formats for question assignment:
 | `ENABLE_SERVER_CODE_RUN` | No | enabled | Set to `'false'` to disable server-side code execution (`POST /api/student/run` returns 503). Browser-local runs (python/c/cpp) are unaffected. |
 | `SUPERADMIN_USERNAME` | No | `supperadmin` | Username seeded as the first `admin_users` row (role `superadmin`) when the table is empty. See **Admin authentication**. |
 | `SUPERADMIN_PASSWORD` | No | `superadmin123#2nf` | Password for the seeded superadmin account above. Set this explicitly in production instead of relying on the hardcoded default. |
+| `APP_SECRETS_ENABLED` | No | `false` | Bật nạp cấu hình từ AWS Secrets Manager. Khi khác `'true'`, module `appSecrets` không gọi AWS và không đụng `process.env` — hành vi y hệt trước khi có tính năng này. |
+| `APP_SECRETS_ARN` | Khi bật | — | ARN của secret chứa cấu hình (object JSON). Bắt buộc khi `APP_SECRETS_ENABLED=true`. |
+| `APP_SECRETS_REGION` | No | `AWS_REGION` | Region của secret. |
 | `AWS_ACCESS_KEY_ID` | Rec | — | IAM key for S3 recording uploads. Absent → recording endpoint returns 503. |
 | `AWS_SECRET_ACCESS_KEY` | Rec | — | IAM secret for S3. |
 | `AWS_REGION` | No | `us-east-1` | S3 bucket region. |

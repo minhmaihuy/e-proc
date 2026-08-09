@@ -6,6 +6,29 @@ export type TenantStatus = 'pending' | 'approved' | 'suspended';
 export type TenantProvisionStatus = 'not_started' | 'queued' | 'planning' | 'planned' | 'applying' | 'active' | 'failed';
 export type AdminRole = 'admin' | 'tenant_admin' | 'superadmin';
 
+/** Trạng thái AWS Secrets Manager — chỉ chứa TÊN khóa, không bao giờ có giá trị. */
+export interface AppSecretsStatus {
+  enabled: boolean;
+  configured: boolean;
+  secretArn: string;
+  region: string;
+  loadedAt: string | null;
+  appliedKeys: string[];
+  ignoredKeys: string[];
+  envFallbackKeys: string[];
+  error: string | null;
+  managedKeys: string[];
+}
+
+export interface AppSecretsTestResult {
+  success: boolean;
+  secretArn: string;
+  region: string;
+  appliedKeys: string[];
+  ignoredKeys: string[];
+  message: string;
+}
+
 export interface AdminUser {
   id: number;
   username: string;
@@ -160,6 +183,13 @@ export const adminApi = {
 
   changePassword: (currentPassword: string, newPassword: string) =>
     api.put('/admin/change-password', { currentPassword, newPassword }),
+
+  // --- AWS Secrets Manager (chỉ superadmin; bật/tắt vẫn nằm ở .env máy chủ) ---
+  getSecretsStatus: () =>
+    api.get<AppSecretsStatus>('/admin/secrets/status'),
+
+  testSecret: (secretArn: string, awsRegion: string) =>
+    api.post<AppSecretsTestResult>('/admin/secrets/test', { secret_arn: secretArn, aws_region: awsRegion }),
 
   // --- Tenant-aware user management ---
   listUsers: () =>

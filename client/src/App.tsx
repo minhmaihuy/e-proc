@@ -17,6 +17,7 @@ import StudentPractice from './pages/StudentPractice';
 import StudentConfirm from './pages/StudentConfirm';
 import StudentSubmit from './pages/StudentSubmit';
 import TenantManagement from './pages/TenantManagement';
+import SecretsManagement from './pages/SecretsManagement';
 import IssueLogs from './pages/IssueLogs';
 
 function App() {
@@ -47,6 +48,7 @@ function App() {
         <Route path="/admin/issues" element={<PrivateRoute requirePlatformAdmin><IssueLogs /></PrivateRoute>} />
         <Route path="/admin/users" element={<PrivateRoute requireUserManager><UserManagement /></PrivateRoute>} />
         <Route path="/tenants" element={<PrivateRoute requireSuperAdmin><TenantManagement /></PrivateRoute>} />
+        <Route path="/secrets" element={<PrivateRoute requireSuperAdmin><SecretsManagement /></PrivateRoute>} />
         <Route path="/admin/tenants" element={<Navigate to="/tenants" replace />} />
         <Route path="/admin/tenant" element={<Navigate to="/admin/dashboard" replace />} />
       </Routes>

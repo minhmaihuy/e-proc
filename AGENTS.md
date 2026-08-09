@@ -412,6 +412,17 @@ Batches support two blueprint formats for question assignment:
 - Compiler: `localRunner.ts`, `coderunner.ts`, `lambdaCompiler.ts`, and `infra/compiler-lambda/**`.
 - Provisioning and superadmin log observation: `tenants.ts`, `tenantProvisioner.ts`, `tenantLogReader.ts`, `tenantIssueQuery.ts`, `terraform/tenant-instance/**`, `TenantManagement.tsx`, and `api.ts`.
 
+### Application secrets (AWS Secrets Manager, disabled by default)
+- `src/server/services/appSecrets.ts` can load sensitive configuration from Secrets Manager instead of `.env`. It is **off by default and off in production today**; when `APP_SECRETS_ENABLED !== 'true'`, `loadAppSecrets()` returns immediately, constructs no `SecretsManagerClient`, and never touches `process.env`.
+- **Startup order is load-bearing.** `server.ts` awaits `loadAppSecrets()` and only then runs `await import('./index.js')`. The dynamic import is required: `index.ts` validates `JWT_SECRET` and `postgres.ts` reads `DATABASE_URL` at module load, so a static import would evaluate before secrets are applied. Do not convert it back to a top-level import.
+- Only keys listed in `MANAGED_SECRET_KEYS` are applied; anything else is reported through `ignoredKeys` so a mistyped key is visible instead of silently inert. This also prevents a secret from overwriting `PATH`, `NODE_ENV`, or other operational variables.
+- A failed load exits the process rather than continuing on stale `.env` values — silently running against another environment's database is the worse failure.
+- Values are never logged or returned; status and test responses expose key names only, and raw AWS errors are replaced with a generic message because they embed ARNs and account ids.
+- Superadmin surface: `/secrets` (`client/src/pages/SecretsManagement.tsx`) with `GET /api/admin/secrets/status` and `POST /api/admin/secrets/test` in `src/server/routes/secrets.ts`, both behind `requireSuperAdmin`. The test action only reads a secret to validate ARN, region, and IAM permission; it never applies it to the running process.
+- Enabling is deliberately **not** an API action — it lives in the server `.env`. A compromised superadmin session must not be able to repoint the application at an attacker-controlled secret.
+- The EC2 role needs `secretsmanager:GetSecretValue` on that exact ARN. `ListSecrets` is intentionally not granted (`terraform/tenant-instance/main.tf`), so `aws secretsmanager list-secrets` from the instance is expected to fail.
+
+
 ## Environment variables
 
 | Variable | Required | Default | Description |
@@ -453,6 +464,9 @@ Batches support two blueprint formats for question assignment:
 | `ENABLE_SERVER_CODE_RUN` | No | enabled | Set to `'false'` to disable server-side code execution (`POST /api/student/run` returns 503). Browser-local runs (python/c/cpp) are unaffected. |
 | `SUPERADMIN_USERNAME` | No | `supperadmin` | Username seeded as the first `admin_users` row (role `superadmin`) when the table is empty. See **Admin authentication**. |
 | `SUPERADMIN_PASSWORD` | No | `superadmin123#2nf` | Password for the seeded superadmin account above. Set this explicitly in production instead of relying on the hardcoded default. |
+| `APP_SECRETS_ENABLED` | No | `false` | Load configuration from AWS Secrets Manager. Any value other than `'true'` keeps the `.env`-only path with no AWS calls. |
+| `APP_SECRETS_ARN` | When enabled | — | ARN of the JSON secret holding configuration. Required if `APP_SECRETS_ENABLED=true`; startup fails fast when missing or malformed. |
+| `APP_SECRETS_REGION` | No | `AWS_REGION` | Region of that secret. |
 | `AWS_ACCESS_KEY_ID` | Rec | — | IAM key for S3 recording uploads. Absent → recording endpoint returns 503. |
 | `AWS_SECRET_ACCESS_KEY` | Rec | — | IAM secret for S3. |
 | `AWS_REGION` | No | `us-east-1` | S3 bucket region. |
