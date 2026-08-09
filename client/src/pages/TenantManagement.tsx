@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AdminNav from '../components/AdminNav';
+import SecretsPanel from '../components/SecretsPanel';
 import { Tenant, TenantConfiguration, TenantIssue, TenantProvisionJob } from '../services/api';
 import { tenantControlApi } from '../services/tenantControlApi';
 import { useAuth } from '../contexts/AuthContext';
@@ -457,6 +458,8 @@ function TenantManagement() {
           )}
         </div>
       )}
+
+      <SecretsPanel />
 
       {showCreate && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowCreate(false)}>

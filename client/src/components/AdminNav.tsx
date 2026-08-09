@@ -8,7 +8,6 @@ function AdminNav() {
     return (
       <nav className="nav" aria-label="Global tenant control navigation">
         <Link to="/tenants">Tenant Control Plane</Link>
-        <Link to="/secrets">Secrets Manager</Link>
       </nav>
     );
   }

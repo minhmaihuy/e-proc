@@ -288,13 +288,53 @@ async function seedSuperAdmin() {
   console.log('[ControlDB] Seeded initial superadmin:', username);
 }
 
+export interface FsaClsLifecycleRow {
+  status: string;
+  provisionStatus: string;
+  approvedBy: number | null;
+  approvedAt: string | null;
+}
+
+export interface FsaClsLifecycleResult {
+  status: string;
+  provisionStatus: string;
+  approvedBy: number | null;
+  stampApprovedAt: boolean;
+}
+
+/**
+ * FSA-CLS là tenant đang chạy thật của chính máy chủ này, không phải một đơn đăng ký
+ * chờ duyệt — nên nó phải ở trạng thái `approved`.
+ *
+ * Hàng tạo mới đã được INSERT là 'approved', nhưng hàng có sẵn (chép sang từ
+ * control-plane cũ) mang 'pending' mặc định của schema và trước đây KHÔNG có đường nào
+ * sửa: khối UPDATE phía sau chỉ đụng tới domain_name/app_url. Vì vậy fsa-cls kẹt
+ * 'pending' vĩnh viễn dù đang phục vụ người dùng, và bị chặn ở bước Terraform
+ * plan/apply vốn yêu cầu approved.
+ *
+ * Chỉ nâng từ 'pending'. 'suspended' là quyết định có chủ đích của superadmin và phải
+ * được giữ nguyên — tự động bỏ đình chỉ sẽ là hành vi nguy hiểm.
+ */
+export function resolveFsaClsLifecycle(
+  row: FsaClsLifecycleRow,
+  superadminId: number | null,
+): FsaClsLifecycleResult {
+  const promoting = row.status === 'pending';
+  return {
+    status: promoting ? 'approved' : row.status,
+    provisionStatus: row.provisionStatus === 'not_started' ? 'active' : row.provisionStatus,
+    approvedBy: promoting ? row.approvedBy ?? superadminId : row.approvedBy,
+    stampApprovedAt: promoting && !row.approvedAt,
+  };
+}
+
 async function ensureFsaClsTenant(legacyTenantIds: number[]): Promise<number> {
   const config = getCurrentTenantConfig();
   const targetSlug = 'fsa-cls';
   let tenant = await query('SELECT id FROM tenants WHERE slug = ?', [targetSlug]);
+  const owner = await query("SELECT id FROM admin_users WHERE role = 'superadmin' ORDER BY id ASC LIMIT 1");
+  const ownerId = Number(owner.rows[0]?.id);
   if (!tenant.rows[0]) {
-    const owner = await query("SELECT id FROM admin_users WHERE role = 'superadmin' ORDER BY id ASC LIMIT 1");
-    const ownerId = Number(owner.rows[0]?.id);
     if (!ownerId) throw new Error('A superadmin is required before FSA-CLS can be initialized.');
     await query(
       `INSERT INTO tenants
@@ -306,6 +346,21 @@ async function ensureFsaClsTenant(legacyTenantIds: number[]): Promise<number> {
     tenant = await query('SELECT id FROM tenants WHERE slug = ?', [targetSlug]);
   }
   const tenantId = Number(tenant.rows[0]?.id);
+
+  const current = await query(
+    'SELECT status, provision_status, approved_by, approved_at FROM tenants WHERE id = ?',
+    [tenantId],
+  );
+  const lifecycle = resolveFsaClsLifecycle(
+    {
+      status: String(current.rows[0]?.status ?? ''),
+      provisionStatus: String(current.rows[0]?.provision_status ?? ''),
+      approvedBy: current.rows[0]?.approved_by ?? null,
+      approvedAt: current.rows[0]?.approved_at ?? null,
+    },
+    ownerId || null,
+  );
+
   await query(
     `UPDATE tenants
      SET domain_name = CASE
@@ -321,9 +376,21 @@ async function ensureFsaClsTenant(legacyTenantIds: number[]): Promise<number> {
              ) THEN ?
            ELSE app_url
          END,
+         status = ?,
+         approved_by = ?,
+         approved_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE approved_at END,
+         provision_status = ?,
          updated_at = CURRENT_TIMESTAMP
      WHERE id = ?`,
-    [config.domainName, config.appUrl, tenantId],
+    [
+      config.domainName,
+      config.appUrl,
+      lifecycle.status,
+      lifecycle.approvedBy,
+      lifecycle.stampApprovedAt ? 1 : 0,
+      lifecycle.provisionStatus,
+      tenantId,
+    ],
   );
   await query("UPDATE admin_users SET tenant_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE role = 'superadmin' AND tenant_id IS NOT NULL");
   if (legacyTenantIds.length > 0) {
