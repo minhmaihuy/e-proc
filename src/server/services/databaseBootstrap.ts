@@ -187,7 +187,11 @@ function databaseErrorCode(error: unknown): string | undefined {
 }
 
 function defaultClientFactory(connectionString: string): DatabaseMaintenanceClient {
-  return new Client({ connectionString });
+  // Phải bật SSL giống hệt các pool của ứng dụng (db/postgres.ts, db/controlPlane.ts,
+  // db/logPlane.ts, services/tenantLogReader.ts). RDS bật rds.force_ssl sẽ từ chối kết
+  // nối không mã hóa với SQLSTATE 28000 — app chạy bình thường nhưng riêng script này
+  // chết, vì nó là chỗ duy nhất tạo kết nối mà không khai báo ssl.
+  return new Client({ connectionString, ssl: { rejectUnauthorized: false } });
 }
 
 export async function ensurePostgresDatabases(
