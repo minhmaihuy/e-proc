@@ -397,6 +397,7 @@ class FileCache {
           SELECT eq.*, q.question_sample, q.rubric_must_have, q.rubric_nice_to_have, q.rubric_optional
           FROM exam_questions eq
           JOIN question_bank q ON eq.question_id = q.id
+            AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
           WHERE eq.id = ?
         `, [job.examQuestionId]);
 

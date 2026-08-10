@@ -56,6 +56,34 @@ async function initPostgres() {
     )
   `);
 
+  // Migration: bộ đề (question_group) + khóa chính kép (id, question_group).
+  //
+  // Hai bộ đề khác nhau HOÀN TOÀN có thể dùng chung mã ID: hai file thật
+  // QB_Output_CPP_EMB_PRINT_IOT và QB_Output_CPP_EMB_AUTOSAR trùng cả 100/100 mã
+  // (CH6-E-01 … CH10-H-18). Khi khóa chỉ trên id, import bộ thứ hai UPDATE đè lên
+  // đúng 100 câu của bộ thứ nhất — mất trắng dữ liệu, không có cảnh báo nào.
+  try {
+    await client.query(`ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS question_group TEXT`);
+    await client.query(`UPDATE question_bank SET question_group = '' WHERE question_group IS NULL`);
+    await client.query(`ALTER TABLE question_bank ALTER COLUMN question_group SET DEFAULT ''`);
+    await client.query(`ALTER TABLE question_bank ALTER COLUMN question_group SET NOT NULL`);
+
+    const pk = await client.query(`
+      SELECT a.attname
+      FROM pg_index i
+      JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+      WHERE i.indrelid = 'question_bank'::regclass AND i.indisprimary
+    `);
+    const pkCols = pk.rows.map((r: any) => r.attname).sort();
+    if (!(pkCols.length === 2 && pkCols[0] === 'id' && pkCols[1] === 'question_group')) {
+      console.log('[DB] question_bank PK:', pkCols, '→ đổi sang (id, question_group)');
+      await client.query(`ALTER TABLE question_bank DROP CONSTRAINT IF EXISTS question_bank_pkey`);
+      await client.query(`ALTER TABLE question_bank ADD PRIMARY KEY (id, question_group)`);
+    }
+  } catch (err) {
+    console.error('[DB] question_bank composite PK migration error:', err);
+  }
+
   // Migration: cập nhật CHECK constraint type cho DB cũ
   // Dùng transaction atomic: check exists → chỉ drop+add nếu constraint chưa đúng
   try {
@@ -210,6 +238,10 @@ await client.query(`
   // Migration: thứ tự option đã xáo cho riêng SV (quiz). JSON ["C","A","F","B"]. Câu tự luận để NULL.
   try {
     await client.query('ALTER TABLE exam_questions ADD COLUMN IF NOT EXISTS option_order TEXT');
+    // question_id một mình không còn xác định được câu hỏi sau khi question_bank đổi
+    // sang khóa (id, question_group) → lưu kèm group của câu đã gán cho học viên.
+    await client.query(`ALTER TABLE exam_questions ADD COLUMN IF NOT EXISTS question_group TEXT DEFAULT ''`);
+    await client.query(`UPDATE exam_questions SET question_group = '' WHERE question_group IS NULL`);
   } catch (_) { /* already exists */ }
   console.log('[DB] exam_questions ready');
   
@@ -533,8 +565,56 @@ function initSqlite() {
     if (!qbCols.includes('correct_answers')) sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN correct_answers TEXT');
     if (!qbCols.includes('score')) sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN score REAL DEFAULT 1');
     if (!qbCols.includes('uploaded_by')) sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN uploaded_by INTEGER');
+    if (!qbCols.includes('question_group')) {
+      sqliteDb.exec("ALTER TABLE question_bank ADD COLUMN question_group TEXT NOT NULL DEFAULT ''");
+    }
     const eqCols = (sqliteDb.prepare("PRAGMA table_info(exam_questions)").all() as { name: string }[]).map(c => c.name);
     if (!eqCols.includes('option_order')) sqliteDb.exec('ALTER TABLE exam_questions ADD COLUMN option_order TEXT');
+    // Group của câu đã gán: question_id một mình không còn định danh được câu hỏi.
+    if (!eqCols.includes('question_group')) {
+      sqliteDb.exec("ALTER TABLE exam_questions ADD COLUMN question_group TEXT DEFAULT ''");
+      sqliteDb.exec("UPDATE exam_questions SET question_group = '' WHERE question_group IS NULL");
+    }
+
+    // Migration: khóa chính kép (id, question_group) — xem giải thích ở nhánh Postgres.
+    // SQLite không đổi được PRIMARY KEY bằng ALTER nên phải dựng bảng mới rồi copy sang.
+    const qbPk = (sqliteDb.prepare("PRAGMA table_info(question_bank)").all() as { name: string; pk: number }[])
+      .filter(c => c.pk > 0).map(c => c.name).sort();
+    if (!(qbPk.length === 2 && qbPk[0] === 'id' && qbPk[1] === 'question_group')) {
+      console.log('[DB] question_bank PK:', qbPk, '→ rebuild sang (id, question_group)');
+      const cols = (sqliteDb.prepare("PRAGMA table_info(question_bank)").all() as { name: string }[]).map(c => c.name);
+      const optional = ['options', 'correct_answers', 'score', 'uploaded_by'].filter(c => cols.includes(c));
+      const copyCols = ['id', 'type', 'level', 'module', 'question_group', 'question_sample',
+        'rubric_must_have', 'rubric_nice_to_have', 'rubric_optional', 'created_at', 'updated_at', ...optional];
+      sqliteDb.exec('DROP TABLE IF EXISTS question_bank_new');
+      sqliteDb.exec(`
+        CREATE TABLE question_bank_new (
+          id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          level TEXT NOT NULL,
+          module TEXT NOT NULL,
+          question_group TEXT NOT NULL DEFAULT '',
+          question_sample TEXT NOT NULL,
+          rubric_must_have TEXT NOT NULL,
+          rubric_nice_to_have TEXT NOT NULL,
+          rubric_optional TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          options TEXT,
+          correct_answers TEXT,
+          score REAL DEFAULT 1,
+          uploaded_by INTEGER,
+          PRIMARY KEY (id, question_group)
+        )
+      `);
+      const selectCols = copyCols
+        .map(c => (c === 'question_group' ? "COALESCE(question_group, '') AS question_group" : c))
+        .join(', ');
+      sqliteDb.exec(`INSERT INTO question_bank_new (${copyCols.join(', ')}) SELECT ${selectCols} FROM question_bank`);
+      sqliteDb.exec('DROP TABLE question_bank');
+      sqliteDb.exec('ALTER TABLE question_bank_new RENAME TO question_bank');
+      console.log('[DB] question_bank rebuilt với PK (id, question_group)');
+    }
 
     console.log('[DB] All SQLite tables initialized');
   } catch (err) {
@@ -616,7 +696,13 @@ export async function query(text: string, params?: any[]): Promise<DbResult> {
   if (USE_SQLITE && sqliteDb) {
     try {
       const stmt = sqliteDb.prepare(text);
-      if (text.trim().toUpperCase().startsWith('SELECT')) {
+      // Phải chạy .all() cho cả INSERT ... RETURNING, không chỉ SELECT. Dùng .run()
+      // luôn trả rows: [] nên `INSERT INTO students ... RETURNING id` cho ra undefined:
+      // students/import đọc studentResult.rows[0]?.id, gặp undefined rồi `continue`, khiến
+      // học viên được tạo nhưng KHÔNG được gán câu hỏi nào. Postgres không dính vì nhánh
+      // của nó luôn trả rows thật.
+      const upper = text.trim().toUpperCase();
+      if (upper.startsWith('SELECT') || upper.includes('RETURNING')) {
         return { rows: stmt.all(...(params || [])), rowCount: 0 };
       } else {
         const result = stmt.run(...(params || []));

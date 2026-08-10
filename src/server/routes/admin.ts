@@ -374,6 +374,9 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
       const level = colIndex['Level'] !== undefined ? row[colIndex['Level']] : row[2];
       const module = colIndex['Topic'] !== undefined ? row[colIndex['Topic']] : (colIndex['Module'] !== undefined ? row[colIndex['Module']] : row[3]);
       const question = colIndex['Question Sample'] !== undefined ? row[colIndex['Question Sample']] : row[4];
+      // Bộ đề: chấp nhận vài tên cột thường gặp; thiếu thì lưu chuỗi rỗng.
+      const questionGroupCol = colIndex['QuestionGroup'] ?? colIndex['Question Set'] ?? colIndex['Bộ đề'];
+      const questionGroup = (questionGroupCol !== undefined ? row[questionGroupCol]?.toString().trim() : '') || '';
       
       const rubricMustHave = row[rubricMustHaveCol]?.toString() || '';
       const rubricNice = row[rubricNiceCol]?.toString() || '';
@@ -398,7 +401,13 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
 
       const normalizedModule = normalizeUnicode(module.toString());
 
-      const existing = await db.query('SELECT id FROM question_bank WHERE id = $1', [id]);
+      // Trùng lặp tính theo CẶP (id, question_group): hai bộ đề khác nhau được phép dùng
+      // chung mã ID mà không ghi đè nhau. Dùng '?' vì query này chạy cho cả hai DB mode —
+      // '$1' sẽ nổ dưới SQLite ("Too many parameter values were provided").
+      const existing = await db.query(
+        "SELECT id FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
+        [id, questionGroup],
+      );
       
       if (existing.rows.length > 0) {
         updated++;
@@ -409,15 +418,15 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
       if (USE_SQLITE) {
         await db.query(`
           INSERT OR REPLACE INTO question_bank 
-          (id, type, level, module, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at, uploaded_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
-        `, [id, type, level, normalizedModule, question, rubricMustHave, rubricNice, rubricOpt, req.adminUser?.id ?? null]);
+          (id, type, level, module, question_group, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at, uploaded_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+        `, [id, type, level, normalizedModule, questionGroup, question, rubricMustHave, rubricNice, rubricOpt, req.adminUser?.id ?? null]);
       } else {
         const pgQuery = `
           INSERT INTO question_bank 
-          (id, type, level, module, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at, uploaded_by)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, $9)
-          ON CONFLICT (id) DO UPDATE SET
+          (id, type, level, module, question_group, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at, uploaded_by)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10)
+          ON CONFLICT (id, question_group) DO UPDATE SET
             type = EXCLUDED.type,
             level = EXCLUDED.level,
             module = EXCLUDED.module,
@@ -429,7 +438,7 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
             uploaded_by = EXCLUDED.uploaded_by
         `;
         console.log('[Import] PG Query:', pgQuery);
-        await db.query(pgQuery, [id, type, level, normalizedModule, question, rubricMustHave, rubricNice, rubricOpt, req.adminUser?.id ?? null]);
+        await db.query(pgQuery, [id, type, level, normalizedModule, questionGroup, question, rubricMustHave, rubricNice, rubricOpt, req.adminUser?.id ?? null]);
       }
     }
 
@@ -493,6 +502,10 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
       const level = get(row, 'Level')?.toString().trim();
       const module = (get(row, 'Topic') ?? get(row, 'Module'))?.toString();
       const question = get(row, 'Question Sample')?.toString();
+      // Cùng quy ước tên cột với import tự luận.
+      const questionGroup = (
+        get(row, 'QuestionGroup') ?? get(row, 'Question Set') ?? get(row, 'Bộ đề')
+      )?.toString().trim() || '';
 
       if (!id || !type || !level || !module || !question) {
         skipped++;
@@ -550,22 +563,25 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
       const optionsJson = JSON.stringify(options);
       const correctJson = JSON.stringify(correct);
 
-      const existing = await db.query('SELECT id FROM question_bank WHERE id = $1', [id]);
+      const existing = await db.query(
+        "SELECT id FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
+        [id, questionGroup],
+      );
       if (existing.rows.length > 0) updated++; else imported++;
 
       // rubric_* là NOT NULL trong schema → điền '' cho câu quiz
       if (USE_SQLITE) {
         await db.query(`
           INSERT OR REPLACE INTO question_bank
-          (id, type, level, module, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at, uploaded_by)
-          VALUES (?, ?, ?, ?, ?, '', '', '', ?, ?, ?, datetime('now'), ?)
-        `, [id, type, level, normalizedModule, question, optionsJson, correctJson, score, req.adminUser?.id ?? null]);
+          (id, type, level, module, question_group, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at, uploaded_by)
+          VALUES (?, ?, ?, ?, ?, ?, '', '', '', ?, ?, ?, datetime('now'), ?)
+        `, [id, type, level, normalizedModule, questionGroup, question, optionsJson, correctJson, score, req.adminUser?.id ?? null]);
       } else {
         await db.query(`
           INSERT INTO question_bank
-          (id, type, level, module, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at, uploaded_by)
-          VALUES ($1, $2, $3, $4, $5, '', '', '', $6, $7, $8, CURRENT_TIMESTAMP, $9)
-          ON CONFLICT (id) DO UPDATE SET
+          (id, type, level, module, question_group, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at, uploaded_by)
+          VALUES ($1, $2, $3, $4, $5, $6, '', '', '', $7, $8, $9, CURRENT_TIMESTAMP, $10)
+          ON CONFLICT (id, question_group) DO UPDATE SET
             type = EXCLUDED.type,
             level = EXCLUDED.level,
             module = EXCLUDED.module,
@@ -575,7 +591,7 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
             score = EXCLUDED.score,
             updated_at = CURRENT_TIMESTAMP,
             uploaded_by = EXCLUDED.uploaded_by
-        `, [id, type, level, normalizedModule, question, optionsJson, correctJson, score, req.adminUser?.id ?? null]);
+        `, [id, type, level, normalizedModule, questionGroup, question, optionsJson, correctJson, score, req.adminUser?.id ?? null]);
       }
     }
 
@@ -719,14 +735,26 @@ router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
       }
     }
 
-    if (USE_SQLITE) {
-      const placeholders = ids.map(() => '?').join(', ');
-      await db.query(`DELETE FROM question_bank WHERE id IN (${placeholders})`, ids);
-    } else {
-      await db.query(`DELETE FROM question_bank WHERE id = ANY($1::text[])`, [ids]);
+    // Câu hỏi định danh bằng CẶP (id, question_group) → client gửi "id|||group".
+    // Chuỗi không có "|||" là định dạng cũ (chỉ id): xóa mọi bộ đề mang id đó, giữ
+    // nguyên hành vi trước đây cho client cũ.
+    let deleted = 0;
+    for (const raw of ids) {
+      const key = String(raw);
+      const sep = key.indexOf('|||');
+      if (sep === -1) {
+        const r = await db.query('DELETE FROM question_bank WHERE id = ?', [key]);
+        deleted += r.rowCount ?? 0;
+      } else {
+        const r = await db.query(
+          "DELETE FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
+          [key.slice(0, sep), key.slice(sep + 3)],
+        );
+        deleted += r.rowCount ?? 0;
+      }
     }
 
-    res.json({ success: true, deleted: ids.length });
+    res.json({ success: true, deleted });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -742,7 +770,17 @@ router.delete('/questions/:id', async (req: Request, res: Response) => {
         return res.status(403).json({ error: 'Forbidden: You can only delete questions you uploaded' });
       }
     }
-    await db.query('DELETE FROM question_bank WHERE id = ?', [id]);
+    // ?group=<question_group> giới hạn đúng bộ đề; không truyền thì xóa mọi bộ đề
+    // mang mã này (hành vi cũ, giữ cho client cũ).
+    const group = req.query.group;
+    if (group !== undefined) {
+      await db.query(
+        "DELETE FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
+        [id, String(group)],
+      );
+    } else {
+      await db.query('DELETE FROM question_bank WHERE id = ?', [id]);
+    }
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -1070,7 +1108,9 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
       
       if (!studentId) continue;
       
-      const questionIds: string[] = [];
+      // Câu hỏi được định danh bằng CẶP (id, question_group) — hai bộ đề được phép
+      // dùng chung mã ID, nên chỉ giữ id là mất dấu câu thuộc bộ nào.
+      const picked: { id: string; questionGroup: string }[] = [];
 
       // Parse blueprint supporting both legacy (array) and new ({ blueprintMode, items }) formats
       const { blueprintMode, items: blueprintItems } = parseBlueprintCompat(blueprint);
@@ -1088,19 +1128,19 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
           console.log(`Processing by module+type: ${item.module}/${item.type}, easy=${easy}, medium=${medium}, hard=${hard}`);
 
           if (easy > 0) {
-            const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(type) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, typeName, 'easy', easy]);
+            const r = await db.query("SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank WHERE LOWER(module) = ? AND LOWER(type) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?", [moduleName, typeName, 'easy', easy]);
             console.log(`  Module+Type Easy: found ${r.rows.length}`);
-            r.rows.forEach((q: any) => questionIds.push(q.id));
+            r.rows.forEach((q: any) => picked.push({ id: q.id, questionGroup: q.question_group || '' }));
           }
           if (medium > 0) {
-            const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(type) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, typeName, 'medium', medium]);
+            const r = await db.query("SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank WHERE LOWER(module) = ? AND LOWER(type) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?", [moduleName, typeName, 'medium', medium]);
             console.log(`  Module+Type Medium: found ${r.rows.length}`);
-            r.rows.forEach((q: any) => questionIds.push(q.id));
+            r.rows.forEach((q: any) => picked.push({ id: q.id, questionGroup: q.question_group || '' }));
           }
           if (hard > 0) {
-            const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(type) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, typeName, 'hard', hard]);
+            const r = await db.query("SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank WHERE LOWER(module) = ? AND LOWER(type) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?", [moduleName, typeName, 'hard', hard]);
             console.log(`  Module+Type Hard: found ${r.rows.length}`);
-            r.rows.forEach((q: any) => questionIds.push(q.id));
+            r.rows.forEach((q: any) => picked.push({ id: q.id, questionGroup: q.question_group || '' }));
           }
         } else {
           // Default: By Module only
@@ -1108,28 +1148,31 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
           console.log(`Processing by module: ${item.module} -> ${moduleName}, easy=${easy}, medium=${medium}, hard=${hard}`);
 
           if (easy > 0) {
-            const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, 'easy', easy]);
+            const r = await db.query("SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?", [moduleName, 'easy', easy]);
             console.log(`  Module Easy: found ${r.rows.length}`);
-            r.rows.forEach((q: any) => questionIds.push(q.id));
+            r.rows.forEach((q: any) => picked.push({ id: q.id, questionGroup: q.question_group || '' }));
           }
           if (medium > 0) {
-            const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, 'medium', medium]);
+            const r = await db.query("SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?", [moduleName, 'medium', medium]);
             console.log(`  Module Medium: found ${r.rows.length}`);
-            r.rows.forEach((q: any) => questionIds.push(q.id));
+            r.rows.forEach((q: any) => picked.push({ id: q.id, questionGroup: q.question_group || '' }));
           }
           if (hard > 0) {
-            const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, 'hard', hard]);
+            const r = await db.query("SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?", [moduleName, 'hard', hard]);
             console.log(`  Module Hard: found ${r.rows.length}`);
-            r.rows.forEach((q: any) => questionIds.push(q.id));
+            r.rows.forEach((q: any) => picked.push({ id: q.id, questionGroup: q.question_group || '' }));
           }
         }
       }
       
-      console.log('Total questions:', questionIds.length);
+      console.log('Total questions:', picked.length);
       
-      // Insert into exam_questions
-      for (let i = 0; i < questionIds.length; i++) {
-        await db.query('INSERT INTO exam_questions (student_id, question_id, question_order) VALUES (?, ?, ?)', [studentId, questionIds[i], i + 1]);
+      // Insert into exam_questions — lưu kèm question_group để join về đúng câu.
+      for (let i = 0; i < picked.length; i++) {
+        await db.query(
+          'INSERT INTO exam_questions (student_id, question_id, question_group, question_order) VALUES (?, ?, ?, ?)',
+          [studentId, picked[i].id, picked[i].questionGroup, i + 1],
+        );
       }
       console.log('Inserted into exam_questions');
       
@@ -1316,6 +1359,7 @@ router.get('/batches/:id/results', async (req: Request, res: Response) => {
         SELECT eq.*, q.type, q.level, q.module, q.question_sample, q.rubric_must_have, q.rubric_nice_to_have, q.rubric_optional
         FROM exam_questions eq
         JOIN question_bank q ON eq.question_id = q.id
+          AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
         WHERE eq.student_id = ?
         ORDER BY eq.question_order
       `, [student.id]);
@@ -1412,6 +1456,7 @@ router.get('/batches/:id/results/export', async (req: Request, res: Response) =>
           q.rubric_must_have, q.rubric_nice_to_have, q.rubric_optional
         FROM exam_questions eq
         JOIN question_bank q ON eq.question_id = q.id
+          AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
         WHERE eq.student_id = ?
         ORDER BY eq.question_order
       `, [student.id]);

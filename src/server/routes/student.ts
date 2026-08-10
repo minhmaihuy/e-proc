@@ -46,6 +46,7 @@ async function finalizeSubmission(studentId: number): Promise<void> {
       SELECT eq.id, eq.answer, q.type, q.correct_answers, q.score
       FROM exam_questions eq
       JOIN question_bank q ON eq.question_id = q.id
+        AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
       WHERE eq.student_id = ?
     `, [studentId]);
 
@@ -576,6 +577,7 @@ router.get('/exam/questions', studentAuthMiddleware, sessionTracker, async (req:
       SELECT eq.question_order, eq.answer, eq.option_order, q.id, q.type, q.level, q.module, q.question_sample, q.options
       FROM exam_questions eq
       JOIN question_bank q ON eq.question_id = q.id
+        AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
       WHERE eq.student_id = ?
       ORDER BY eq.question_order
     `, [parseInt(studentId)]);
