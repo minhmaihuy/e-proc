@@ -19,7 +19,9 @@ interface AnswerCache {
 
 interface QueueJob {
   id: string;
+  // kind='exam': id của exam_questions; kind='practice': id của practice_submissions
   examQuestionId: number;
+  kind: 'exam' | 'practice';
   studentId: number;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   attempts: number;
@@ -279,13 +281,14 @@ class FileCache {
     }, interval);
   }
 
-  addToQueue(examQuestionId: number, studentId: number): string {
+  addToQueue(examQuestionId: number, studentId: number, kind: 'exam' | 'practice' = 'exam'): string {
     // Deterministic id makes submission/finalization retries idempotent.
     const dbId = examQuestionId;
     const id = `job_${dbId}`;
     const job: QueueJob = {
       id,
       examQuestionId,
+      kind,
       studentId,
       status: 'pending',
       attempts: 0,
@@ -298,7 +301,7 @@ class FileCache {
     // Save to database instead of file
     this.saveQueueToDB(job, dbId);
     
-    console.log(`[Queue] Added job ${id} for exam_question ${examQuestionId}`);
+    console.log(`[Queue] Added job ${id} (${kind}) for ${kind === 'practice' ? 'practice_submission' : 'exam_question'} ${examQuestionId}`);
     return id;
   }
 
@@ -306,10 +309,10 @@ class FileCache {
     try {
       const { query } = await import('../server/db/postgres.js');
       await query(
-        `INSERT INTO ai_queue (id, exam_question_id, student_id, status, attempts, created_at, updated_at) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO ai_queue (id, exam_question_id, student_id, status, attempts, kind, created_at, updated_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO NOTHING`,
-        [dbId, job.examQuestionId, job.studentId, job.status, job.attempts, new Date(job.createdAt), new Date(job.updatedAt)]
+        [dbId, job.examQuestionId, job.studentId, job.status, job.attempts, job.kind, new Date(job.createdAt).toISOString(), new Date(job.updatedAt).toISOString()]
       );
     } catch (err) {
       console.error('[Queue] Failed to save to DB:', err);
@@ -339,13 +342,15 @@ class FileCache {
   private async loadQueueFromDB(): Promise<void> {
     try {
       const { query } = await import('../server/db/postgres.js');
-      const result = await query('SELECT id, exam_question_id, student_id, status, attempts, created_at, updated_at FROM ai_queue WHERE status IN ($1, $2)', ['pending', 'processing']);
+      const result = await query('SELECT id, exam_question_id, student_id, status, attempts, kind, created_at, updated_at FROM ai_queue WHERE status IN (?, ?)', ['pending', 'processing']);
       
       for (const row of result.rows) {
         const id = `job_${row.id}`;
         this.queue.set(id, {
           id,
           examQuestionId: row.exam_question_id,
+          // Job lưu trước khi có cột kind → mặc định 'exam'
+          kind: row.kind === 'practice' ? 'practice' : 'exam',
           studentId: row.student_id,
           status: row.status,
           attempts: row.attempts,
@@ -364,8 +369,8 @@ class FileCache {
       const dbId = parseInt(job.id.replace('job_', ''));
       const { query } = await import('../server/db/postgres.js');
       await query(
-        `UPDATE ai_queue SET status = $1, attempts = $2, updated_at = $3 WHERE id = $4`,
-        [job.status, job.attempts, new Date(job.updatedAt), dbId]
+        `UPDATE ai_queue SET status = ?, attempts = ?, updated_at = ? WHERE id = ?`,
+        [job.status, job.attempts, new Date(job.updatedAt).toISOString(), dbId]
       );
     } catch (err) {
       console.error('[Queue] Failed to update in DB:', err);
@@ -392,30 +397,55 @@ class FileCache {
         await this.updateQueueInDB(job);
 
         const { query } = await import('../server/db/postgres.js');
-        
-        const examResult = await query(`
-          SELECT eq.*, q.question_sample, q.rubric_must_have, q.rubric_nice_to_have, q.rubric_optional
-          FROM exam_questions eq
-          JOIN question_bank q ON eq.question_id = q.id
-            AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
-          WHERE eq.id = ?
-        `, [job.examQuestionId]);
 
-        if (examResult.rows.length === 0) {
-          throw new Error('Question not found');
-        }
+        // Bảng đích + prompt tuỳ loại job: câu hỏi trong đề thi, hay bài practice dài.
+        const targetTable = job.kind === 'practice' ? 'practice_submissions' : 'exam_questions';
+        let answer: string;
+        let prompt: string;
 
-        const eq = examResult.rows[0];
-        
-        if (!eq.answer) {
-          await query(`UPDATE exam_questions SET ai_score = 0.0, ai_feedback = 'No answer provided' WHERE id = ?`, [job.examQuestionId]);
-          job.status = 'completed';
-          job.updatedAt = Date.now();
-          await this.updateQueueInDB(job);
-          return;
-        }
+        if (job.kind === 'practice') {
+          const subResult = await query(`
+            SELECT ps.*, p.name, p.content_plain
+            FROM practice_submissions ps
+            JOIN practice_exams p ON ps.practice_exam_id = p.id
+            WHERE ps.id = ?
+          `, [job.examQuestionId]);
 
-        const prompt = `You are an expert technical interviewer. Evaluate the following answer based on the rubric.
+          if (subResult.rows.length === 0) {
+            throw new Error('Practice submission not found');
+          }
+          const sub = subResult.rows[0];
+          answer = sub.answer;
+
+          // Bài practice không có rubric theo cột — chấm tổng thể theo nội dung đề.
+          prompt = `You are an expert technical interviewer. A student took a long-form practice exam. Evaluate their complete program/answer against the full exam requirements below.
+
+=== PRACTICE EXAM: ${sub.name} ===
+${sub.content_plain}
+
+=== STUDENT'S ANSWER ===
+${sub.answer}
+
+Grade holistically: correctness against the stated requirements, architecture/design quality, code quality, and whether the expected console output (if specified in the exam) would be produced.
+
+Provide a JSON response with "score" (0-10) and "feedback" (detailed feedback):
+`;
+        } else {
+          const examResult = await query(`
+            SELECT eq.*, q.question_sample, q.rubric_must_have, q.rubric_nice_to_have, q.rubric_optional
+            FROM exam_questions eq
+            JOIN question_bank q ON eq.question_id = q.id
+              AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
+            WHERE eq.id = ?
+          `, [job.examQuestionId]);
+
+          if (examResult.rows.length === 0) {
+            throw new Error('Question not found');
+          }
+          const eq = examResult.rows[0];
+          answer = eq.answer;
+
+          prompt = `You are an expert technical interviewer. Evaluate the following answer based on the rubric.
 
 Question: ${eq.question_sample}
 Answer: ${eq.answer}
@@ -426,6 +456,15 @@ Rubric Optional (10%): ${eq.rubric_optional}
 
 Provide a JSON response with "score" (0-10) and "feedback" (detailed feedback):
 `;
+        }
+
+        if (!answer) {
+          await query(`UPDATE ${targetTable} SET ai_score = 0.0, ai_feedback = 'No answer provided' WHERE id = ?`, [job.examQuestionId]);
+          job.status = 'completed';
+          job.updatedAt = Date.now();
+          await this.updateQueueInDB(job);
+          return;
+        }
 
         const aiResult = await this.callAI(prompt, aiSettings);
         const text = aiResult.text;
@@ -434,7 +473,7 @@ Provide a JSON response with "score" (0-10) and "feedback" (detailed feedback):
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
           
-          await query(`UPDATE exam_questions SET ai_score = ?, ai_feedback = ? WHERE id = ?`, 
+          await query(`UPDATE ${targetTable} SET ai_score = ?, ai_feedback = ? WHERE id = ?`, 
             [parsed.score, parsed.feedback, job.examQuestionId]);
           
           job.status = 'completed';
@@ -454,7 +493,8 @@ Provide a JSON response with "score" (0-10) and "feedback" (detailed feedback):
           job.updatedAt = Date.now();
           
           const { query } = await import('../server/db/postgres.js');
-          await query(`UPDATE exam_questions SET ai_score = 0.0, ai_feedback = ? WHERE id = ?`, 
+          const failTable = job.kind === 'practice' ? 'practice_submissions' : 'exam_questions';
+          await query(`UPDATE ${failTable} SET ai_score = 0.0, ai_feedback = ? WHERE id = ?`, 
             ['AI Evaluation Failed: ' + error.message, job.examQuestionId]);
         } else {
           job.status = 'pending';

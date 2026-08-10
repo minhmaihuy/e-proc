@@ -2,7 +2,8 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
 import db from '../db/postgres.js';
-import { normalizeUnicode } from '../../utils/string.js';
+import mammoth from 'mammoth';
+import { normalizeUnicode, stripHtml, sanitizeFilename, buildContentDisposition } from '../../utils/string.js';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
@@ -787,9 +788,89 @@ router.delete('/questions/:id', async (req: Request, res: Response) => {
   }
 });
 
+// PRACTICE EXAMS — Quản lý riêng, import từ .docx
+// =============================================
+
+// POST /api/admin/practice/import — Upload file .docx + tên bài, convert sang HTML
+router.post('/practice/import', upload.single('file'), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    const name = (req.body.name || '').toString().trim() || req.file.originalname.replace(/\.docx?$/i, '');
+
+    if (!/\.docx$/i.test(req.file.originalname)) {
+      return res.status(400).json({ error: 'Only .docx files are supported' });
+    }
+
+    const conversion = await mammoth.convertToHtml({ buffer: req.file.buffer });
+    const contentHtml = conversion.value;
+    if (!contentHtml || contentHtml.trim().length === 0) {
+      return res.status(400).json({ error: 'Could not extract any content from the .docx file' });
+    }
+    const contentPlain = stripHtml(contentHtml);
+
+    const result = await db.query(
+      `INSERT INTO practice_exams (name, content_html, content_plain) VALUES (?, ?, ?) RETURNING id`,
+      [name, contentHtml, contentPlain]
+    );
+    const id = result.rows[0]?.id ?? result.lastInsertRowid;
+
+    console.log('[Practice] Imported:', name, 'id:', id, 'html length:', contentHtml.length);
+    res.status(201).json({ success: true, id, name, warnings: conversion.messages?.map((m: any) => m.message) });
+  } catch (error: any) {
+    console.error('[Practice] Import error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/practice — Danh sách bài practice (kèm số batch đang dùng)
+router.get('/practice', async (req: Request, res: Response) => {
+  try {
+    const result = await db.query(`
+      SELECT p.id, p.name, p.created_at,
+             (SELECT COUNT(*) FROM batches b WHERE b.practice_exam_id = p.id) as batches_count
+      FROM practice_exams p
+      ORDER BY p.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/practice/:id — Chi tiết (kèm content_html để preview)
+router.get('/practice/:id', async (req: Request, res: Response) => {
+  try {
+    const result = await db.query('SELECT * FROM practice_exams WHERE id = ?', [parseInt(req.params.id)]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Practice exam not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /api/admin/practice/:id — Chặn xoá nếu còn batch đang tham chiếu
+router.delete('/practice/:id', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id);
+    const used = await db.query('SELECT COUNT(*) as count FROM batches WHERE practice_exam_id = ?', [id]);
+    const count = Number(used.rows[0]?.count ?? used.rows[0]?.COUNT ?? 0);
+    if (count > 0) {
+      return res.status(400).json({ error: `Practice exam is used by ${count} batch(es). Delete those batches first.` });
+    }
+    await db.query('DELETE FROM practice_exams WHERE id = ?', [id]);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.post('/batches', async (req: Request, res: Response) => {
   try {
-    const { name, start_time, end_time, duration, blueprint, record_mode, exam_type } = req.body;
+    const { name, start_time, end_time, duration, blueprint, practice_exam_id, record_mode, exam_type } = req.body;
     console.log('[CreateBatch] Input:', { name, start_time, end_time, duration, blueprint, exam_type, record_mode });
     const examType = exam_type === 'quiz' ? 'quiz' : 'essay';
 
@@ -798,14 +879,24 @@ router.post('/batches', async (req: Request, res: Response) => {
     }
 
     // Support both legacy array format and new { blueprintMode, items } object format
+    // Batch Practice không dùng blueprint: học viên làm một bài .docx duy nhất.
+    // Một batch hoặc theo blueprint, hoặc theo practice — không bao giờ cả hai.
+    const isPractice = practice_exam_id !== undefined && practice_exam_id !== null && practice_exam_id !== '';
+    if (isPractice) {
+      const pe = await db.query('SELECT id FROM practice_exams WHERE id = ?', [parseInt(practice_exam_id)]);
+      if (pe.rows.length === 0) {
+        return res.status(400).json({ error: 'Practice exam not found' });
+      }
+    }
     const { items: blueprintItems } = parseBlueprintCompat(blueprint);
     const totalQuestions = blueprintItems.reduce((sum: number, item: any) => sum + (item.easy || 0) + (item.medium || 0) + (item.hard || 0), 0);
-    if (totalQuestions < 1 || totalQuestions > 100) {
+    if (!isPractice && (totalQuestions < 1 || totalQuestions > 100)) {
       return res.status(400).json({ error: 'Total questions must be between 1 and 100' });
     }
 
-    const blueprintJson = JSON.stringify(blueprint);
-    console.log('[CreateBatch] Blueprint JSON:', blueprintJson);
+    const blueprintJson = isPractice ? null : JSON.stringify(blueprint);
+    const practiceExamId = isPractice ? parseInt(practice_exam_id) : null;
+    console.log('[CreateBatch] Blueprint JSON:', blueprintJson, 'practice:', practiceExamId);
     
     const startUTC = toStorageTime(start_time);
     const endUTC = toStorageTime(end_time);
@@ -831,14 +922,14 @@ router.post('/batches', async (req: Request, res: Response) => {
     let result;
     if (USE_SQLITE) {
       result = await db.query(`
-        INSERT INTO batches (name, start_time, end_time, duration, blueprint, record_enabled, record_mode, exam_type, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [name, startUTC, endUTC, duration, blueprintJson, recordFlag, recordMode, examType, createdBy]);
+        INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, exam_type, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, recordFlag, recordMode, examType, createdBy]);
     } else {
       result = await db.query(`
-        INSERT INTO batches (name, start_time, end_time, duration, blueprint, record_enabled, record_mode, exam_type, created_by)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      `, [name, startUTC, endUTC, duration, blueprintJson, !!recordFlag, recordMode, examType, createdBy]);
+        INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, exam_type, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, !!recordFlag, recordMode, examType, createdBy]);
     }
     console.log('[CreateBatch] Success, id:', result.lastInsertRowid);
     res.json({ success: true, id: result.lastInsertRowid || result.rows?.[0]?.id });
@@ -890,8 +981,10 @@ router.get('/batches/:id', async (req: Request, res: Response) => {
 router.put('/batches/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, start_time, end_time, duration, blueprint, record_mode, exam_type } = req.body;
+    const { name, start_time, end_time, duration, blueprint, practice_exam_id, record_mode, exam_type } = req.body;
     const examType = exam_type === 'quiz' ? 'quiz' : 'essay';
+    const isPractice = practice_exam_id !== undefined && practice_exam_id !== null && practice_exam_id !== '';
+    const practiceExamId = isPractice ? parseInt(practice_exam_id) : null;
 
     // Kiểm tra quyền: mod chỉ được sửa batch của mình
     if (req.adminUser?.role !== 'admin') {
@@ -923,14 +1016,14 @@ router.put('/batches/:id', async (req: Request, res: Response) => {
 
     if (USE_SQLITE) {
       await db.query(`
-        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, record_enabled = ?, record_mode = ?, exam_type = ?
+        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, practice_exam_id = ?, record_enabled = ?, record_mode = ?, exam_type = ?
         WHERE id = ?
-      `, [name, startUTC, endUTC, duration, JSON.stringify(blueprint), recordFlag, recordMode, examType, parseInt(id)]);
+      `, [name, startUTC, endUTC, duration, isPractice ? null : JSON.stringify(blueprint), practiceExamId, recordFlag, recordMode, examType, parseInt(id)]);
     } else {
       await db.query(`
-        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, record_enabled = ?, record_mode = ?, exam_type = ?
+        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, practice_exam_id = ?, record_enabled = ?, record_mode = ?, exam_type = ?
         WHERE id = ?
-      `, [name, startUTC, endUTC, duration, JSON.stringify(blueprint), !!recordFlag, recordMode, examType, parseInt(id)]);
+      `, [name, startUTC, endUTC, duration, isPractice ? null : JSON.stringify(blueprint), practiceExamId, !!recordFlag, recordMode, examType, parseInt(id)]);
     }
 
     res.json({ success: true });
@@ -1023,12 +1116,16 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
     const students: {email: string; code: string}[] = [];
     
     console.log('Fetching batch...');
-    const batchResult = await db.query('SELECT id, blueprint FROM batches WHERE id = ?', [batchId]);
+    const batchResult = await db.query('SELECT id, blueprint, practice_exam_id FROM batches WHERE id = ?', [batchId]);
     const batch = batchResult.rows[0];
     console.log('Batch found:', batch ? 'yes' : 'no');
-    console.log('Batch blueprint:', batch?.blueprint);
-    
-    if (!batch || !batch.blueprint) {
+    console.log('Batch blueprint:', batch?.blueprint, 'practice_exam_id:', batch?.practice_exam_id);
+
+    // Batch Practice không có blueprint và không gán câu hỏi: học viên chỉ cần access
+    // code để vào làm bài .docx. Bắt buộc blueprint ở đây sẽ chặn mất luồng practice.
+    const isPracticeBatch = batch?.practice_exam_id !== null && batch?.practice_exam_id !== undefined;
+
+    if (!batch || (!isPracticeBatch && !batch.blueprint)) {
       console.log('[Import Students] ERROR: Batch has no blueprint');
       return res.status(400).json({ error: 'Batch has no blueprint' });
     }
@@ -1049,7 +1146,7 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
     
     // Support both legacy array and new { blueprintMode, items } formats
     const { items: parsedBlueprintItems } = parseBlueprintCompat(blueprint);
-    if (!parsedBlueprintItems || parsedBlueprintItems.length === 0) {
+    if (!isPracticeBatch && (!parsedBlueprintItems || parsedBlueprintItems.length === 0)) {
       return res.status(400).json({ error: 'Blueprint is empty' });
     }
     
@@ -1108,6 +1205,12 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
       
       if (!studentId) continue;
       
+      // Batch Practice: không gán câu hỏi từ question_bank — học viên làm bài .docx.
+      if (isPracticeBatch) {
+        students.push({ email: email.trim(), code });
+        continue;
+      }
+
       // Câu hỏi được định danh bằng CẶP (id, question_group) — hai bộ đề được phép
       // dùng chung mã ID, nên chỉ giữ id là mất dấu câu thuộc bộ nào.
       const picked: { id: string; questionGroup: string }[] = [];
@@ -1335,6 +1438,88 @@ router.get('/batches/:id/students/:studentId/recordings', async (req: Request, r
   } catch (error: any) {
     console.error('[Recordings] list error:', error);
     return res.status(500).json({ error: 'Không lấy được danh sách bản ghi.' });
+  }
+});
+
+router.get('/batches/:id/practice-results', async (req: Request, res: Response) => {
+  try {
+    const batchId = parseInt(req.params.id);
+
+    const result = await db.query(`
+      SELECT s.id as student_id, s.email, s.status, s.exam_started_at,
+             ps.id as submission_id, ps.answer, ps.ai_score, ps.ai_feedback,
+             ps.trainer_score, ps.trainer_feedback,
+             (SELECT SUM(v.count) FROM violations v WHERE v.student_id = s.id) as violations
+      FROM students s
+      LEFT JOIN practice_submissions ps ON ps.student_id = s.id
+      WHERE s.batch_id = ?
+      ORDER BY s.email
+    `, [batchId]);
+
+    res.json(result.rows.map((r: any) => ({ ...r, violations: parseInt(r.violations) || 0 })));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/batches/:id/practice-results/export — Xuất Excel kết quả batch Practice
+router.get('/batches/:id/practice-results/export', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const batchId = parseInt(id);
+
+    const batchResult = await db.query('SELECT name FROM batches WHERE id = ?', [batchId]);
+    const batchName = batchResult.rows[0]?.name;
+    const filenameBase = `${sanitizeFilename(batchName || `batch-${id}`)}-practice-results`;
+
+    const result = await db.query(`
+      SELECT s.email, s.status,
+             ps.answer, ps.ai_score, ps.ai_feedback, ps.trainer_score, ps.trainer_feedback,
+             (SELECT SUM(v.count) FROM violations v WHERE v.student_id = s.id) as violations
+      FROM students s
+      LEFT JOIN practice_submissions ps ON ps.student_id = s.id
+      WHERE s.batch_id = ?
+      ORDER BY s.email
+    `, [batchId]);
+
+    const data = result.rows.map((r: any) => ({
+      Email: r.email,
+      Status: r.status,
+      'Violation Count': parseInt(r.violations) || 0,
+      Answer: r.answer || '',
+      'AI Score': r.ai_score ?? 0,
+      'AI Feedback': r.ai_feedback || '',
+      'Trainer Score': r.trainer_score ?? r.ai_score ?? 0,
+      'Trainer Feedback': r.trainer_feedback || '',
+    }));
+
+    const workbook = XLSX.utils.book_new();
+    const sheet = XLSX.utils.json_to_sheet(data);
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Practice Results');
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', buildContentDisposition(filenameBase, 'xlsx'));
+    res.send(XLSX.write(workbook, { type: 'buffer' }));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/admin/practice-results/:studentId — Trainer chấm/ghi đè điểm bài practice
+router.put('/practice-results/:studentId', async (req: Request, res: Response) => {
+  try {
+    const { studentId } = req.params;
+    const { trainer_score, trainer_feedback } = req.body;
+
+    await db.query(`
+      UPDATE practice_submissions
+      SET trainer_score = ?, trainer_feedback = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE student_id = ?
+    `, [trainer_score, trainer_feedback, parseInt(studentId)]);
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 

@@ -260,7 +260,7 @@ router.post('/verify', verifyRateLimit, async (req: Request, res: Response) => {
     }
 
     const result = await db.query(`
-      SELECT s.*, b.name as batch_name, b.start_time, b.end_time, b.duration, b.record_enabled, b.record_mode
+      SELECT s.*, b.name as batch_name, b.start_time, b.end_time, b.duration, b.record_enabled, b.record_mode, b.practice_exam_id
       FROM students s
       JOIN batches b ON s.batch_id = b.id
       WHERE s.access_code = ?
@@ -330,6 +330,8 @@ router.post('/verify', verifyRateLimit, async (req: Request, res: Response) => {
       dev_mode: isDevMode,
       exam_start: startTime.toISOString(),
       exam_end: endTime.toISOString(),
+      // Batch dạng Practice → frontend điều hướng /practice thay vì /exam
+      exam_kind: student.practice_exam_id ? 'practice' : 'exam',
       record_enabled: !!student.record_enabled, // giữ để tương thích ngược
       record_mode: recordMode,
       // chỉ trả pass khi local — client dùng ngầm để mã hóa, không hiển thị
@@ -991,6 +993,163 @@ router.post('/exam/recording-finalize', studentAuthMiddleware, async (req: Reque
       : error?.code === 'NOT_IN_PROGRESS' ? 409
       : error?.code === 'BAD_RECORD_MODE' ? 403 : 500;
     res.status(status).json({ error: error.message, reason: error?.code?.toLowerCase() });
+  }
+});
+
+
+// =============================================
+// PRACTICE EXAM — Bài thi practice import từ .docx, 1 bài làm duy nhất
+// Tái dùng students/violations/disconnect; bài làm lưu ở practice_submissions.
+// =============================================
+
+// GET /api/student/practice — Nội dung đề + bài làm hiện tại + time_remaining
+// Tự start (set deadline) ở lần gọi đầu; guard timeout/vắng mặt giống /exam/questions.
+router.get('/practice', studentAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+
+    const studentId = req.studentPayload!.studentId;
+
+    const studentResult = await db.query(`
+      SELECT s.status, s.exam_deadline, s.disconnected_at, b.duration, b.practice_exam_id
+      FROM students s
+      JOIN batches b ON s.batch_id = b.id
+      WHERE s.id = ?
+    `, [studentId]);
+    const student = studentResult.rows[0];
+
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+    if (!student.practice_exam_id) {
+      return res.status(400).json({ error: 'This batch is not a practice batch' });
+    }
+    if (student.status === 'submitted') {
+      return res.status(410).json({ error: 'Exam already submitted', reason: 'submitted' });
+    }
+
+    const now = new Date();
+
+    // Lần đầu truy cập: start bài, set deadline, tạo sẵn dòng bài làm
+    if (student.status === 'pending') {
+      const durationSeconds = (student.duration || 30) * 60;
+      const deadline = new Date(now.getTime() + durationSeconds * 1000);
+      await db.query(
+        "UPDATE students SET status = 'in_progress', exam_started_at = ?, exam_deadline = ?, disconnected_at = NULL WHERE id = ?",
+        [now.toISOString(), deadline.toISOString(), studentId]
+      );
+      student.status = 'in_progress';
+      student.exam_deadline = deadline;
+    }
+
+    // Đảm bảo luôn có dòng practice_submissions cho học viên này
+    const subResult = await db.query('SELECT * FROM practice_submissions WHERE student_id = ?', [studentId]);
+    let submission = subResult.rows[0];
+    if (!submission) {
+      await db.query(
+        'INSERT INTO practice_submissions (student_id, practice_exam_id) VALUES (?, ?)',
+        [studentId, student.practice_exam_id]
+      );
+      submission = { answer: '' };
+    }
+
+    const autoSubmitPractice = async () => {
+      await db.query("UPDATE students SET status = 'submitted', disconnected_at = NULL WHERE id = ?", [studentId]);
+      const sub = await db.query('SELECT id FROM practice_submissions WHERE student_id = ?', [studentId]);
+      if (sub.rows[0]?.id) {
+        cache.addToQueue(sub.rows[0].id, studentId, 'practice');
+      }
+    };
+
+    // Guard: hết giờ
+    if (student.exam_deadline) {
+      const deadline = new Date(student.exam_deadline);
+      if (now >= deadline) {
+        console.log('[getPractice] Deadline passed, auto-submitting student:', studentId);
+        await autoSubmitPractice();
+        return res.status(410).json({
+          error: 'Time is up. Your exam has been automatically submitted.',
+          reason: 'timeout'
+        });
+      }
+    }
+
+    // Guard: vắng mặt quá 2 phút
+    const DISCONNECT_GRACE_SECONDS = 120;
+    if (student.disconnected_at) {
+      const absentSeconds = (now.getTime() - new Date(student.disconnected_at).getTime()) / 1000;
+      if (absentSeconds > DISCONNECT_GRACE_SECONDS) {
+        console.log('[getPractice] Student absent too long (%ds), auto-submitting:', Math.round(absentSeconds));
+        await autoSubmitPractice();
+        return res.status(410).json({
+          error: 'You were absent for more than 2 minutes. Your exam has been automatically submitted.',
+          reason: 'absent_too_long'
+        });
+      }
+      await db.query('UPDATE students SET disconnected_at = NULL WHERE id = ?', [studentId]);
+    }
+
+    let time_remaining: number | null = null;
+    if (student.exam_deadline) {
+      time_remaining = Math.max(0, Math.floor((new Date(student.exam_deadline).getTime() - now.getTime()) / 1000));
+    }
+
+    const practiceResult = await db.query(
+      'SELECT id, name, content_html FROM practice_exams WHERE id = ?',
+      [student.practice_exam_id]
+    );
+    const practice = practiceResult.rows[0];
+    if (!practice) {
+      return res.status(404).json({ error: 'Practice exam not found' });
+    }
+
+    res.json({
+      practice: { id: practice.id, name: practice.name, content_html: practice.content_html },
+      answer: submission.answer || '',
+      time_remaining,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/student/practice/answer — Lưu bài làm (client debounce 2s, ghi thẳng DB
+// vì mỗi học viên chỉ có 1 bài làm duy nhất, không cần buffer như exam nhiều câu)
+router.post('/practice/answer', studentAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const studentId = req.studentPayload!.studentId;
+    const { answer } = req.body;
+
+    const result = await db.query(
+      'UPDATE practice_submissions SET answer = ?, updated_at = CURRENT_TIMESTAMP WHERE student_id = ?',
+      [answer ?? '', studentId]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'No practice submission found. Load the exam first.' });
+    }
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/student/practice/submit — Nộp bài, đưa vào queue chấm AI
+router.post('/practice/submit', studentAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const studentId = req.studentPayload!.studentId;
+
+    await db.query("UPDATE students SET status = 'submitted' WHERE id = ?", [studentId]);
+
+    const subResult = await db.query('SELECT id FROM practice_submissions WHERE student_id = ?', [studentId]);
+    if (subResult.rows[0]?.id) {
+      cache.addToQueue(subResult.rows[0].id, studentId, 'practice');
+    }
+
+    res.json({ success: true, message: 'Practice exam submitted. Results will be available shortly.' });
+  } catch (error: any) {
+    console.error('Practice submit error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
