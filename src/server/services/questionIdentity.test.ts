@@ -97,3 +97,16 @@ test('question_plain được sinh lúc import và dùng cho prompt chấm AI', 
     'prompt chấm AI phải dùng question_plain, không nhét HTML thô vào model',
   );
 });
+
+test('blueprint chọn câu theo cặp (module, bộ đề), không chỉ theo module', () => {
+  const admin = readSource('src', 'server', 'routes', 'admin.ts');
+  // Helper tập trung, thay cho 6 khối query lặp lại trước đây.
+  assert.match(admin, /async function pickQuestions\(/, 'thiếu helper chọn câu tập trung');
+  assert.match(
+    admin,
+    /LOWER\(COALESCE\(question_group, ''\)\) = \?/,
+    'chọn câu không lọc theo bộ đề → một module ở hai bộ sẽ cho đề trộn lẫn',
+  );
+  // Blueprint cũ không có trường này vẫn phải chạy được.
+  assert.match(admin, /item\.question_group \|\| ''/, 'phải tương thích blueprint cũ');
+});

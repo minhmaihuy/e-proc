@@ -653,6 +653,82 @@ router.get('/questions/modules', async (req: Request, res: Response) => {
 });
 
 // Returns question counts per module broken down by difficulty level
+/**
+ * Thống kê theo CẶP (module, question_group).
+ *
+ * Cùng một tên module có thể tồn tại ở nhiều bộ đề — ví dụ "chapter 10: unit testing"
+ * có mặt ở cả CPP_EMB_PRINT_IOT lẫn CPP_EMB_AUTOSAR. Nếu blueprint chỉ chọn theo
+ * module thì đề của học viên sẽ trộn câu từ cả hai bộ, điều gần như không bao giờ là
+ * ý định của người ra đề.
+ */
+router.get('/questions/module-groups', async (_req: Request, res: Response) => {
+  try {
+    const result = await db.query(`
+      SELECT DISTINCT module, COALESCE(question_group, '') AS question_group
+      FROM question_bank
+      ORDER BY module, question_group
+    `);
+    res.json(result.rows.map((r: any) => ({
+      module: r.module,
+      question_group: r.question_group || '',
+    })));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/questions/module-group-stats', async (_req: Request, res: Response) => {
+  try {
+    const result = await db.query(`
+      SELECT
+        module,
+        COALESCE(question_group, '') AS question_group,
+        SUM(CASE WHEN LOWER(level) = 'easy'   THEN 1 ELSE 0 END) AS easy,
+        SUM(CASE WHEN LOWER(level) = 'medium' THEN 1 ELSE 0 END) AS medium,
+        SUM(CASE WHEN LOWER(level) = 'hard'   THEN 1 ELSE 0 END) AS hard
+      FROM question_bank
+      GROUP BY module, COALESCE(question_group, '')
+      ORDER BY module, question_group
+    `);
+    res.json(result.rows.map((r: any) => ({
+      module: r.module,
+      question_group: r.question_group || '',
+      easy:   Number(r.easy)   || 0,
+      medium: Number(r.medium) || 0,
+      hard:   Number(r.hard)   || 0,
+    })));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/questions/module-group-type-stats', async (_req: Request, res: Response) => {
+  try {
+    const result = await db.query(`
+      SELECT
+        module,
+        COALESCE(question_group, '') AS question_group,
+        type,
+        SUM(CASE WHEN LOWER(level) = 'easy'   THEN 1 ELSE 0 END) AS easy,
+        SUM(CASE WHEN LOWER(level) = 'medium' THEN 1 ELSE 0 END) AS medium,
+        SUM(CASE WHEN LOWER(level) = 'hard'   THEN 1 ELSE 0 END) AS hard
+      FROM question_bank
+      GROUP BY module, COALESCE(question_group, ''), type
+      ORDER BY module, question_group, type
+    `);
+    res.json(result.rows.map((r: any) => ({
+      module: r.module,
+      question_group: r.question_group || '',
+      type: r.type,
+      easy:   Number(r.easy)   || 0,
+      medium: Number(r.medium) || 0,
+      hard:   Number(r.hard)   || 0,
+    })));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/questions/module-stats', async (req: Request, res: Response) => {
   try {
     const result = await db.query(`
@@ -1081,6 +1157,46 @@ router.delete('/batches/:id', async (req: Request, res: Response) => {
   }
 });
 
+/** Một câu hỏi đã chọn — định danh bằng cặp (id, question_group). */
+interface PickedQuestion { id: string; questionGroup: string }
+
+/**
+ * Chọn ngẫu nhiên `count` câu theo module/level (+ type, question_group nếu có).
+ *
+ * Khi blueprint item chỉ định question_group thì CHỈ lấy câu của bộ đó — nếu không,
+ * một module tồn tại ở hai bộ sẽ cho ra đề trộn lẫn. Blueprint cũ (lưu trước khi có
+ * bộ đề) không có trường này nên vẫn lọc theo module như trước, giữ tương thích ngược.
+ */
+async function pickQuestions(opts: {
+  module: string;
+  level: string;
+  type?: string;
+  questionGroup?: string;
+  count: number;
+}): Promise<PickedQuestion[]> {
+  const { module, level, type, questionGroup, count } = opts;
+  if (count <= 0) return [];
+
+  const conditions = ['LOWER(module) = ?', 'LOWER(level) = ?'];
+  const params: any[] = [module.toLowerCase().trim(), level.toLowerCase().trim()];
+  if (type) {
+    conditions.push('LOWER(type) = ?');
+    params.push(type.toLowerCase().trim());
+  }
+  if (questionGroup) {
+    conditions.push("LOWER(COALESCE(question_group, '')) = ?");
+    params.push(questionGroup.toLowerCase().trim());
+  }
+  params.push(count);
+
+  const r = await db.query(
+    `SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank
+     WHERE ${conditions.join(' AND ')} ORDER BY RANDOM() LIMIT ?`,
+    params,
+  );
+  return r.rows.map((q: any) => ({ id: q.id, questionGroup: q.question_group || '' }));
+}
+
 router.post('/batches/:id/check-feasibility', async (req: Request, res: Response) => {
   try {
     const { blueprint } = req.body;
@@ -1247,6 +1363,8 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
         const easy   = item.easy   || 0;
         const medium = item.medium || 0;
         const hard   = item.hard   || 0;
+        // Blueprint cũ không có trường này → undefined → lọc theo module như trước.
+        const questionGroup = item.question_group || '';
 
         if (blueprintMode === 'type') {
           // By Module + Type: query WHERE module = ? AND type = ? AND level = ?
@@ -1255,19 +1373,19 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
           console.log(`Processing by module+type: ${item.module}/${item.type}, easy=${easy}, medium=${medium}, hard=${hard}`);
 
           if (easy > 0) {
-            const r = await db.query("SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank WHERE LOWER(module) = ? AND LOWER(type) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?", [moduleName, typeName, 'easy', easy]);
-            console.log(`  Module+Type Easy: found ${r.rows.length}`);
-            r.rows.forEach((q: any) => picked.push({ id: q.id, questionGroup: q.question_group || '' }));
+            const found = await pickQuestions({ module: moduleName, level: 'easy', type: typeName, questionGroup, count: easy });
+            console.log(`  Module+Type Easy: found ${found.length}`);
+            picked.push(...found);
           }
           if (medium > 0) {
-            const r = await db.query("SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank WHERE LOWER(module) = ? AND LOWER(type) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?", [moduleName, typeName, 'medium', medium]);
-            console.log(`  Module+Type Medium: found ${r.rows.length}`);
-            r.rows.forEach((q: any) => picked.push({ id: q.id, questionGroup: q.question_group || '' }));
+            const found = await pickQuestions({ module: moduleName, level: 'medium', type: typeName, questionGroup, count: medium });
+            console.log(`  Module+Type Medium: found ${found.length}`);
+            picked.push(...found);
           }
           if (hard > 0) {
-            const r = await db.query("SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank WHERE LOWER(module) = ? AND LOWER(type) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?", [moduleName, typeName, 'hard', hard]);
-            console.log(`  Module+Type Hard: found ${r.rows.length}`);
-            r.rows.forEach((q: any) => picked.push({ id: q.id, questionGroup: q.question_group || '' }));
+            const found = await pickQuestions({ module: moduleName, level: 'hard', type: typeName, questionGroup, count: hard });
+            console.log(`  Module+Type Hard: found ${found.length}`);
+            picked.push(...found);
           }
         } else {
           // Default: By Module only
@@ -1275,19 +1393,19 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
           console.log(`Processing by module: ${item.module} -> ${moduleName}, easy=${easy}, medium=${medium}, hard=${hard}`);
 
           if (easy > 0) {
-            const r = await db.query("SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?", [moduleName, 'easy', easy]);
-            console.log(`  Module Easy: found ${r.rows.length}`);
-            r.rows.forEach((q: any) => picked.push({ id: q.id, questionGroup: q.question_group || '' }));
+            const found = await pickQuestions({ module: moduleName, level: 'easy', questionGroup, count: easy });
+            console.log(`  Module Easy: found ${found.length}`);
+            picked.push(...found);
           }
           if (medium > 0) {
-            const r = await db.query("SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?", [moduleName, 'medium', medium]);
-            console.log(`  Module Medium: found ${r.rows.length}`);
-            r.rows.forEach((q: any) => picked.push({ id: q.id, questionGroup: q.question_group || '' }));
+            const found = await pickQuestions({ module: moduleName, level: 'medium', questionGroup, count: medium });
+            console.log(`  Module Medium: found ${found.length}`);
+            picked.push(...found);
           }
           if (hard > 0) {
-            const r = await db.query("SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?", [moduleName, 'hard', hard]);
-            console.log(`  Module Hard: found ${r.rows.length}`);
-            r.rows.forEach((q: any) => picked.push({ id: q.id, questionGroup: q.question_group || '' }));
+            const found = await pickQuestions({ module: moduleName, level: 'hard', questionGroup, count: hard });
+            console.log(`  Module Hard: found ${found.length}`);
+            picked.push(...found);
           }
         }
       }

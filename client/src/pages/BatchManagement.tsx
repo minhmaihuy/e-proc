@@ -37,6 +37,8 @@ type QuestionType = typeof QUESTION_TYPES[number];
 
 interface BlueprintItem {
   module: string;
+  /** Bộ đề: thiếu trường này thì đề sẽ trộn câu từ mọi bộ có cùng tên module. */
+  question_group?: string;
   easy: number;
   medium: number;
   hard: number;
@@ -44,6 +46,7 @@ interface BlueprintItem {
 
 interface BlueprintItemByType {
   module: string;
+  question_group?: string;
   type: QuestionType;
   easy: number;
   medium: number;
@@ -72,6 +75,25 @@ interface ModuleTypeStats {
   hard: number;
 }
 
+
+/**
+ * Một <option> chỉ mang được MỘT chuỗi, nhưng blueprint cần cả module lẫn bộ đề —
+ * cùng tên module có thể tồn tại ở nhiều bộ và số câu có sẵn khác nhau. Nên mã hóa
+ * cặp đó thành một khóa duy nhất cho dropdown.
+ */
+const comboKey = (module: string, group: string) => `${module}|||${group || ''}`;
+const decodeComboKey = (key: string) => {
+  const i = key.indexOf('|||');
+  return i === -1
+    ? { module: key, question_group: '' }
+    : { module: key.slice(0, i), question_group: key.slice(i + 3) };
+};
+const comboLabel = (module: string, group: string) => (group ? `${module} (${group})` : module);
+
+interface ModuleGroupOption { module: string; question_group: string }
+interface ModuleGroupStats extends ModuleGroupOption { easy: number; medium: number; hard: number }
+interface ModuleGroupTypeStats extends ModuleGroupStats { type: string }
+
 function BatchManagement() {
   const { isAdmin, userId } = useAuth();
   const [batches, setBatches] = useState<any[]>([]);
@@ -83,6 +105,10 @@ function BatchManagement() {
     s3Configured: false,
   });
   const [modules, setModules] = useState<string[]>([]);
+  // Cặp (module, bộ đề) — dropdown blueprint phải chọn theo cặp, không chỉ module.
+  const [moduleGroups, setModuleGroups] = useState<ModuleGroupOption[]>([]);
+  const [moduleGroupStats, setModuleGroupStats] = useState<ModuleGroupStats[]>([]);
+  const [moduleGroupTypeStats, setModuleGroupTypeStats] = useState<ModuleGroupTypeStats[]>([]);
   const [moduleStats, setModuleStats] = useState<ModuleStats[]>([]);
   const [typeStats, setTypeStats] = useState<TypeStats[]>([]);
   const [moduleTypeStats, setModuleTypeStats] = useState<ModuleTypeStats[]>([]);
@@ -114,20 +140,32 @@ function BatchManagement() {
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
-  /** Return stats for a given module name (zeros if not found) */
-  const getStatsForModule = (moduleName: string): ModuleStats =>
-    moduleStats.find(s => s.module === moduleName) ?? { module: moduleName, easy: 0, medium: 0, hard: 0 };
+  /** Số câu có sẵn cho một cặp (module, bộ đề) */
+  const getStatsForModuleGroup = (moduleName: string, group: string): ModuleGroupStats =>
+    moduleGroupStats.find(s => s.module === moduleName && (s.question_group || '') === (group || ''))
+    ?? { module: moduleName, question_group: group || '', easy: 0, medium: 0, hard: 0 };
 
-  /** Return stats for a given (module, type) combination (zeros if not found) */
-  const getStatsForModuleType = (moduleName: string, typeName: string): ModuleTypeStats =>
-    moduleTypeStats.find(s => s.module === moduleName && s.type === typeName)
-    ?? { module: moduleName, type: typeName, easy: 0, medium: 0, hard: 0 };
+  const getStatsForModuleGroupType = (moduleName: string, group: string, typeName: string): ModuleGroupTypeStats =>
+    moduleGroupTypeStats.find(s => s.module === moduleName && (s.question_group || '') === (group || '') && s.type === typeName)
+    ?? { module: moduleName, question_group: group || '', type: typeName, easy: 0, medium: 0, hard: 0 };
+
+  /** Cập nhật cùng lúc module + bộ đề (dropdown chọn một combo) */
+  const updateBlueprintModuleGroup = (index: number, module: string, question_group: string) => {
+    const next = [...formData.blueprint];
+    next[index] = { ...next[index], module, question_group };
+    setFormData(prev => ({ ...prev, blueprint: next }));
+  };
+  const updateTypeBlueprintModuleGroup = (index: number, module: string, question_group: string) => {
+    const next = [...formData.blueprintByType];
+    next[index] = { ...next[index], module, question_group };
+    setFormData(prev => ({ ...prev, blueprintByType: next }));
+  };
 
   /** Validate blueprint (by module) against available question counts */
   const validateBlueprintAgainstStats = (blueprint: BlueprintItem[]): string[] => {
     const errors: string[] = [];
     for (const item of blueprint) {
-      const stats = getStatsForModule(item.module);
+      const stats = getStatsForModuleGroup(item.module, item.question_group || '');
       if (item.easy > stats.easy)
         errors.push(`Module "${item.module}": Easy requires ${item.easy}, only ${stats.easy} available.`);
       if (item.medium > stats.medium)
@@ -142,7 +180,7 @@ function BatchManagement() {
   const validateTypesBlueprintAgainstStats = (blueprint: BlueprintItemByType[]): string[] => {
     const errors: string[] = [];
     for (const item of blueprint) {
-      const stats = getStatsForModuleType(item.module, item.type);
+      const stats = getStatsForModuleGroupType(item.module, item.question_group || '', item.type);
       if (item.easy > stats.easy)
         errors.push(`Module "${item.module}" / Type "${item.type}": Easy requires ${item.easy}, only ${stats.easy} available.`);
       if (item.medium > stats.medium)
@@ -175,6 +213,7 @@ function BatchManagement() {
       .catch(() => { /* giữ mặc định chỉ 'none' nếu không lấy được */ });
     loadBatches();
     loadModules();
+    loadModuleGroups();
     loadModuleStats();
     loadTypeStats();
     loadModuleTypeStats();
@@ -185,7 +224,7 @@ function BatchManagement() {
     if (modules.length > 0 && formData.blueprint.length === 0) {
       setFormData(prev => ({
         ...prev,
-        blueprint: [{ module: modules[0], easy: 0, medium: 0, hard: 0 }]
+        blueprint: [{ module: moduleGroups[0]?.module || modules[0], question_group: moduleGroups[0]?.question_group || '', easy: 0, medium: 0, hard: 0 }]
       }));
     }
   }, [modules]);
@@ -198,6 +237,21 @@ function BatchManagement() {
       setBatches(res.data);
     } catch (error) {
       console.error(error);
+    }
+  };
+
+  const loadModuleGroups = async () => {
+    try {
+      const [groups, stats, typeStats] = await Promise.all([
+        adminApi.getModuleGroups(),
+        adminApi.getModuleGroupStats(),
+        adminApi.getModuleGroupTypeStats(),
+      ]);
+      setModuleGroups(groups.data);
+      setModuleGroupStats(stats.data);
+      setModuleGroupTypeStats(typeStats.data);
+    } catch (error) {
+      console.error('[BatchManagement] loadModuleGroups error:', error);
     }
   };
 
@@ -247,7 +301,7 @@ function BatchManagement() {
     console.log('[BatchManagement] addBlueprintRow, modules:', modules);
     setFormData(prev => ({
       ...prev,
-      blueprint: [...prev.blueprint, { module: modules[0] || '', easy: 0, medium: 0, hard: 0 }]
+      blueprint: [...prev.blueprint, { module: moduleGroups[0]?.module || modules[0] || '', question_group: moduleGroups[0]?.question_group || '', easy: 0, medium: 0, hard: 0 }]
     }));
   };
 
@@ -268,14 +322,14 @@ function BatchManagement() {
   // ─── Blueprint helpers (By Type – Create form) ───────────────────────────────
 
   /** (module, type) combos already used in By Type blueprint */
-  const usedModuleTypeCombos = formData.blueprintByType.map(i => `${i.module}||${i.type}`);
+  const usedModuleTypeCombos = formData.blueprintByType.map(i => `${i.module}||${i.question_group || ''}||${i.type}`);
 
   /** Find first available (module, type) combo not yet used */
-  const getNextAvailableModuleType = (): { module: string; type: QuestionType } | null => {
-    for (const m of modules) {
+  const getNextAvailableModuleType = (): { module: string; question_group: string; type: QuestionType } | null => {
+    for (const mg of moduleGroups) {
       for (const t of QUESTION_TYPES) {
-        if (!usedModuleTypeCombos.includes(`${m}||${t}`)) {
-          return { module: m, type: t };
+        if (!usedModuleTypeCombos.includes(`${mg.module}||${mg.question_group}||${t}`)) {
+          return { module: mg.module, question_group: mg.question_group, type: t };
         }
       }
     }
@@ -287,7 +341,7 @@ function BatchManagement() {
     if (!nextAvailableModuleType) return;
     setFormData(prev => ({
       ...prev,
-      blueprintByType: [...prev.blueprintByType, { module: nextAvailableModuleType.module, type: nextAvailableModuleType.type, easy: 0, medium: 0, hard: 0 }]
+      blueprintByType: [...prev.blueprintByType, { module: nextAvailableModuleType.module, question_group: nextAvailableModuleType.question_group, type: nextAvailableModuleType.type, easy: 0, medium: 0, hard: 0 }]
     }));
   };
 
@@ -354,6 +408,16 @@ function BatchManagement() {
         moduleItems = rawBlueprint.items || [];
       }
     }
+
+    // Batch lưu TRƯỚC khi có bộ đề không mang question_group, nên comboKey của nó
+    // không khớp option nào và dropdown sẽ hiển thị sai. Gán về bộ đầu tiên có cùng
+    // module để người sửa thấy đúng thứ đang được chọn.
+    const withGroup = <T extends { module: string; question_group?: string }>(items: T[]): T[] =>
+      items.map(item => item.question_group !== undefined && item.question_group !== ''
+        ? item
+        : { ...item, question_group: moduleGroups.find(mg => mg.module === item.module)?.question_group ?? '' });
+    moduleItems = withGroup(moduleItems);
+    typeItems = withGroup(typeItems);
 
     setEditBlueprintMode(detectedMode);
     setEditingBatch({
@@ -896,7 +960,7 @@ function BatchManagement() {
                   </thead>
                   <tbody>
                     {formData.blueprint.map((item, index) => {
-                      const stats = getStatsForModule(item.module);
+                      const stats = getStatsForModuleGroup(item.module, item.question_group || '');
                       return (
                         <tr key={index}>
                           <td>
@@ -904,11 +968,16 @@ function BatchManagement() {
                               name={`module_${index}`}
                               id={`module_${index}`}
                               style={{ width: '100%', padding: '8px' }}
-                              value={item.module}
-                              onChange={e => updateBlueprint(index, 'module', e.target.value)}
+                              value={comboKey(item.module, item.question_group || '')}
+                              onChange={e => {
+                                const d = decodeComboKey(e.target.value);
+                                updateBlueprintModuleGroup(index, d.module, d.question_group);
+                              }}
                             >
-                              {modules.map(m => (
-                                <option key={m} value={m}>{m}</option>
+                              {moduleGroups.map(mg => (
+                                <option key={comboKey(mg.module, mg.question_group)} value={comboKey(mg.module, mg.question_group)}>
+                                  {comboLabel(mg.module, mg.question_group)}
+                                </option>
                               ))}
                             </select>
                             <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4, paddingLeft: 2 }}>
@@ -960,7 +1029,7 @@ function BatchManagement() {
                   </thead>
                   <tbody>
                     {formData.blueprintByType.map((item, index) => {
-                      const stats = getStatsForModuleType(item.module, item.type);
+                      const stats = getStatsForModuleGroupType(item.module, item.question_group || '', item.type);
                       // Combos used by OTHER rows
                       const otherCombos = formData.blueprintByType
                         .filter((_, i) => i !== index)
@@ -970,11 +1039,16 @@ function BatchManagement() {
                           <td style={{ minWidth: 140 }}>
                             <select
                               style={{ width: '100%', padding: '8px' }}
-                              value={item.module}
-                              onChange={e => updateTypeBlueprint(index, 'module', e.target.value)}
+                              value={comboKey(item.module, item.question_group || '')}
+                              onChange={e => {
+                                const d = decodeComboKey(e.target.value);
+                                updateTypeBlueprintModuleGroup(index, d.module, d.question_group);
+                              }}
                             >
-                              {modules.map(m => (
-                                <option key={m} value={m}>{m}</option>
+                              {moduleGroups.map(mg => (
+                                <option key={comboKey(mg.module, mg.question_group)} value={comboKey(mg.module, mg.question_group)}>
+                                  {comboLabel(mg.module, mg.question_group)}
+                                </option>
                               ))}
                             </select>
                           </td>
@@ -1425,20 +1499,25 @@ function BatchManagement() {
                         </thead>
                         <tbody className="divide-y divide-blue-50">
                           {(editingBatch.blueprint || []).map((item: any, index: number) => {
-                            const stats = getStatsForModule(item.module);
+                            const stats = getStatsForModuleGroup(item.module, item.question_group || '');
                             return (
                               <tr key={index} className="hover:bg-blue-50/30 transition-colors">
                                 <td className="px-4 py-3 align-top min-w-[200px]">
                                   <select
-                                    value={item.module}
+                                    value={comboKey(item.module, item.question_group || '')}
                                     onChange={e => {
+                                      const d = decodeComboKey(e.target.value);
                                       const newBlueprint = [...editingBatch.blueprint];
-                                      newBlueprint[index].module = e.target.value;
+                                      newBlueprint[index] = { ...newBlueprint[index], module: d.module, question_group: d.question_group };
                                       setEditingBatch({ ...editingBatch, blueprint: newBlueprint });
                                     }}
                                     className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-slate-700"
                                   >
-                                    {modules.map(m => <option key={m} value={m}>{m}</option>)}
+                                    {moduleGroups.map(mg => (
+                                      <option key={comboKey(mg.module, mg.question_group)} value={comboKey(mg.module, mg.question_group)}>
+                                        {comboLabel(mg.module, mg.question_group)}
+                                      </option>
+                                    ))}
                                   </select>
                                   <div className="text-[11px] text-slate-500 mt-1.5 ml-1 font-medium">
                                     Available: {stats.easy}E / {stats.medium}M / {stats.hard}H
@@ -1504,7 +1583,7 @@ function BatchManagement() {
                         </thead>
                         <tbody className="divide-y divide-blue-50">
                           {((editingBatch.blueprintByType || []) as BlueprintItemByType[]).map((item, index) => {
-                            const stats = getStatsForModuleType(item.module, item.type);
+                            const stats = getStatsForModuleGroupType(item.module, item.question_group || '', item.type);
                             const otherCombos = ((editingBatch.blueprintByType || []) as BlueprintItemByType[])
                               .filter((_, i) => i !== index)
                               .map(i => `${i.module}||${i.type}`);
@@ -1512,15 +1591,20 @@ function BatchManagement() {
                               <tr key={index} className="hover:bg-blue-50/30 transition-colors">
                                 <td className="px-4 py-3 align-top min-w-[140px]">
                                   <select
-                                    value={item.module}
+                                    value={comboKey(item.module, item.question_group || '')}
                                     onChange={e => {
+                                      const d = decodeComboKey(e.target.value);
                                       const nb = [...editingBatch.blueprintByType];
-                                      nb[index].module = e.target.value;
+                                      nb[index] = { ...nb[index], module: d.module, question_group: d.question_group };
                                       setEditingBatch({ ...editingBatch, blueprintByType: nb });
                                     }}
                                     className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-slate-700"
                                   >
-                                    {modules.map(m => <option key={m} value={m}>{m}</option>)}
+                                    {moduleGroups.map(mg => (
+                                      <option key={comboKey(mg.module, mg.question_group)} value={comboKey(mg.module, mg.question_group)}>
+                                        {comboLabel(mg.module, mg.question_group)}
+                                      </option>
+                                    ))}
                                   </select>
                                 </td>
                                 <td className="px-4 py-3 align-top min-w-[140px]">
@@ -1611,7 +1695,7 @@ function BatchManagement() {
                   <button
                     onClick={() => setEditingBatch({
                       ...editingBatch,
-                      blueprint: [...(editingBatch.blueprint || []), { module: modules[0], easy: 0, medium: 0, hard: 0 }]
+                      blueprint: [...(editingBatch.blueprint || []), { module: moduleGroups[0]?.module || modules[0], question_group: moduleGroups[0]?.question_group || '', easy: 0, medium: 0, hard: 0 }]
                     })}
                     className="inline-flex items-center gap-2 px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg font-bold hover:bg-slate-50 transition-colors"
                   >

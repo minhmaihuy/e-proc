@@ -2,6 +2,11 @@ export type BlueprintMode = 'module' | 'type';
 
 export interface BlueprintItem {
   module: string;
+  /**
+   * Bộ đề của module. Cùng tên module có thể tồn tại ở nhiều bộ, nên thiếu trường này
+   * thì đề sẽ trộn câu từ tất cả các bộ. Blueprint lưu trước khi có bộ đề để trống.
+   */
+  question_group?: string;
   type?: string;
   easy?: number;
   medium?: number;
