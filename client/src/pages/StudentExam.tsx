@@ -742,20 +742,6 @@ function StudentExam() {
     });
   }, [started, locked, submitting, handleViolation]);
 
-  const handleRapidInsertion = useCallback((metadata: {
-    insertedChars: number;
-    changeCount: number;
-    windowMs: number;
-    maxSingleChange: number;
-  }) => {
-    if (!started || locked || submitting) return;
-    void handleViolation('rapid_text_insertion', {
-      textLength: metadata.insertedChars,
-      questionId: currentQuestionIdRef.current,
-      metadata,
-    });
-  }, [started, locked, submitting, handleViolation]);
-
   // Bật lại ghi màn hình sau khi recorder mất state (reload/F5). Chia sẻ lại
   // toàn màn hình; đạt → tiếp tục thi, không đạt → giữ modal chặn.
   const handleResumeRecording = useCallback(async () => {
@@ -1050,7 +1036,6 @@ function StudentExam() {
                     onCutAttempt={handleCutAttempt}
                     onPasteAttempt={handlePasteAttempt}
                     onSuspiciousPaste={handleSuspiciousPaste}
-                    onRapidInsertion={handleRapidInsertion}
                     defaultLanguage={detectLanguage(
                       currentQuestion.type,
                       currentQuestion.module
