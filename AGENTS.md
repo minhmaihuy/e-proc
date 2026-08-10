@@ -230,6 +230,8 @@ Detection in `client/src/pages/StudentExam.tsx` (rewritten 2026-07-29 — replac
 
 **3. Dynamic watermark (same 2026-07-28 update)**
 
+**Rapid text insertion (integrated 2026-08-10):** cumulative insertion of at least 300 characters within 2.5 seconds, where no single change reaches the existing 300-character suspicious-paste threshold, is recorded as forensic-only `rapid_text_insertion`. Detection lives in `client/src/services/rapidInsertionDetector.ts`, outside Monaco, so `CodeEditor.tsx` remains the main-branch implementation. Both `StudentExam.tsx` and `StudentPractice.tsx` must invoke it from their answer-change paths. The API forwards bounded numeric metadata into `violation_events.metadata_json`; it does not increment the lockable violation count.
+
 Previously the forensic watermark timestamp was frozen at the time React rendered the watermark JSX (once on mount). It now uses a `watermarkTime` state that updates every 30 seconds, so screenshots taken later in the exam carry a more accurate timestamp for forensic tracing.
 
 **4. Admin Results page — violations breakdown (2026-07-28, updated 2026-07-29)**

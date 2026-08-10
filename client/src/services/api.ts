@@ -361,13 +361,14 @@ export const studentApi = {
 
   reportViolation: (
     type: string,
-    meta?: { contentPreview?: string; textLength?: number; questionId?: string }
+    meta?: { contentPreview?: string; textLength?: number; questionId?: string; metadata?: Record<string, number> }
   ) =>
     api.post('/student/violation', {
       type,
       content_preview: meta?.contentPreview,
       text_length: meta?.textLength,
       question_id: meta?.questionId,
+      metadata: meta?.metadata,
     }),
 
   // Xin presigned PUT URL để upload 1 phần video record thẳng lên S3

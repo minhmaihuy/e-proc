@@ -4,6 +4,7 @@ import DOMPurify from 'dompurify';
 import { studentApi } from '../services/api';
 import * as examRecorder from '../services/examRecorder';
 import { getExamEnvironmentSnapshot } from '../services/examEnvironment';
+import { RapidInsertionDetector } from '../services/rapidInsertionDetector';
 import CodeEditor, { detectLanguage } from '../components/CodeEditor';
 import type { CodeEditorHandle } from '../components/CodeEditor';
 
@@ -74,6 +75,7 @@ function StudentExam() {
   const lockedRef = useRef(false);
   const submittingRef = useRef(false);
   const lastViolationTimeRef = useRef<number>(0);
+  const rapidInsertionDetectorsRef = useRef(new Map<number, RapidInsertionDetector>());
   const currentQuestionIdRef = useRef<string | undefined>(undefined);
   const answersRef = useRef<{ [key: number]: string }>({});
   const navigate = useNavigate();
@@ -756,13 +758,26 @@ function StudentExam() {
   }, [handleViolation, recordMode]);
 
   const saveAnswer = useCallback((order: number, text: string) => {
+    let detector = rapidInsertionDetectorsRef.current.get(order);
+    if (!detector) {
+      detector = new RapidInsertionDetector();
+      rapidInsertionDetectorsRef.current.set(order, detector);
+    }
+    const rapidInsertion = detector.observe(answersRef.current[order] || '', text);
+    if (rapidInsertion && startedRef.current && !lockedRef.current && !submittingRef.current) {
+      void handleViolation('rapid_text_insertion', {
+        textLength: rapidInsertion.insertedChars,
+        questionId: currentQuestionIdRef.current,
+        metadata: { ...rapidInsertion },
+      });
+    }
     setAnswers(prev => ({ ...prev, [order]: text }));
 
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       studentApi.saveAnswer(order, text).catch(console.error); // [C-4] token tự động
     }, 5000);
-  }, []);
+  }, [handleViolation]);
 
   // Chọn/bỏ chọn đáp án trắc nghiệm. answer được lưu dưới dạng JSON mảng key, VD ["A","C"].
   // Single: thay thế; Multiple: toggle. Lưu ngay (debounce ngắn) qua studentApi.saveAnswer.

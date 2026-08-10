@@ -5,6 +5,7 @@ import { studentApi } from '../services/api';
 import { detectLanguage } from '../components/CodeEditor';
 import type { CodeEditorHandle } from '../components/CodeEditor';
 import { canRunLocally, runLocally } from '../services/localRunner';
+import { RapidInsertionDetector } from '../services/rapidInsertionDetector';
 
 // Lazy-load Monaco Editor to avoid bloating the initial bundle
 const CodeEditor = lazy(() => import('../components/CodeEditor'));
@@ -71,6 +72,8 @@ function StudentPractice() {
   const lockedRef = useRef(false);
   const submittingRef = useRef(false);
   const lastViolationTimeRef = useRef<number>(0);
+  const rapidInsertionDetectorRef = useRef(new RapidInsertionDetector());
+  const answerRef = useRef('');
   const navigate = useNavigate();
 
   const studentId = localStorage.getItem('studentId');
@@ -155,7 +158,10 @@ function StudentPractice() {
     }
   }, [navigate]);
 
-  const handleViolation = useCallback(async (type: string): Promise<boolean> => {
+  const handleViolation = useCallback(async (
+    type: string,
+    meta?: { textLength?: number; metadata?: Record<string, number> },
+  ): Promise<boolean> => {
     const now = Date.now();
     if (now - lastViolationTimeRef.current < 3000) {
       return false;
@@ -163,7 +169,7 @@ function StudentPractice() {
     lastViolationTimeRef.current = now;
 
     try {
-      const res = await studentApi.reportViolation(type);
+      const res = await studentApi.reportViolation(type, meta);
       setViolationCount(res.data.total_violations);
       if (res.data.locked) {
         setLocked(true);
@@ -356,7 +362,8 @@ function StudentPractice() {
 
   const loadPractice = (data: any) => {
     setPractice(data.practice);
-    setAnswer(data.answer || '');
+    answerRef.current = data.answer || '';
+    setAnswer(answerRef.current);
     setCompilerMode(data.compiler_mode === 'lambda' ? 'lambda' : 'local');
     setCompilerLanguages(Array.isArray(data.compiler_languages) ? data.compiler_languages : []);
 
@@ -409,13 +416,21 @@ function StudentPractice() {
   const handlePasteAttempt = useCallback(() => handleClipboardAttempt('paste_attempt'), [handleClipboardAttempt]);
 
   const saveAnswer = useCallback((text: string) => {
+    const rapidInsertion = rapidInsertionDetectorRef.current.observe(answerRef.current, text);
+    answerRef.current = text;
+    if (rapidInsertion && startedRef.current && !lockedRef.current && !submittingRef.current) {
+      void handleViolation('rapid_text_insertion', {
+        textLength: rapidInsertion.insertedChars,
+        metadata: { ...rapidInsertion },
+      });
+    }
     setAnswer(text);
 
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       studentApi.savePracticeAnswer(text).catch(console.error);
     }, 2000);
-  }, []);
+  }, [handleViolation]);
 
   // Chạy code để kiểm tra output — ưu tiên chạy NGAY TRONG TRÌNH DUYỆT
   // (python/c/cpp, không tốn tài nguyên server); cobol/java mới gọi server.
