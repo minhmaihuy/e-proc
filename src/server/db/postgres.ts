@@ -21,8 +21,8 @@ const { Pool } = pg;
 async function initPostgres() {
   console.log('[DB] Attempting PostgreSQL connection...');
   
-  const poolMax = parseInt(process.env.DB_POOL_MAX || '10');
-  const poolMin = parseInt(process.env.DB_POOL_MIN || '2');
+  const poolMax = parseInt(process.env.DB_POOL_MAX || '2');
+  const poolMin = parseInt(process.env.DB_POOL_MIN || '0');
   
   pgPool = new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -37,7 +37,6 @@ async function initPostgres() {
   pgPool.on('connect', () => console.log('[DB] New PG connection'));
 
   const client = await pgPool.connect();
-  try {
   console.log('[DB] PostgreSQL connected!');
   
   await client.query(`SET statement_timeout = '${process.env.STATEMENT_TIMEOUT || '30s'}'`);
@@ -48,9 +47,7 @@ async function initPostgres() {
       type TEXT NOT NULL CHECK(type IN ('Coding', 'Conceptual', 'Fill-in', 'Debug')),
       level TEXT NOT NULL CHECK(level IN ('Easy', 'Medium', 'Hard')),
       module TEXT NOT NULL,
-      question_group TEXT,
       question_sample TEXT NOT NULL,
-      question_plain TEXT,
       rubric_must_have TEXT NOT NULL,
       rubric_nice_to_have TEXT NOT NULL,
       rubric_optional TEXT NOT NULL,
@@ -58,41 +55,6 @@ async function initPostgres() {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
-
-  // Migration: thêm cột question_group cho DB cũ chưa có
-  try {
-    await client.query(`ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS question_group TEXT`);
-  } catch (_) { /* already exists */ }
-
-  // Migration: thêm cột question_plain (nội dung câu hỏi không có HTML) cho DB cũ chưa có
-  try {
-    await client.query(`ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS question_plain TEXT`);
-  } catch (_) { /* already exists */ }
-
-  // Migration: khóa chính (id, question_group) thay cho id đơn lẻ.
-  // Lý do: hai bộ đề khác nhau (question_group) hoàn toàn có thể dùng chung mã ID
-  // (vd CH6-E-01 có ở cả CPP_EMB_PRINT_IOT lẫn CPP_EMB_AUTOSAR). Khi khóa chỉ trên id,
-  // import bộ thứ hai sẽ GHI ĐÈ toàn bộ câu của bộ thứ nhất.
-  try {
-    await client.query(`UPDATE question_bank SET question_group = '' WHERE question_group IS NULL`);
-    await client.query(`ALTER TABLE question_bank ALTER COLUMN question_group SET DEFAULT ''`);
-    await client.query(`ALTER TABLE question_bank ALTER COLUMN question_group SET NOT NULL`);
-
-    const pk = await client.query(`
-      SELECT a.attname
-      FROM pg_index i
-      JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-      WHERE i.indrelid = 'question_bank'::regclass AND i.indisprimary
-    `);
-    const pkCols = pk.rows.map((r: any) => r.attname).sort();
-    if (!(pkCols.length === 2 && pkCols[0] === 'id' && pkCols[1] === 'question_group')) {
-      console.log('[DB] question_bank PK:', pkCols, '→ đổi sang (id, question_group)');
-      await client.query(`ALTER TABLE question_bank DROP CONSTRAINT IF EXISTS question_bank_pkey`);
-      await client.query(`ALTER TABLE question_bank ADD PRIMARY KEY (id, question_group)`);
-    }
-  } catch (err) {
-    console.error('[DB] question_bank composite PK migration error:', err);
-  }
 
   // Migration: cập nhật CHECK constraint type cho DB cũ
   // Dùng transaction atomic: check exists → chỉ drop+add nếu constraint chưa đúng
@@ -148,6 +110,10 @@ async function initPostgres() {
       await client.query(`ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS ${col} ${def}`);
     } catch (_) { /* already exists */ }
   }
+  // Migration: người upload question (FK → admin_users). Question cũ để NULL.
+  try {
+    await client.query('ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS uploaded_by INTEGER REFERENCES admin_users(id) ON DELETE SET NULL');
+  } catch (_) { /* already exists */ }
   console.log('[DB] question_bank ready');
 
 await client.query(`
@@ -177,40 +143,32 @@ await client.query(`
   try {
     await client.query("ALTER TABLE batches ADD COLUMN IF NOT EXISTS exam_type TEXT DEFAULT 'essay'");
   } catch (_) { /* already exists */ }
+  // Migration: người tạo batch (FK → admin_users). Batch cũ để NULL.
+  try {
+    await client.query('ALTER TABLE batches ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES admin_users(id) ON DELETE SET NULL');
+  } catch (_) { /* already exists */ }
   
   const seqCheck = await client.query("SELECT COALESCE(MAX(id), 0) + 1 as next_id FROM batches");
   await client.query(`SELECT setval('batches_id_seq', ${seqCheck.rows[0].next_id})`);
-
-  // Migration: batch dạng Practice trỏ tới 1 bài practice đã import (NULL = batch thi thường theo blueprint)
-  try {
-    await client.query(`ALTER TABLE batches ADD COLUMN IF NOT EXISTS practice_exam_id INTEGER`);
-  } catch (_) { /* already exists */ }
   console.log('[DB] batches ready');
-
-  // Bài thi Practice: import từ file .docx, quản lý độc lập với question_bank
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS practice_exams (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      content_html TEXT NOT NULL,
-      content_plain TEXT NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  console.log('[DB] practice_exams ready');
-
+  
   await client.query(`
     CREATE TABLE IF NOT EXISTS students (
       id SERIAL PRIMARY KEY,
       batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
       email TEXT NOT NULL,
-      access_code VARCHAR(6) NOT NULL,
+      access_code VARCHAR(8) NOT NULL,
       status TEXT DEFAULT 'pending',
       exam_started_at TIMESTAMP,
       exam_deadline TIMESTAMP,
       disconnected_at TIMESTAMP,
       recording_password TEXT,
+      submitted_at TIMESTAMP,
+      submit_reason TEXT,
+      active_jti TEXT,
+      recording_finalized_at TIMESTAMP,
+      recording_final_part_index INTEGER,
+      recording_incomplete BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -221,6 +179,12 @@ await client.query(`
     { col: 'exam_deadline', def: 'TIMESTAMP' },
     { col: 'disconnected_at', def: 'TIMESTAMP' },
     { col: 'recording_password', def: 'TEXT' },
+    { col: 'submitted_at', def: 'TIMESTAMP' },
+    { col: 'submit_reason', def: 'TEXT' },
+    { col: 'active_jti', def: 'TEXT' },
+    { col: 'recording_finalized_at', def: 'TIMESTAMP' },
+    { col: 'recording_final_part_index', def: 'INTEGER' },
+    { col: 'recording_incomplete', def: 'BOOLEAN DEFAULT FALSE' },
   ];
   for (const { col, def } of colChecks) {
     try {
@@ -228,24 +192,6 @@ await client.query(`
     } catch (_) { /* already exists */ }
   }
   console.log('[DB] students ready');
-
-  // Bài làm practice: 1 học viên = 1 bài làm duy nhất cho batch practice của mình.
-  // Phải tạo sau students vì PostgreSQL kiểm tra foreign key ngay khi CREATE TABLE.
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS practice_submissions (
-      id SERIAL PRIMARY KEY,
-      student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-      practice_exam_id INTEGER NOT NULL,
-      answer TEXT,
-      ai_score FLOAT,
-      ai_feedback TEXT,
-      trainer_score FLOAT,
-      trainer_feedback TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  console.log('[DB] practice_submissions ready');
   
   await client.query(`
     CREATE TABLE IF NOT EXISTS exam_questions (
@@ -264,13 +210,6 @@ await client.query(`
   // Migration: thứ tự option đã xáo cho riêng SV (quiz). JSON ["C","A","F","B"]. Câu tự luận để NULL.
   try {
     await client.query('ALTER TABLE exam_questions ADD COLUMN IF NOT EXISTS option_order TEXT');
-  } catch (_) { /* already exists */ }
-
-  // Migration: question_id một mình không còn xác định được câu hỏi sau khi question_bank
-  // đổi sang khóa (id, question_group) → lưu kèm group của câu đã gán cho học viên.
-  try {
-    await client.query(`ALTER TABLE exam_questions ADD COLUMN IF NOT EXISTS question_group TEXT DEFAULT ''`);
-    await client.query(`UPDATE exam_questions SET question_group = '' WHERE question_group IS NULL`);
   } catch (_) { /* already exists */ }
   console.log('[DB] exam_questions ready');
   
@@ -297,10 +236,49 @@ await client.query(`
       text_length INTEGER,
       content_preview VARCHAR(500),
       question_id VARCHAR(50),
+      metadata_json TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
   console.log('[DB] violation_events ready');
+  try {
+    await client.query('ALTER TABLE violation_events ADD COLUMN IF NOT EXISTS metadata_json TEXT');
+  } catch (_) { /* already exists */ }
+
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS recording_parts (
+      id SERIAL PRIMARY KEY,
+      student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      batch_id INTEGER NOT NULL,
+      part_index INTEGER NOT NULL,
+      object_key TEXT NOT NULL,
+      byte_size INTEGER,
+      uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      is_final BOOLEAN DEFAULT FALSE,
+      UNIQUE(student_id, part_index)
+    )
+  `);
+  await client.query('ALTER TABLE recording_parts ADD COLUMN IF NOT EXISTS is_final BOOLEAN DEFAULT FALSE');
+
+  // Anti-Cheat: theo dõi phiên thi để phát hiện dùng đồng thời nhiều client/IP.
+  // Mỗi cặp (student × jti × ip) một dòng; đổi IP tạo dòng mới. last_seen cập nhật mỗi request.
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS exam_sessions (
+      id SERIAL PRIMARY KEY,
+      student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      batch_id INTEGER,
+      jti TEXT,
+      ip TEXT,
+      user_agent TEXT,
+      first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(student_id, jti, ip)
+    )
+  `);
+  try {
+    await client.query('CREATE INDEX IF NOT EXISTS idx_exam_sessions_student ON exam_sessions(student_id)');
+  } catch (_) { /* ignore */ }
+  console.log('[DB] exam_sessions ready');
 
   await client.query(`
     CREATE TABLE IF NOT EXISTS ai_queue (
@@ -314,11 +292,6 @@ await client.query(`
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
-  // Migration: phân biệt job chấm exam_questions vs practice_submissions
-  // (kind='practice' thì exam_question_id thực chất là practice_submissions.id)
-  try {
-    await client.query(`ALTER TABLE ai_queue ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'exam'`);
-  } catch (_) { /* already exists */ }
   console.log('[DB] ai_queue ready');
   
   await client.query(`
@@ -326,94 +299,19 @@ await client.query(`
       id SERIAL PRIMARY KEY,
       username VARCHAR(100) UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'admin',
-      tenant_id INTEGER,
+      role TEXT DEFAULT 'admin',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
   // Migration: thêm cột role cho DB cũ (user cũ mặc định 'admin' để không mất quyền)
   try {
-    await client.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'admin'`);
-    await client.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS tenant_id INTEGER`);
+    await client.query("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'admin'");
   } catch (_) { /* already exists */ }
   console.log('[DB] admin_users ready');
 
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS tenants (
-      id SERIAL PRIMARY KEY,
-      slug VARCHAR(31) UNIQUE NOT NULL,
-      name VARCHAR(160) NOT NULL,
-      contact_email VARCHAR(254) NOT NULL,
-      status VARCHAR(20) NOT NULL DEFAULT 'pending',
-      aws_region VARCHAR(32) NOT NULL DEFAULT 'ap-southeast-1',
-      instance_type VARCHAR(32) NOT NULL DEFAULT 't3.micro',
-      root_volume_size INTEGER NOT NULL DEFAULT 12,
-      compiler_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-      compiler_memory_mb INTEGER NOT NULL DEFAULT 512,
-      compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15,
-      compiler_concurrency INTEGER NOT NULL DEFAULT 2,
-      compiler_lambda_arn TEXT,
-      domain_name VARCHAR(253) NOT NULL DEFAULT '',
-      route53_zone_id VARCHAR(64) NOT NULL DEFAULT '',
-      secret_arn TEXT NOT NULL DEFAULT '',
-      repository_url TEXT NOT NULL DEFAULT 'https://github.com/minhmaihuy/e-proc.git',
-      repository_ref VARCHAR(100) NOT NULL DEFAULT 'main',
-      provision_status VARCHAR(20) NOT NULL DEFAULT 'not_started',
-      terraform_state_key TEXT,
-      instance_id VARCHAR(64),
-      public_ip VARCHAR(64),
-      ipv6_address VARCHAR(64),
-      app_url TEXT,
-      last_error TEXT,
-      approved_by INTEGER,
-      approved_at TIMESTAMP,
-      created_by INTEGER NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
-  await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_memory_mb INTEGER NOT NULL DEFAULT 512`);
-  await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15`);
-  await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_concurrency INTEGER NOT NULL DEFAULT 2`);
-  await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_lambda_arn TEXT`);
-  await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS ipv6_address VARCHAR(64)`);
-  await client.query(`CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status)`);
-  await client.query(`CREATE INDEX IF NOT EXISTS idx_admin_users_tenant ON admin_users(tenant_id)`);
-
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS tenant_provision_jobs (
-      id SERIAL PRIMARY KEY,
-      tenant_id INTEGER NOT NULL,
-      action VARCHAR(16) NOT NULL,
-      status VARCHAR(20) NOT NULL DEFAULT 'queued',
-      requested_by INTEGER NOT NULL,
-      log_output TEXT,
-      started_at TIMESTAMP,
-      finished_at TIMESTAMP,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  await client.query(`CREATE INDEX IF NOT EXISTS idx_tenant_jobs_tenant ON tenant_provision_jobs(tenant_id, created_at DESC)`);
-
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS tenant_audit_events (
-      id SERIAL PRIMARY KEY,
-      tenant_id INTEGER NOT NULL,
-      actor_id INTEGER NOT NULL,
-      action VARCHAR(64) NOT NULL,
-      detail TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  await client.query(`CREATE INDEX IF NOT EXISTS idx_tenant_audit_tenant ON tenant_audit_events(tenant_id, created_at DESC)`);
-  console.log('[DB] multi-tenant control-plane tables ready');
-
+  client.release();
   console.log('[DB] All PostgreSQL tables initialized');
-  } finally {
-    client.release();
-  }
 }
 
 function initSqlite() {
@@ -437,9 +335,7 @@ function initSqlite() {
         type TEXT NOT NULL,
         level TEXT NOT NULL,
         module TEXT NOT NULL,
-        question_group TEXT,
         question_sample TEXT NOT NULL,
-        question_plain TEXT,
         rubric_must_have TEXT NOT NULL,
         rubric_nice_to_have TEXT NOT NULL,
         rubric_optional TEXT NOT NULL,
@@ -447,59 +343,7 @@ function initSqlite() {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
-
-    // Migration: thêm cột mới nếu chưa tồn tại (cho SQLite DB cũ)
-    const qbCols = sqliteDb.prepare("PRAGMA table_info(question_bank)").all() as { name: string }[];
-    const qbColNames = qbCols.map((c) => c.name);
-    if (!qbColNames.includes('question_group')) {
-      sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN question_group TEXT');
-    }
-    if (!qbColNames.includes('question_plain')) {
-      sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN question_plain TEXT');
-    }
-
-    // Migration: khóa chính (id, question_group) thay cho id đơn lẻ — xem giải thích ở nhánh Postgres.
-    // SQLite không đổi được PK bằng ALTER → phải dựng bảng mới rồi copy dữ liệu sang.
-    const qbPkCols = (sqliteDb.prepare("PRAGMA table_info(question_bank)").all() as { name: string; pk: number }[])
-      .filter((c) => c.pk > 0)
-      .map((c) => c.name)
-      .sort();
-    if (!(qbPkCols.length === 2 && qbPkCols[0] === 'id' && qbPkCols[1] === 'question_group')) {
-      console.log('[DB] question_bank PK:', qbPkCols, '→ rebuild sang (id, question_group)');
-      const existingCols = (sqliteDb.prepare("PRAGMA table_info(question_bank)").all() as { name: string }[]).map(c => c.name);
-      const optional = ['options', 'correct_answers', 'score'].filter(c => existingCols.includes(c));
-      const copyCols = ['id', 'type', 'level', 'module', 'question_group', 'question_sample', 'question_plain',
-        'rubric_must_have', 'rubric_nice_to_have', 'rubric_optional', 'created_at', 'updated_at', ...optional];
-      sqliteDb.exec('DROP TABLE IF EXISTS question_bank_new');
-      sqliteDb.exec(`
-        CREATE TABLE question_bank_new (
-          id TEXT NOT NULL,
-          type TEXT NOT NULL,
-          level TEXT NOT NULL,
-          module TEXT NOT NULL,
-          question_group TEXT NOT NULL DEFAULT '',
-          question_sample TEXT NOT NULL,
-          question_plain TEXT,
-          rubric_must_have TEXT NOT NULL,
-          rubric_nice_to_have TEXT NOT NULL,
-          rubric_optional TEXT NOT NULL,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          options TEXT,
-          correct_answers TEXT,
-          score REAL DEFAULT 1,
-          PRIMARY KEY (id, question_group)
-        )
-      `);
-      const selectCols = copyCols
-        .map(c => (c === 'question_group' ? "COALESCE(question_group, '') AS question_group" : c))
-        .join(', ');
-      sqliteDb.exec(`INSERT INTO question_bank_new (${copyCols.join(', ')}) SELECT ${selectCols} FROM question_bank`);
-      sqliteDb.exec('DROP TABLE question_bank');
-      sqliteDb.exec('ALTER TABLE question_bank_new RENAME TO question_bank');
-      console.log('[DB] question_bank rebuilt với PK (id, question_group)');
-    }
-
+    
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS batches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -508,31 +352,12 @@ function initSqlite() {
         end_time DATETIME NOT NULL,
         duration INTEGER NOT NULL,
         blueprint TEXT,
-        practice_exam_id INTEGER,
         record_enabled INTEGER DEFAULT 0,
         record_mode TEXT DEFAULT 'none',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
-
-    // Migration: batch dạng Practice (NULL = batch thi thường theo blueprint)
-    const batchCols = sqliteDb.prepare("PRAGMA table_info(batches)").all() as { name: string }[];
-    if (!batchCols.map((c) => c.name).includes('practice_exam_id')) {
-      sqliteDb.exec('ALTER TABLE batches ADD COLUMN practice_exam_id INTEGER');
-    }
-
-    // Bài thi Practice: import từ file .docx, quản lý độc lập với question_bank
-    sqliteDb.exec(`
-      CREATE TABLE IF NOT EXISTS practice_exams (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        content_html TEXT NOT NULL,
-        content_plain TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
+    
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS students (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -544,6 +369,12 @@ function initSqlite() {
         exam_deadline DATETIME,
         disconnected_at DATETIME,
         recording_password TEXT,
+        submitted_at DATETIME,
+        submit_reason TEXT,
+        active_jti TEXT,
+        recording_finalized_at DATETIME,
+        recording_final_part_index INTEGER,
+        recording_incomplete INTEGER DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
       )
@@ -564,23 +395,14 @@ function initSqlite() {
     if (!colNames.includes('recording_password')) {
       sqliteDb.exec('ALTER TABLE students ADD COLUMN recording_password TEXT');
     }
-
-    // Giữ cùng thứ tự phụ thuộc với PostgreSQL: students trước practice_submissions.
-    sqliteDb.exec(`
-      CREATE TABLE IF NOT EXISTS practice_submissions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        practice_exam_id INTEGER NOT NULL,
-        answer TEXT,
-        ai_score REAL,
-        ai_feedback TEXT,
-        trainer_score REAL,
-        trainer_feedback TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
-      )
-    `);
+    const studentAdds: Array<[string, string]> = [
+      ['submitted_at', 'DATETIME'], ['submit_reason', 'TEXT'], ['active_jti', 'TEXT'],
+      ['recording_finalized_at', 'DATETIME'], ['recording_final_part_index', 'INTEGER'],
+      ['recording_incomplete', 'INTEGER DEFAULT 0'],
+    ];
+    for (const [name, def] of studentAdds) {
+      if (!colNames.includes(name)) sqliteDb.exec(`ALTER TABLE students ADD COLUMN ${name} ${def}`);
+    }
     
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS exam_questions (
@@ -618,10 +440,48 @@ function initSqlite() {
         text_length INTEGER,
         content_preview TEXT,
         question_id TEXT,
+        metadata_json TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
       )
     `);
+    const violationEventCols = sqliteDb.prepare("PRAGMA table_info(violation_events)").all() as { name: string }[];
+    if (!violationEventCols.some((col) => col.name === 'metadata_json')) {
+      sqliteDb.exec('ALTER TABLE violation_events ADD COLUMN metadata_json TEXT');
+    }
+
+    sqliteDb.exec(`
+      CREATE TABLE IF NOT EXISTS recording_parts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        batch_id INTEGER NOT NULL,
+        part_index INTEGER NOT NULL,
+        object_key TEXT NOT NULL,
+        byte_size INTEGER,
+        uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        is_final INTEGER DEFAULT 0,
+        UNIQUE(student_id, part_index),
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+      )
+    `);
+    const recordingPartCols = (sqliteDb.prepare("PRAGMA table_info(recording_parts)").all() as { name: string }[]).map(c => c.name);
+    if (!recordingPartCols.includes('is_final')) sqliteDb.exec('ALTER TABLE recording_parts ADD COLUMN is_final INTEGER DEFAULT 0');
+
+    sqliteDb.exec(`
+      CREATE TABLE IF NOT EXISTS exam_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        batch_id INTEGER,
+        jti TEXT,
+        ip TEXT,
+        user_agent TEXT,
+        first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(student_id, jti, ip),
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+      )
+    `);
+    sqliteDb.exec('CREATE INDEX IF NOT EXISTS idx_exam_sessions_student ON exam_sessions(student_id)');
 
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS ai_queue (
@@ -631,131 +491,50 @@ function initSqlite() {
         status TEXT DEFAULT 'pending',
         attempts INTEGER DEFAULT 0,
         error_message TEXT,
-        kind TEXT DEFAULT 'exam',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    // Migration: phân biệt job chấm exam_questions vs practice_submissions
-    const aiQueueCols = sqliteDb.prepare("PRAGMA table_info(ai_queue)").all() as { name: string }[];
-    if (!aiQueueCols.map((c) => c.name).includes('kind')) {
-      sqliteDb.exec("ALTER TABLE ai_queue ADD COLUMN kind TEXT DEFAULT 'exam'");
-    }
-
+    
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS admin_users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'admin',
-        tenant_id INTEGER,
+        role TEXT DEFAULT 'admin',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    const adminCols = sqliteDb.prepare("PRAGMA table_info(admin_users)").all() as { name: string }[];
-    if (!adminCols.map((c) => c.name).includes('role')) {
-      sqliteDb.exec("ALTER TABLE admin_users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'");
-    }
-    if (!adminCols.map((c) => c.name).includes('tenant_id')) {
-      sqliteDb.exec('ALTER TABLE admin_users ADD COLUMN tenant_id INTEGER');
-    }
-
-    sqliteDb.exec(`
-      CREATE TABLE IF NOT EXISTS tenants (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        slug TEXT UNIQUE NOT NULL,
-        name TEXT NOT NULL,
-        contact_email TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        aws_region TEXT NOT NULL DEFAULT 'ap-southeast-1',
-        instance_type TEXT NOT NULL DEFAULT 't3.micro',
-        root_volume_size INTEGER NOT NULL DEFAULT 12,
-        compiler_enabled INTEGER NOT NULL DEFAULT 0,
-        compiler_memory_mb INTEGER NOT NULL DEFAULT 512,
-        compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15,
-        compiler_concurrency INTEGER NOT NULL DEFAULT 2,
-        compiler_lambda_arn TEXT,
-        domain_name TEXT NOT NULL DEFAULT '',
-        route53_zone_id TEXT NOT NULL DEFAULT '',
-        secret_arn TEXT NOT NULL DEFAULT '',
-        repository_url TEXT NOT NULL DEFAULT 'https://github.com/minhmaihuy/e-proc.git',
-        repository_ref TEXT NOT NULL DEFAULT 'main',
-        provision_status TEXT NOT NULL DEFAULT 'not_started',
-        terraform_state_key TEXT,
-        instance_id TEXT,
-        public_ip TEXT,
-        ipv6_address TEXT,
-        app_url TEXT,
-        last_error TEXT,
-        approved_by INTEGER,
-        approved_at DATETIME,
-        created_by INTEGER NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
-      CREATE INDEX IF NOT EXISTS idx_admin_users_tenant ON admin_users(tenant_id);
-
-      CREATE TABLE IF NOT EXISTS tenant_provision_jobs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tenant_id INTEGER NOT NULL,
-        action TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'queued',
-        requested_by INTEGER NOT NULL,
-        log_output TEXT,
-        started_at DATETIME,
-        finished_at DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE INDEX IF NOT EXISTS idx_tenant_jobs_tenant ON tenant_provision_jobs(tenant_id, created_at DESC);
-
-      CREATE TABLE IF NOT EXISTS tenant_audit_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tenant_id INTEGER NOT NULL,
-        actor_id INTEGER NOT NULL,
-        action TEXT NOT NULL,
-        detail TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE INDEX IF NOT EXISTS idx_tenant_audit_tenant ON tenant_audit_events(tenant_id, created_at DESC);
-    `);
-
-    const tenantColNames = (sqliteDb.prepare("PRAGMA table_info(tenants)").all() as { name: string }[]).map(c => c.name);
-    if (!tenantColNames.includes('compiler_enabled')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_enabled INTEGER NOT NULL DEFAULT 0');
-    if (!tenantColNames.includes('compiler_memory_mb')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_memory_mb INTEGER NOT NULL DEFAULT 512');
-    if (!tenantColNames.includes('compiler_timeout_seconds')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15');
-    if (!tenantColNames.includes('compiler_concurrency')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_concurrency INTEGER NOT NULL DEFAULT 2');
-    if (!tenantColNames.includes('compiler_lambda_arn')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN compiler_lambda_arn TEXT');
-    if (!tenantColNames.includes('ipv6_address')) sqliteDb.exec('ALTER TABLE tenants ADD COLUMN ipv6_address TEXT');
 
     // Migration cho SQLite DB cũ: thêm cột nếu chưa có (SQLite không có IF NOT EXISTS cho ADD COLUMN)
-    // (cột role của admin_users đã được migrate ở ngay trên)
-    const batchColNames = (sqliteDb.prepare("PRAGMA table_info(batches)").all() as { name: string }[]).map(c => c.name);
-    if (!batchColNames.includes('record_enabled')) {
+    const batchCols = (sqliteDb.prepare("PRAGMA table_info(batches)").all() as { name: string }[]).map(c => c.name);
+    if (!batchCols.includes('record_enabled')) {
       sqliteDb.exec('ALTER TABLE batches ADD COLUMN record_enabled INTEGER DEFAULT 0');
     }
-    if (!batchColNames.includes('exam_type')) {
+    if (!batchCols.includes('exam_type')) {
       sqliteDb.exec("ALTER TABLE batches ADD COLUMN exam_type TEXT DEFAULT 'essay'");
     }
-    if (!batchColNames.includes('record_mode')) {
+    if (!batchCols.includes('record_mode')) {
       sqliteDb.exec("ALTER TABLE batches ADD COLUMN record_mode TEXT DEFAULT 'none'");
       // Backfill: batch cũ có record_enabled=1 → 's3'
       sqliteDb.exec("UPDATE batches SET record_mode = 's3' WHERE record_enabled = 1 AND (record_mode IS NULL OR record_mode = 'none')");
     }
+    if (!batchCols.includes('created_by')) {
+      sqliteDb.exec('ALTER TABLE batches ADD COLUMN created_by INTEGER');
+    }
+    const adminCols = (sqliteDb.prepare("PRAGMA table_info(admin_users)").all() as { name: string }[]).map(c => c.name);
+    if (!adminCols.includes('role')) {
+      sqliteDb.exec("ALTER TABLE admin_users ADD COLUMN role TEXT DEFAULT 'admin'");
+    }
     // Migration: cột quiz cho question_bank + option_order cho exam_questions (SQLite DB cũ)
-    const qbQuizCols = (sqliteDb.prepare("PRAGMA table_info(question_bank)").all() as { name: string }[]).map(c => c.name);
-    if (!qbQuizCols.includes('options')) sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN options TEXT');
-    if (!qbQuizCols.includes('correct_answers')) sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN correct_answers TEXT');
-    if (!qbQuizCols.includes('score')) sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN score REAL DEFAULT 1');
+    const qbCols = (sqliteDb.prepare("PRAGMA table_info(question_bank)").all() as { name: string }[]).map(c => c.name);
+    if (!qbCols.includes('options')) sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN options TEXT');
+    if (!qbCols.includes('correct_answers')) sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN correct_answers TEXT');
+    if (!qbCols.includes('score')) sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN score REAL DEFAULT 1');
+    if (!qbCols.includes('uploaded_by')) sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN uploaded_by INTEGER');
     const eqCols = (sqliteDb.prepare("PRAGMA table_info(exam_questions)").all() as { name: string }[]).map(c => c.name);
     if (!eqCols.includes('option_order')) sqliteDb.exec('ALTER TABLE exam_questions ADD COLUMN option_order TEXT');
-    // question_id một mình không còn xác định được câu hỏi sau khi question_bank đổi sang
-    // khóa (id, question_group) → lưu kèm group của câu đã gán cho học viên.
-    if (!eqCols.includes('question_group')) {
-      sqliteDb.exec("ALTER TABLE exam_questions ADD COLUMN question_group TEXT DEFAULT ''");
-      sqliteDb.exec("UPDATE exam_questions SET question_group = '' WHERE question_group IS NULL");
-    }
 
     console.log('[DB] All SQLite tables initialized');
   } catch (err) {
@@ -764,8 +543,15 @@ function initSqlite() {
   }
 }
 
-// Assessment data remains in this data-plane database. Persisting the identity
-// here makes its FSA-CLS ownership explicit and independently auditable.
+export async function initDatabase() {
+  if (USE_SQLITE) {
+    initSqlite();
+  } else {
+    await initPostgres();
+  }
+  await bindDataPlaneTenant();
+}
+
 export function assertDataPlaneTenantBinding(existingSlug: unknown, requestedSlug: string): void {
   const normalizedExisting = String(existingSlug || '').trim().toLowerCase() === 'fsa'
     ? 'fsa-cls'
@@ -795,16 +581,6 @@ export async function bindDataPlaneTenant(): Promise<void> {
       await query('INSERT INTO data_plane_metadata (metadata_key, metadata_value) VALUES (?, ?)', [key, value]);
     }
   }
-  console.log('[DB] Assessment data-plane tenant:', config.slug);
-}
-
-export async function initDatabase() {
-  if (USE_SQLITE) {
-    initSqlite();
-  } else {
-    await initPostgres();
-  }
-  await bindDataPlaneTenant();
 }
 
 export async function closeDatabase(): Promise<void> {
@@ -826,12 +602,21 @@ interface DbResult {
   lastInsertRowid?: number | bigint;
 }
 
+export interface DbExecutor {
+  query(text: string, params?: any[]): Promise<DbResult>;
+}
+
+function postgresText(text: string, params?: any[]): string {
+  if (!params?.length || text.includes('$1')) return text;
+  let paramIndex = 1;
+  return text.replace(/\?/g, () => '$' + paramIndex++);
+}
+
 export async function query(text: string, params?: any[]): Promise<DbResult> {
   if (USE_SQLITE && sqliteDb) {
     try {
       const stmt = sqliteDb.prepare(text);
-      const upperText = text.trim().toUpperCase();
-      if (upperText.startsWith('SELECT') || upperText.includes('RETURNING')) {
+      if (text.trim().toUpperCase().startsWith('SELECT')) {
         return { rows: stmt.all(...(params || [])), rowCount: 0 };
       } else {
         const result = stmt.run(...(params || []));
@@ -845,9 +630,7 @@ export async function query(text: string, params?: any[]): Promise<DbResult> {
   
   if (pgPool) {
     if (params && params.length > 0) {
-      let paramIndex = 1;
-      const pgText = text.replace(/\?/g, () => '$' + paramIndex++);
-      const result = await pgPool.query(pgText, params);
+      const result = await pgPool.query(postgresText(text, params), params);
       return { rows: result.rows, rowCount: result.rowCount || 0, lastInsertRowid: undefined };
     }
     const result = await pgPool.query(text);
@@ -857,9 +640,45 @@ export async function query(text: string, params?: any[]): Promise<DbResult> {
   throw new Error('No database connection available');
 }
 
+/** Run all statements on one physical connection. Required for row locks and atomic exam state changes. */
+export async function withTransaction<T>(work: (tx: DbExecutor) => Promise<T>): Promise<T> {
+  if (USE_SQLITE && sqliteDb) {
+    sqliteDb.exec('BEGIN IMMEDIATE');
+    const tx: DbExecutor = { query };
+    try {
+      const result = await work(tx);
+      sqliteDb.exec('COMMIT');
+      return result;
+    } catch (error) {
+      sqliteDb.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  if (!pgPool) throw new Error('No database connection available');
+  const client = await pgPool.connect();
+  const tx: DbExecutor = {
+    query: async (text: string, params?: any[]) => {
+      const result = await client.query(postgresText(text, params), params);
+      return { rows: result.rows, rowCount: result.rowCount || 0 };
+    },
+  };
+  try {
+    await client.query('BEGIN');
+    const result = await work(tx);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export function getPool() {
   if (USE_SQLITE) return sqliteDb;
   return pgPool;
 }
 
-export default { initDatabase, closeDatabase, query, getPool };
+export default { initDatabase, closeDatabase, query, withTransaction, getPool };

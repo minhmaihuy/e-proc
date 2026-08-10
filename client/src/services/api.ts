@@ -195,8 +195,16 @@ export const adminApi = {
   listUsers: () =>
     api.get<AdminUser[]>('/admin/users'),
 
-  createUser: (data: { username: string; password: string; role: AdminRole; tenant_id?: number | null }) =>
-    api.post('/admin/users', data),
+  getUsers: () =>
+    api.get<AdminUser[]>('/admin/users'),
+
+  createUser: (
+    dataOrUsername: { username: string; password: string; role: AdminRole; tenant_id?: number | null } | string,
+    password?: string,
+    role?: AdminRole,
+  ) => api.post('/admin/users', typeof dataOrUsername === 'string'
+    ? { username: dataOrUsername, password, role }
+    : dataOrUsername),
 
   updateUser: (id: number, data: { role?: AdminRole; password?: string; tenant_id?: number | null }) =>
     api.put(`/admin/users/${id}`, data),
@@ -365,6 +373,12 @@ export const studentApi = {
   // Xin presigned PUT URL để upload 1 phần video record thẳng lên S3
   getRecordingUploadUrl: (partIndex: number, contentType: string) =>
     api.post('/student/exam/recording-url', { partIndex, contentType }),
+
+  completeRecordingPart: (partIndex: number, byteSize: number) =>
+    api.post('/student/exam/recording-complete', { partIndex, byteSize }),
+
+  finalizeRecording: (finalPartIndex: number) =>
+    api.post('/student/exam/recording-finalize', { finalPartIndex }),
 
   // --- Run code (học viên tự kiểm tra tính đúng đắn) ---
   runCode: (language: string, code: string, stdin?: string) =>

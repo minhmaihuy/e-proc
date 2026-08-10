@@ -31,8 +31,10 @@ interface AuthContextType {
   isPlatformAdmin: boolean;
   isTenantAdmin: boolean;
   isUserManager: boolean;
+  isAdmin: boolean;
   isLoading: boolean;
   loginAdmin: (username: string, password: string) => Promise<LoginSession>;
+  login: (username: string, password: string) => Promise<LoginSession>;
   loginTenantControl: (username: string, password: string) => Promise<LoginSession>;
   logout: () => void;
 }
@@ -178,8 +180,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isPlatformAdmin: (role === 'admin' || role === 'tenant_admin') && Boolean(tenantId) && Boolean(tenantSlug),
         isTenantAdmin: role === 'tenant_admin',
         isUserManager: role === 'tenant_admin' && Boolean(tenantId) && Boolean(tenantSlug),
+        isAdmin: role === 'admin' || role === 'tenant_admin',
         isLoading,
         loginAdmin,
+        login: loginAdmin,
         loginTenantControl,
         logout,
       }}

@@ -1,8 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { adminApi } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import AdminNav from '../components/AdminNav';
+import { ArrowLeft, FolderKanban, ListChecks, Plus } from 'lucide-react';
+
+const BATCH_PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
+type BatchPageSize = typeof BATCH_PAGE_SIZE_OPTIONS[number];
 
 // Convert "YYYY-MM-DDTHH:mm" (treated as GMT+7 input) → UTC ISO string
 const localToUTC = (localStr: string): string => {
@@ -31,17 +35,8 @@ type BlueprintMode = 'module' | 'type';
 const QUESTION_TYPES = ['Coding', 'Conceptual', 'Fill-in', 'Debug'] as const;
 type QuestionType = typeof QUESTION_TYPES[number];
 
-// A (module, question_group) combo shown in Module dropdowns. The same module name can
-// exist under multiple question groups (e.g. "Unit Testing" under both CPP_EMB_PRINT_IOT
-// and CPP_EMB_AUTOSAR), so module alone is not a unique selector.
-interface ModuleGroupOption {
-  module: string;
-  question_group: string; // '' when the question has no group
-}
-
 interface BlueprintItem {
   module: string;
-  question_group: string;
   easy: number;
   medium: number;
   hard: number;
@@ -49,8 +44,14 @@ interface BlueprintItem {
 
 interface BlueprintItemByType {
   module: string;
-  question_group: string;
   type: QuestionType;
+  easy: number;
+  medium: number;
+  hard: number;
+}
+
+interface ModuleStats {
+  module: string;
   easy: number;
   medium: number;
   hard: number;
@@ -63,281 +64,26 @@ interface TypeStats {
   hard: number;
 }
 
-interface ModuleGroupStats {
+interface ModuleTypeStats {
   module: string;
-  question_group: string;
-  easy: number;
-  medium: number;
-  hard: number;
-}
-
-interface ModuleGroupTypeStats {
-  module: string;
-  question_group: string;
   type: string;
   easy: number;
   medium: number;
   hard: number;
 }
 
-/** Encode a (module, question_group) pair as a single <select> option value */
-const comboKey = (module: string, group: string) => `${module}|||${group || ''}`;
-/** Decode a <select> option value back into { module, question_group } */
-const decodeComboKey = (key: string): { module: string; question_group: string } => {
-  const [module, question_group] = key.split('|||');
-  return { module, question_group: question_group || '' };
-};
-/** Human-readable label for a (module, question_group) combo, e.g. "Chapter 10: Unit Testing (CPP_EMB_PRINT_IOT)" */
-const comboLabel = (module: string, group: string) => (group ? `${module} (${group})` : module);
-
-
-/**
- * Ba component dưới đây TRƯỚC ĐÂY được định nghĩa bên trong BatchManagement.
- *
- * Mỗi lần component cha render, JS tạo ra một hàm mới → với React đó là một KIỂU
- * component khác → nó unmount toàn bộ cây con rồi mount lại. Hậu quả thấy rõ nhất ở
- * ValidatedInput: ô nhập số câu bị remount sau mỗi ký tự nên MẤT FOCUS, admin phải
- * click lại vào ô để gõ tiếp. Các <select> module cũng bị dựng lại liên tục.
- *
- * Đặt ở module scope thì kiểu component ổn định, React chỉ cập nhật props.
- */
-
-const BlueprintModeToggle = ({
-
-  value,
-  onChange,
-}: {
-  value: BlueprintMode;
-  onChange: (m: BlueprintMode) => void;
-}) => (
-  <div style={{ display: 'flex', gap: 0, marginBottom: 16, border: '1.5px solid #6366f1', borderRadius: 8, overflow: 'hidden', width: 'fit-content' }}>
-    {(['module', 'type'] as BlueprintMode[]).map(mode => (
-      <button
-        key={mode}
-        type="button"
-        onClick={() => onChange(mode)}
-        style={{
-          padding: '7px 22px',
-          fontSize: 13,
-          fontWeight: 600,
-          border: 'none',
-          cursor: 'pointer',
-          background: value === mode ? '#6366f1' : '#f5f3ff',
-          color: value === mode ? '#fff' : '#6366f1',
-          transition: 'background 0.18s, color 0.18s',
-        }}
-      >
-        {mode === 'module' ? '🗂 By Module' : '🏷 By Type'}
-      </button>
-    ))}
-  </div>
-);
-
-/** <select> of (module, question_group) combos, labeled "module (group)" */
-const ModuleGroupSelect = ({
-  value,
-  onChange,
-  style,
-  moduleGroups,
-}: {
-  value: { module: string; question_group: string };
-  onChange: (module: string, question_group: string) => void;
-  style?: React.CSSProperties;
-  moduleGroups: ModuleGroupOption[];
-}) => (
-  <select
-    style={{ width: '100%', padding: '8px', ...style }}
-    value={comboKey(value.module, value.question_group)}
-    onChange={e => {
-      const decoded = decodeComboKey(e.target.value);
-      onChange(decoded.module, decoded.question_group);
-    }}
-  >
-    {moduleGroups.map(mg => (
-      <option key={comboKey(mg.module, mg.question_group)} value={comboKey(mg.module, mg.question_group)}>
-        {comboLabel(mg.module, mg.question_group)}
-      </option>
-    ))}
-  </select>
-);
-
-const ValidatedInput = ({
-
-  value,
-  max,
-  onChange,
-}: {
-  value: number;
-  max: number;
-  onChange: (v: string) => void;
-}) => {
-  const exceeded = value > max;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-      <input
-        type="number"
-        min={0}
-        max={max}
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        style={{
-          width: 70,
-          padding: '6px 8px',
-          border: exceeded ? '2px solid #ef4444' : '1px solid #d1d5db',
-          borderRadius: 6,
-          background: exceeded ? '#fef2f2' : 'white',
-          color: exceeded ? '#b91c1c' : '#111827',
-          fontWeight: exceeded ? 700 : 400,
-          textAlign: 'center',
-          outline: 'none',
-        }}
-      />
-      {exceeded && (
-        <span style={{ fontSize: 10, color: '#ef4444', whiteSpace: 'nowrap' }}>
-          ⚠️ Max: {max}
-        </span>
-      )}
-    </div>
-  );
-};
-
-
-
-/** Bảng "số câu có sẵn" theo (module, question_group). Không có ô nhập nên không dính
- *  bug mất focus, nhưng vẫn nâng ra module scope để React không dựng lại bảng sau mỗi
- *  lần gõ ở nơi khác trong form. */
-const QuestionBankStatsPanel = ({ moduleGroupStats }: { moduleGroupStats: ModuleGroupStats[] }) => {
-  if (moduleGroupStats.length === 0) return null;
-  return (
-    <div style={{
-      marginBottom: 20,
-      padding: '14px 18px',
-      background: 'linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%)',
-      border: '1px solid #93c5fd',
-      borderRadius: 10,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-        <span style={{ fontSize: 18 }}>📊</span>
-        <strong style={{ color: '#1e40af', fontSize: 14 }}>Question Bank – By Module</strong>
-        <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 4 }}>
-          — Available question counts by Module (and Question Group)
-        </span>
-      </div>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-        <thead>
-          <tr style={{ background: 'rgba(59,130,246,0.1)' }}>
-            <th style={{ padding: '6px 10px', textAlign: 'left', color: '#1e3a5f' }}>Module</th>
-            <th style={{ padding: '6px 10px', textAlign: 'left', color: '#1e3a5f' }}>Question Group</th>
-            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#15803d' }}>🟢 Easy</th>
-            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b45309' }}>🟡 Medium</th>
-            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b91c1c' }}>🔴 Hard</th>
-            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#374151' }}>Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {moduleGroupStats.map((stat, i) => (
-            <tr key={comboKey(stat.module, stat.question_group)} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.5)', borderTop: '1px solid #e5e7eb' }}>
-              <td style={{ padding: '5px 10px', fontWeight: 500, color: '#1f2937' }}>{stat.module}</td>
-              <td style={{ padding: '5px 10px', color: '#4b5563' }}>{stat.question_group || '-'}</td>
-              <td style={{ padding: '5px 10px', textAlign: 'center', color: '#166534', fontWeight: 600 }}>{stat.easy}</td>
-              <td style={{ padding: '5px 10px', textAlign: 'center', color: '#92400e', fontWeight: 600 }}>{stat.medium}</td>
-              <td style={{ padding: '5px 10px', textAlign: 'center', color: '#991b1b', fontWeight: 600 }}>{stat.hard}</td>
-              <td style={{ padding: '5px 10px', textAlign: 'center', color: '#374151', fontWeight: 700 }}>
-                {stat.easy + stat.medium + stat.hard}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-};
-
-/** Panel showing available question counts by module × question group × type */
-const QuestionBankTypeStatsPanel = ({
-  moduleGroupTypeStats,
-  moduleGroups,
-}: {
-  moduleGroupTypeStats: ModuleGroupTypeStats[];
-  moduleGroups: ModuleGroupOption[];
-}) => {
-  if (moduleGroupTypeStats.length === 0) return null;
-  const typeEmoji: Record<string, string> = { Coding: '💻', Conceptual: '🧠', 'Fill-in': '✏️', Debug: '🐛' };
-  return (
-    <div style={{
-      marginBottom: 20,
-      padding: '14px 18px',
-      background: 'linear-gradient(135deg, #faf5ff 0%, #f0fdf4 100%)',
-      border: '1px solid #c4b5fd',
-      borderRadius: 10,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-        <span style={{ fontSize: 18 }}>🏷</span>
-        <strong style={{ color: '#6d28d9', fontSize: 14 }}>Question Bank – By Module + Type</strong>
-        <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 4 }}>
-          — Available question counts by Module (Question Group) × Type
-        </span>
-      </div>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-        <thead>
-          <tr style={{ background: 'rgba(139,92,246,0.1)' }}>
-            <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Module</th>
-            <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Question Group</th>
-            <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Type</th>
-            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#15803d' }}>🟢 Easy</th>
-            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b45309' }}>🟡 Medium</th>
-            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b91c1c' }}>🔴 Hard</th>
-            <th style={{ padding: '6px 10px', textAlign: 'center', color: '#374151' }}>Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {moduleGroups.map(mg => {
-            const stats = moduleGroupTypeStats.filter(
-              s => s.module === mg.module && (s.question_group || '') === (mg.question_group || '')
-            );
-            return stats.map((stat, i) => (
-              <tr key={`${comboKey(mg.module, mg.question_group)}-${stat.type}`} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.5)', borderTop: '1px solid #e5e7eb' }}>
-                {i === 0 && (
-                  <>
-                    <td rowSpan={stats.length} style={{ padding: '5px 10px', fontWeight: 600, color: '#1f2937', verticalAlign: 'top', borderRight: '1px solid #e5e7eb' }}>
-                      {mg.module}
-                    </td>
-                    <td rowSpan={stats.length} style={{ padding: '5px 10px', color: '#4b5563', verticalAlign: 'top', borderRight: '1px solid #e5e7eb' }}>
-                      {mg.question_group || '-'}
-                    </td>
-                  </>
-                )}
-                <td style={{ padding: '5px 10px', color: '#374151' }}>{typeEmoji[stat.type] || '❓'} {stat.type}</td>
-                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#166534', fontWeight: 600 }}>{stat.easy}</td>
-                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#92400e', fontWeight: 600 }}>{stat.medium}</td>
-                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#991b1b', fontWeight: 600 }}>{stat.hard}</td>
-                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#374151', fontWeight: 700 }}>
-                  {stat.easy + stat.medium + stat.hard}
-                </td>
-              </tr>
-            ));
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-};
-
-/** A number input cell with inline validation warning */
-
 function BatchManagement() {
-  const { isTenantAdmin } = useAuth();
+  const { isAdmin, userId } = useAuth();
   const [batches, setBatches] = useState<any[]>([]);
-  const [moduleGroups, setModuleGroups] = useState<ModuleGroupOption[]>([]);
-  const [moduleGroupStats, setModuleGroupStats] = useState<ModuleGroupStats[]>([]);
+  const [modules, setModules] = useState<string[]>([]);
+  const [moduleStats, setModuleStats] = useState<ModuleStats[]>([]);
   const [typeStats, setTypeStats] = useState<TypeStats[]>([]);
-  const [moduleGroupTypeStats, setModuleGroupTypeStats] = useState<ModuleGroupTypeStats[]>([]);
+  const [moduleTypeStats, setModuleTypeStats] = useState<ModuleTypeStats[]>([]);
+  // Pagination
+  const [batchPageSize, setBatchPageSize] = useState<BatchPageSize>(10);
+  const [batchCurrentPage, setBatchCurrentPage] = useState(1);
   // Create form state
   const [blueprintMode, setBlueprintMode] = useState<BlueprintMode>('module');
-  // Batch dạng Question Bank (blueprint) hay Practice (1 bài thi import từ .docx)
-  const [examMode, setExamMode] = useState<'question_bank' | 'practice'>('question_bank');
-  const [practiceExams, setPracticeExams] = useState<{ id: number; name: string }[]>([]);
-  const [selectedPracticeId, setSelectedPracticeId] = useState<string>('');
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
@@ -361,28 +107,26 @@ function BatchManagement() {
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
-  /** Return stats for a given (module, question_group) combination (zeros if not found) */
-  const getStatsForModuleGroup = (moduleName: string, group: string): ModuleGroupStats =>
-    moduleGroupStats.find(s => s.module === moduleName && (s.question_group || '') === (group || ''))
-      ?? { module: moduleName, question_group: group || '', easy: 0, medium: 0, hard: 0 };
+  /** Return stats for a given module name (zeros if not found) */
+  const getStatsForModule = (moduleName: string): ModuleStats =>
+    moduleStats.find(s => s.module === moduleName) ?? { module: moduleName, easy: 0, medium: 0, hard: 0 };
 
-  /** Return stats for a given (module, question_group, type) combination (zeros if not found) */
-  const getStatsForModuleGroupType = (moduleName: string, group: string, typeName: string): ModuleGroupTypeStats =>
-    moduleGroupTypeStats.find(s => s.module === moduleName && (s.question_group || '') === (group || '') && s.type === typeName)
-      ?? { module: moduleName, question_group: group || '', type: typeName, easy: 0, medium: 0, hard: 0 };
+  /** Return stats for a given (module, type) combination (zeros if not found) */
+  const getStatsForModuleType = (moduleName: string, typeName: string): ModuleTypeStats =>
+    moduleTypeStats.find(s => s.module === moduleName && s.type === typeName)
+    ?? { module: moduleName, type: typeName, easy: 0, medium: 0, hard: 0 };
 
   /** Validate blueprint (by module) against available question counts */
   const validateBlueprintAgainstStats = (blueprint: BlueprintItem[]): string[] => {
     const errors: string[] = [];
     for (const item of blueprint) {
-      const stats = getStatsForModuleGroup(item.module, item.question_group);
-      const label = comboLabel(item.module, item.question_group);
+      const stats = getStatsForModule(item.module);
       if (item.easy > stats.easy)
-        errors.push(`Module "${label}": Easy requires ${item.easy}, only ${stats.easy} available.`);
+        errors.push(`Module "${item.module}": Easy requires ${item.easy}, only ${stats.easy} available.`);
       if (item.medium > stats.medium)
-        errors.push(`Module "${label}": Medium requires ${item.medium}, only ${stats.medium} available.`);
+        errors.push(`Module "${item.module}": Medium requires ${item.medium}, only ${stats.medium} available.`);
       if (item.hard > stats.hard)
-        errors.push(`Module "${label}": Hard requires ${item.hard}, only ${stats.hard} available.`);
+        errors.push(`Module "${item.module}": Hard requires ${item.hard}, only ${stats.hard} available.`);
     }
     return errors;
   };
@@ -391,14 +135,13 @@ function BatchManagement() {
   const validateTypesBlueprintAgainstStats = (blueprint: BlueprintItemByType[]): string[] => {
     const errors: string[] = [];
     for (const item of blueprint) {
-      const stats = getStatsForModuleGroupType(item.module, item.question_group, item.type);
-      const label = comboLabel(item.module, item.question_group);
+      const stats = getStatsForModuleType(item.module, item.type);
       if (item.easy > stats.easy)
-        errors.push(`Module "${label}" / Type "${item.type}": Easy requires ${item.easy}, only ${stats.easy} available.`);
+        errors.push(`Module "${item.module}" / Type "${item.type}": Easy requires ${item.easy}, only ${stats.easy} available.`);
       if (item.medium > stats.medium)
-        errors.push(`Module "${label}" / Type "${item.type}": Medium requires ${item.medium}, only ${stats.medium} available.`);
+        errors.push(`Module "${item.module}" / Type "${item.type}": Medium requires ${item.medium}, only ${stats.medium} available.`);
       if (item.hard > stats.hard)
-        errors.push(`Module "${label}" / Type "${item.type}": Hard requires ${item.hard}, only ${stats.hard} available.`);
+        errors.push(`Module "${item.module}" / Type "${item.type}": Hard requires ${item.hard}, only ${stats.hard} available.`);
     }
     return errors;
   };
@@ -416,23 +159,21 @@ function BatchManagement() {
 
   useEffect(() => {
     loadBatches();
-    loadModuleGroups();
-    loadModuleGroupStats();
+    loadModules();
+    loadModuleStats();
     loadTypeStats();
-    loadModuleGroupTypeStats();
-    loadPracticeExams();
+    loadModuleTypeStats();
   }, []);
 
 
   useEffect(() => {
-    if (moduleGroups.length > 0 && formData.blueprint.length === 0) {
-      const first = moduleGroups[0];
+    if (modules.length > 0 && formData.blueprint.length === 0) {
       setFormData(prev => ({
         ...prev,
-        blueprint: [{ module: first.module, question_group: first.question_group, easy: 0, medium: 0, hard: 0 }]
+        blueprint: [{ module: modules[0], easy: 0, medium: 0, hard: 0 }]
       }));
     }
-  }, [moduleGroups]);
+  }, [modules]);
 
   // ─── Loaders ────────────────────────────────────────────────────────────────
 
@@ -445,32 +186,23 @@ function BatchManagement() {
     }
   };
 
-  const loadPracticeExams = async () => {
+  const loadModules = async () => {
     try {
-      const res = await adminApi.getPracticeExams();
-      setPracticeExams(res.data);
+      const res = await adminApi.getModules();
+      console.log('[BatchManagement] Modules loaded:', res.data);
+      setModules(res.data);
     } catch (error) {
-      console.error(error);
+      console.error('[BatchManagement] loadModules error:', error);
     }
   };
 
-  const loadModuleGroups = async () => {
+  const loadModuleStats = async () => {
     try {
-      const res = await adminApi.getModuleGroups();
-      console.log('[BatchManagement] Module groups loaded:', res.data);
-      setModuleGroups(res.data);
+      const res = await adminApi.getModuleStats();
+      console.log('[BatchManagement] Module stats loaded:', res.data);
+      setModuleStats(res.data);
     } catch (error) {
-      console.error('[BatchManagement] loadModuleGroups error:', error);
-    }
-  };
-
-  const loadModuleGroupStats = async () => {
-    try {
-      const res = await adminApi.getModuleGroupStats();
-      console.log('[BatchManagement] Module-group stats loaded:', res.data);
-      setModuleGroupStats(res.data);
-    } catch (error) {
-      console.error('[BatchManagement] loadModuleGroupStats error:', error);
+      console.error('[BatchManagement] loadModuleStats error:', error);
     }
   };
 
@@ -484,37 +216,30 @@ function BatchManagement() {
     }
   };
 
-  const loadModuleGroupTypeStats = async () => {
+  const loadModuleTypeStats = async () => {
     try {
-      const res = await adminApi.getModuleGroupTypeStats();
-      console.log('[BatchManagement] Module-group-type stats loaded:', res.data);
-      setModuleGroupTypeStats(res.data);
+      const res = await adminApi.getModuleTypeStats();
+      console.log('[BatchManagement] Module-type stats loaded:', res.data);
+      setModuleTypeStats(res.data);
     } catch (error) {
-      console.error('[BatchManagement] loadModuleGroupTypeStats error:', error);
+      console.error('[BatchManagement] loadModuleTypeStats error:', error);
     }
   };
 
   // ─── Blueprint helpers (Create form) ────────────────────────────────────────
 
   const addBlueprintRow = () => {
-    const first = moduleGroups[0];
+    console.log('[BatchManagement] addBlueprintRow, modules:', modules);
     setFormData(prev => ({
       ...prev,
-      blueprint: [...prev.blueprint, { module: first?.module || '', question_group: first?.question_group || '', easy: 0, medium: 0, hard: 0 }]
+      blueprint: [...prev.blueprint, { module: modules[0] || '', easy: 0, medium: 0, hard: 0 }]
     }));
   };
 
   const updateBlueprint = (index: number, field: keyof BlueprintItem, value: any) => {
     const newBlueprint = [...formData.blueprint];
-    const convertedValue = (field === 'module' || field === 'question_group') ? value : Number(value);
+    const convertedValue = field === 'module' ? value : Number(value);
     newBlueprint[index] = { ...newBlueprint[index], [field]: convertedValue };
-    setFormData(prev => ({ ...prev, blueprint: newBlueprint }));
-  };
-
-  /** Update module + question_group together, since the dropdown selects a single combo */
-  const updateBlueprintModuleGroup = (index: number, module: string, question_group: string) => {
-    const newBlueprint = [...formData.blueprint];
-    newBlueprint[index] = { ...newBlueprint[index], module, question_group };
     setFormData(prev => ({ ...prev, blueprint: newBlueprint }));
   };
 
@@ -527,15 +252,15 @@ function BatchManagement() {
 
   // ─── Blueprint helpers (By Type – Create form) ───────────────────────────────
 
-  /** (module, question_group, type) combos already used in By Type blueprint */
-  const usedModuleTypeCombos = formData.blueprintByType.map(i => `${i.module}||${i.question_group}||${i.type}`);
+  /** (module, type) combos already used in By Type blueprint */
+  const usedModuleTypeCombos = formData.blueprintByType.map(i => `${i.module}||${i.type}`);
 
-  /** Find first available (module, question_group, type) combo not yet used */
-  const getNextAvailableModuleType = (): { module: string; question_group: string; type: QuestionType } | null => {
-    for (const mg of moduleGroups) {
+  /** Find first available (module, type) combo not yet used */
+  const getNextAvailableModuleType = (): { module: string; type: QuestionType } | null => {
+    for (const m of modules) {
       for (const t of QUESTION_TYPES) {
-        if (!usedModuleTypeCombos.includes(`${mg.module}||${mg.question_group}||${t}`)) {
-          return { module: mg.module, question_group: mg.question_group, type: t };
+        if (!usedModuleTypeCombos.includes(`${m}||${t}`)) {
+          return { module: m, type: t };
         }
       }
     }
@@ -547,26 +272,14 @@ function BatchManagement() {
     if (!nextAvailableModuleType) return;
     setFormData(prev => ({
       ...prev,
-      blueprintByType: [...prev.blueprintByType, {
-        module: nextAvailableModuleType.module,
-        question_group: nextAvailableModuleType.question_group,
-        type: nextAvailableModuleType.type,
-        easy: 0, medium: 0, hard: 0
-      }]
+      blueprintByType: [...prev.blueprintByType, { module: nextAvailableModuleType.module, type: nextAvailableModuleType.type, easy: 0, medium: 0, hard: 0 }]
     }));
   };
 
   const updateTypeBlueprint = (index: number, field: keyof BlueprintItemByType, value: any) => {
     const newBlueprint = [...formData.blueprintByType];
-    const convertedValue = (field === 'module' || field === 'question_group' || field === 'type') ? value : Number(value);
+    const convertedValue = (field === 'module' || field === 'type') ? value : Number(value);
     newBlueprint[index] = { ...newBlueprint[index], [field]: convertedValue };
-    setFormData(prev => ({ ...prev, blueprintByType: newBlueprint }));
-  };
-
-  /** Update module + question_group together, since the dropdown selects a single combo */
-  const updateTypeBlueprintModuleGroup = (index: number, module: string, question_group: string) => {
-    const newBlueprint = [...formData.blueprintByType];
-    newBlueprint[index] = { ...newBlueprint[index], module, question_group };
     setFormData(prev => ({ ...prev, blueprintByType: newBlueprint }));
   };
 
@@ -586,12 +299,12 @@ function BatchManagement() {
 
   // ─── Blueprint helpers (Edit form) ───────────────────────────────────────────
 
-  const usedModuleTypeCombosEdit = ((editingBatch?.blueprintByType || []) as BlueprintItemByType[]).map(i => `${i.module}||${i.question_group}||${i.type}`);
-  const getNextAvailableModuleTypeEdit = (): { module: string; question_group: string; type: QuestionType } | null => {
-    for (const mg of moduleGroups) {
+  const usedModuleTypeCombosEdit = ((editingBatch?.blueprintByType || []) as BlueprintItemByType[]).map(i => `${i.module}||${i.type}`);
+  const getNextAvailableModuleTypeEdit = (): { module: string; type: QuestionType } | null => {
+    for (const m of modules) {
       for (const t of QUESTION_TYPES) {
-        if (!usedModuleTypeCombosEdit.includes(`${mg.module}||${mg.question_group}||${t}`)) {
-          return { module: mg.module, question_group: mg.question_group, type: t };
+        if (!usedModuleTypeCombosEdit.includes(`${m}||${t}`)) {
+          return { module: m, type: t };
         }
       }
     }
@@ -614,21 +327,16 @@ function BatchManagement() {
     let moduleItems: BlueprintItem[] = [];
     let typeItems: BlueprintItemByType[] = [];
 
-    // Older batches were saved before question_group existed — default it to '' so the
-    // combo-based dropdowns below always have a valid value to select.
-    const withGroup = <T extends { question_group?: string }>(items: T[]): T[] =>
-      items.map(it => ({ ...it, question_group: it.question_group || '' }));
-
     if (Array.isArray(rawBlueprint)) {
       // Legacy format: plain array → by module
       detectedMode = 'module';
-      moduleItems = withGroup(rawBlueprint);
+      moduleItems = rawBlueprint;
     } else if (rawBlueprint && rawBlueprint.blueprintMode) {
       detectedMode = rawBlueprint.blueprintMode;
       if (detectedMode === 'type') {
-        typeItems = withGroup(rawBlueprint.items || []);
+        typeItems = rawBlueprint.items || [];
       } else {
-        moduleItems = withGroup(rawBlueprint.items || []);
+        moduleItems = rawBlueprint.items || [];
       }
     }
 
@@ -644,26 +352,6 @@ function BatchManagement() {
 
   const handleUpdateBatch = async () => {
     if (!editingBatch) return;
-
-    // Batch dạng Practice: không có blueprint để validate
-    if (editingBatch.practice_exam_id) {
-      setLoading(true);
-      try {
-        await adminApi.updateBatch(editingBatch.id, {
-          name: editingBatch.name,
-          start_time: localToUTC(editingBatch.start_time),
-          end_time: localToUTC(editingBatch.end_time),
-          duration: editingBatch.duration,
-          practice_exam_id: editingBatch.practice_exam_id,
-        });
-        loadBatches();
-        setEditingBatch(null);
-      } catch (err: any) {
-        alert(err.response?.data?.error || err.message);
-      }
-      setLoading(false);
-      return;
-    }
 
     // Validate against question bank availability based on edit mode
     let statsErrors: string[] = [];
@@ -704,66 +392,51 @@ function BatchManagement() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log('[BatchManagement] handleSubmit called, examMode:', examMode, 'blueprintMode:', blueprintMode, 'formData:', formData);
+    console.log('[BatchManagement] handleSubmit called, blueprintMode:', blueprintMode, 'formData:', formData);
     setLoading(true);
     setFeasibilityErrors([]);
 
-    let payload: any = {
-      name: formData.name,
-      start_time: localToUTC(formData.start_time),
-      end_time: localToUTC(formData.end_time),
-      duration: formData.duration,
-      record_mode: formData.record_mode,
-      exam_type: formData.exam_type,
-    };
-
-    if (examMode === 'practice') {
-      // Batch dạng Practice: chỉ cần chọn 1 bài practice đã import
-      if (!selectedPracticeId) {
-        setFeasibilityErrors(['Please select a practice exam.']);
-        setLoading(false);
-        return;
-      }
-      payload.practice_exam_id = parseInt(selectedPracticeId);
-    } else {
-      // Compute total based on active mode
-      const activeItems = blueprintMode === 'type' ? formData.blueprintByType : formData.blueprint;
-      const total = activeItems.reduce((sum, item) => sum + (item.easy || 0) + (item.medium || 0) + (item.hard || 0), 0);
-      console.log('[BatchManagement] Total questions:', total);
-      // Đề trắc nghiệm (quiz) cho phép tới 100 câu; đề tự luận giữ giới hạn 20 câu như trước.
-      const maxQuestions = formData.exam_type === 'quiz' ? 100 : 20;
-      if (total < 1 || total > maxQuestions) {
-        setFeasibilityErrors([`Total questions must be between 1 and ${maxQuestions}. Current: ${total}`]);
-        setLoading(false);
-        return;
-      }
-
-      // Validate against question bank availability
-      let statsErrors: string[] = [];
-      if (blueprintMode === 'type') {
-        statsErrors = validateTypesBlueprintAgainstStats(formData.blueprintByType);
-      } else {
-        statsErrors = validateBlueprintAgainstStats(formData.blueprint);
-      }
-      if (statsErrors.length > 0) {
-        setFeasibilityErrors(statsErrors);
-        setLoading(false);
-        return;
-      }
-
-      payload.blueprint = buildBlueprintPayload(blueprintMode, formData.blueprint, formData.blueprintByType);
+    // Compute total based on active mode
+    const activeItems = blueprintMode === 'type' ? formData.blueprintByType : formData.blueprint;
+    const total = activeItems.reduce((sum, item) => sum + (item.easy || 0) + (item.medium || 0) + (item.hard || 0), 0);
+    console.log('[BatchManagement] Total questions:', total);
+    if (total < 1 || total > 100) {
+      setFeasibilityErrors([`Total questions must be between 1 and 100. Current: ${total}`]);
+      setLoading(false);
+      return;
     }
 
+    // Validate against question bank availability
+    let statsErrors: string[] = [];
+    if (blueprintMode === 'type') {
+      statsErrors = validateTypesBlueprintAgainstStats(formData.blueprintByType);
+    } else {
+      statsErrors = validateBlueprintAgainstStats(formData.blueprint);
+    }
+    if (statsErrors.length > 0) {
+      setFeasibilityErrors(statsErrors);
+      setLoading(false);
+      return;
+    }
+
+    const blueprintPayload = buildBlueprintPayload(blueprintMode, formData.blueprint, formData.blueprintByType);
+
     try {
-      console.log('[BatchManagement] Submitting payload:', JSON.stringify(payload));
-      const res = await adminApi.createBatch(payload);
+      console.log('[BatchManagement] Submitting blueprintPayload:', JSON.stringify(blueprintPayload));
+      const res = await adminApi.createBatch({
+        name: formData.name,
+        start_time: localToUTC(formData.start_time),
+        end_time: localToUTC(formData.end_time),
+        duration: formData.duration,
+        blueprint: blueprintPayload,
+        record_mode: formData.record_mode,
+        exam_type: formData.exam_type,
+      });
       console.log('[BatchManagement] Response:', res.data);
       const batchId = res.data.id;
       setShowForm(false);
       setFormData({ name: '', start_time: '', end_time: '', duration: 30, blueprint: [], blueprintByType: [], record_mode: 'none', exam_type: 'essay' });
       setBlueprintMode('module');
-      setExamMode('question_bank');
-      setSelectedPracticeId('');
       loadBatches();
       setSelectedBatchId(batchId);
       setShowInviteForm(true);
@@ -834,171 +507,352 @@ function BatchManagement() {
     ? validateTypesBlueprintAgainstStats((editingBatch?.blueprintByType || []) as BlueprintItemByType[])
     : validateBlueprintAgainstStats(editingBatch?.blueprint || []);
 
+  // ─── Batch pagination derived state ──────────────────────────────────────────
+
+  const batchTotalPages = Math.max(1, Math.ceil(batches.length / batchPageSize));
+
+  const paginatedBatches = useMemo(() =>
+    batches.slice((batchCurrentPage - 1) * batchPageSize, batchCurrentPage * batchPageSize),
+    [batches, batchCurrentPage, batchPageSize]
+  );
+
+  const handleBatchPageSizeChange = (size: BatchPageSize) => {
+    setBatchPageSize(size);
+    setBatchCurrentPage(1);
+  };
+
+  const getBatchPageNumbers = () => {
+    const delta = 2;
+    const range: (number | '...')[] = [];
+    const left = Math.max(2, batchCurrentPage - delta);
+    const right = Math.min(batchTotalPages - 1, batchCurrentPage + delta);
+    range.push(1);
+    if (left > 2) range.push('...');
+    for (let i = left; i <= right; i++) range.push(i);
+    if (right < batchTotalPages - 1) range.push('...');
+    if (batchTotalPages > 1) range.push(batchTotalPages);
+    return range;
+  };
+
+  /** Mod chỉ được CRUD batch của mình; admin được tất cả */
+  const canEditBatch = (batch: any) => isAdmin || batch.created_by === userId;
+
   // ─── Sub-components ─────────────────────────────────────────────────────────
 
   /** Tab-style blueprint mode toggle */
+  const BlueprintModeToggle = ({
+    value,
+    onChange,
+  }: {
+    value: BlueprintMode;
+    onChange: (m: BlueprintMode) => void;
+  }) => (
+    <div style={{ display: 'flex', gap: 0, marginBottom: 16, border: '1.5px solid #6366f1', borderRadius: 8, overflow: 'hidden', width: 'fit-content' }}>
+      {(['module', 'type'] as BlueprintMode[]).map(mode => (
+        <button
+          key={mode}
+          type="button"
+          onClick={() => onChange(mode)}
+          style={{
+            padding: '7px 22px',
+            fontSize: 13,
+            fontWeight: 600,
+            border: 'none',
+            cursor: 'pointer',
+            background: value === mode ? '#6366f1' : '#f5f3ff',
+            color: value === mode ? '#fff' : '#6366f1',
+            transition: 'background 0.18s, color 0.18s',
+          }}
+        >
+          {mode === 'module' ? '🗂 By Module' : '🏷 By Type'}
+        </button>
+      ))}
+    </div>
+  );
 
-  /** <select> of (module, question_group) combos, labeled "module (group)" */
+  /** Panel showing available question counts by module */
+  const QuestionBankStatsPanel = () => {
+    if (moduleStats.length === 0) return null;
+    return (
+      <div style={{
+        marginBottom: 20,
+        padding: '14px 18px',
+        background: 'linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%)',
+        border: '1px solid #93c5fd',
+        borderRadius: 10,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <span style={{ fontSize: 18 }}>📊</span>
+          <strong style={{ color: '#1e40af', fontSize: 14 }}>Question Bank – By Module</strong>
+          <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 4 }}>
+            — Available question counts by Module
+          </span>
+        </div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: 'rgba(59,130,246,0.1)' }}>
+              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#1e3a5f' }}>Module</th>
+              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#15803d' }}>🟢 Easy</th>
+              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b45309' }}>🟡 Medium</th>
+              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b91c1c' }}>🔴 Hard</th>
+              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#374151' }}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {moduleStats.map((stat, i) => (
+              <tr key={stat.module} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.5)', borderTop: '1px solid #e5e7eb' }}>
+                <td style={{ padding: '5px 10px', fontWeight: 500, color: '#1f2937' }}>{stat.module}</td>
+                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#166534', fontWeight: 600 }}>{stat.easy}</td>
+                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#92400e', fontWeight: 600 }}>{stat.medium}</td>
+                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#991b1b', fontWeight: 600 }}>{stat.hard}</td>
+                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#374151', fontWeight: 700 }}>
+                  {stat.easy + stat.medium + stat.hard}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
 
-  /** Panel showing available question counts by module (+ question group) */
+  /** Panel showing available question counts by module × type */
+  const QuestionBankTypeStatsPanel = () => {
+    if (moduleTypeStats.length === 0) return null;
+    const typeEmoji: Record<string, string> = { Coding: '💻', Conceptual: '🧠', 'Fill-in': '✏️', Debug: '🐛' };
+    // Group by module
+    const grouped = modules.reduce<Record<string, ModuleTypeStats[]>>((acc, m) => {
+      acc[m] = moduleTypeStats.filter(s => s.module === m);
+      return acc;
+    }, {});
+    return (
+      <div style={{
+        marginBottom: 20,
+        padding: '14px 18px',
+        background: 'linear-gradient(135deg, #faf5ff 0%, #f0fdf4 100%)',
+        border: '1px solid #c4b5fd',
+        borderRadius: 10,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <span style={{ fontSize: 18 }}>🏷</span>
+          <strong style={{ color: '#6d28d9', fontSize: 14 }}>Question Bank – By Module + Type</strong>
+          <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 4 }}>
+            — Available question counts by Module × Type
+          </span>
+        </div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: 'rgba(139,92,246,0.1)' }}>
+              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Module</th>
+              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Type</th>
+              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#15803d' }}>🟢 Easy</th>
+              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b45309' }}>🟡 Medium</th>
+              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b91c1c' }}>🔴 Hard</th>
+              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#374151' }}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(grouped).map(([mod, stats]) =>
+              stats.map((stat, i) => (
+                <tr key={`${mod}-${stat.type}`} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.5)', borderTop: '1px solid #e5e7eb' }}>
+                  {i === 0 && (
+                    <td rowSpan={stats.length} style={{ padding: '5px 10px', fontWeight: 600, color: '#1f2937', verticalAlign: 'top', borderRight: '1px solid #e5e7eb' }}>
+                      {mod}
+                    </td>
+                  )}
+                  <td style={{ padding: '5px 10px', color: '#374151' }}>{typeEmoji[stat.type] || '❓'} {stat.type}</td>
+                  <td style={{ padding: '5px 10px', textAlign: 'center', color: '#166534', fontWeight: 600 }}>{stat.easy}</td>
+                  <td style={{ padding: '5px 10px', textAlign: 'center', color: '#92400e', fontWeight: 600 }}>{stat.medium}</td>
+                  <td style={{ padding: '5px 10px', textAlign: 'center', color: '#991b1b', fontWeight: 600 }}>{stat.hard}</td>
+                  <td style={{ padding: '5px 10px', textAlign: 'center', color: '#374151', fontWeight: 700 }}>
+                    {stat.easy + stat.medium + stat.hard}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
+  /** A number input cell with inline validation warning */
+  const ValidatedInput = ({
+    value,
+    max,
+    onChange,
+  }: {
+    value: number;
+    max: number;
+    onChange: (v: string) => void;
+  }) => {
+    const exceeded = value > max;
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+        <input
+          type="number"
+          min={0}
+          max={max}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          style={{
+            width: 70,
+            padding: '6px 8px',
+            border: exceeded ? '2px solid #ef4444' : '1px solid #d1d5db',
+            borderRadius: 6,
+            background: exceeded ? '#fef2f2' : 'white',
+            color: exceeded ? '#b91c1c' : '#111827',
+            fontWeight: exceeded ? 700 : 400,
+            textAlign: 'center',
+            outline: 'none',
+          }}
+        />
+        {exceeded && (
+          <span style={{ fontSize: 10, color: '#ef4444', whiteSpace: 'nowrap' }}>
+            ⚠️ Max: {max}
+          </span>
+        )}
+      </div>
+    );
+  };
 
   // ─── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="container">
-      <div className="header">
-        <h1>Batch Management</h1>
-        <Link to="/admin/dashboard" className="btn btn-secondary">Back to Dashboard</Link>
-      </div>
+    <div className="min-h-screen bg-slate-50">
+      <div className="container space-y-6">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 pb-4 border-b border-slate-200 gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-emerald-100 text-emerald-600 rounded-lg">
+              <FolderKanban size={24} />
+            </div>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight m-0 border-none pb-0">Batch Management</h1>
+          </div>
+          <Link to="/admin/dashboard" className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg font-medium text-sm hover:bg-slate-50 transition-colors shadow-sm">
+            <ArrowLeft size={16} />
+            <span className="hidden sm:inline">Back to Dashboard</span>
+          </Link>
+        </div>
 
-      <AdminNav />
+        <AdminNav />
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h2>Batches</h2>
-        <button onClick={() => setShowForm(!showForm)} className="btn btn-primary">
-          {showForm ? 'Cancel' : 'Create New Batch'}
-        </button>
-      </div>
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white px-6 py-4 rounded-xl shadow-sm border border-slate-200 gap-4">
+          <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2 m-0 border-none pb-0">
+            <ListChecks size={18} className="text-slate-500" />
+            Batches List
+          </h3>
+          <button onClick={() => setShowForm(!showForm)} className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-sm ${showForm ? 'bg-slate-100 text-slate-700 hover:bg-slate-200' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+            {showForm ? 'Cancel' : (
+              <>
+                <Plus size={16} />
+                Create New Batch
+              </>
+            )}
+          </button>
+        </div>
 
       {/* ── Create Batch Form ──────────────────────────────────────────── */}
       {showForm && (
-        <div className="card">
-          <h3>Create New Batch</h3>
-          <form onSubmit={handleSubmit}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 15 }}>
-              <div className="form-group">
-                <label>Batch Name</label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                  required
-                />
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden mb-6">
+          <div className="p-6 border-b border-slate-100 bg-slate-50/50">
+            <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+              <svg className="w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+              </svg>
+              Create New Batch
+            </h3>
+          </div>
+          <div className="p-6">
+            <form onSubmit={handleSubmit} className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <label className="block text-sm font-bold text-slate-700">Batch Name</label>
+                  <input
+                    type="text"
+                    value={formData.name}
+                    onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))}
+                    required
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+                    placeholder="e.g. Midterm Fall 2023"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-sm font-bold text-slate-700">Duration (minutes)</label>
+                  <input
+                    type="number"
+                    value={formData.duration}
+                    onChange={e => setFormData(prev => ({ ...prev, duration: parseInt(e.target.value) }))}
+                    min={10}
+                    required
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-sm font-bold text-slate-700">Start Time</label>
+                  <input
+                    type="datetime-local"
+                    value={formData.start_time}
+                    onChange={e => setFormData(prev => ({ ...prev, start_time: e.target.value }))}
+                    required
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-sm font-bold text-slate-700">End Time</label>
+                  <input
+                    type="datetime-local"
+                    value={formData.end_time}
+                    onChange={e => setFormData(prev => ({ ...prev, end_time: e.target.value }))}
+                    required
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+                  />
+                </div>
               </div>
-              <div className="form-group">
-                <label>Duration (minutes)</label>
-                <input
-                  type="number"
-                  value={formData.duration}
-                  onChange={e => setFormData(prev => ({ ...prev, duration: parseInt(e.target.value) }))}
-                  min={10}
-                  required
-                />
-              </div>
-              <div className="form-group">
-                <label>Start Time</label>
-                <input
-                  type="datetime-local"
-                  value={formData.start_time}
-                  onChange={e => setFormData(prev => ({ ...prev, start_time: e.target.value }))}
-                  required
-                />
-              </div>
-              <div className="form-group">
-                <label>End Time</label>
-                <input
-                  type="datetime-local"
-                  value={formData.end_time}
-                  onChange={e => setFormData(prev => ({ ...prev, end_time: e.target.value }))}
-                  required
-                />
-              </div>
-            </div>
 
-            {/* tenant_admin controls recording for both Question Bank and Practice batches. */}
-            <div className="form-group" style={{ marginTop: 12 }}>
-              <label>Screen Recording</label>
-              <select
-                value={formData.record_mode}
-                disabled={!isTenantAdmin}
-                onChange={e => setFormData(prev => ({ ...prev, record_mode: e.target.value as 'none' | 'local' | 's3' }))}
-                style={{ width: 'auto' }}
-              >
-                <option value="none">Default (No recording)</option>
-                <option value="local">Record Local (Save on student's machine, encrypted)</option>
-                <option value="s3">Record S3 (Save to AWS S3)</option>
-              </select>
-              {!isTenantAdmin && (
-                <small style={{ color: 'var(--text-light)', display: 'block' }}>Only the tenant administrator can change this setting.</small>
-              )}
-            </div>
-
-            {/* Exam Mode Tabs: Question Bank (blueprint) vs Practice (bài import từ .docx) */}
-            <div style={{ display: 'flex', gap: 0, marginTop: 20, marginBottom: 16, border: '1.5px solid #0ea5e9', borderRadius: 8, overflow: 'hidden', width: 'fit-content' }}>
-              {(['question_bank', 'practice'] as const).map(mode => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => setExamMode(mode)}
-                  style={{
-                    padding: '7px 22px',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    border: 'none',
-                    cursor: 'pointer',
-                    background: examMode === mode ? '#0ea5e9' : '#f0f9ff',
-                    color: examMode === mode ? '#fff' : '#0ea5e9',
-                    transition: 'background 0.18s, color 0.18s',
-                  }}
-                >
-                  {mode === 'question_bank' ? '🧩 Question Bank' : '📄 Practice'}
-                </button>
-              ))}
-            </div>
-
-            {examMode === 'practice' ? (
-              <div className="form-group" style={{ maxWidth: 500 }}>
-                <label>Practice Exam</label>
-                {practiceExams.length === 0 ? (
-                  <p className="error">
-                    No practice exams imported yet. Import one at the <Link to="/admin/practice">Practice</Link> page first.
-                  </p>
-                ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 bg-slate-50 border border-slate-200 rounded-xl">
+                <div className="space-y-2">
+                  <label className="block text-sm font-bold text-slate-700">Exam Type</label>
                   <select
-                    value={selectedPracticeId}
-                    onChange={e => setSelectedPracticeId(e.target.value)}
-                    style={{ width: '100%', padding: 8 }}
+                    value={formData.exam_type}
+                    onChange={e => setFormData(prev => ({ ...prev, exam_type: e.target.value as 'essay' | 'quiz' }))}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
                   >
-                    <option value="">— Select a practice exam —</option>
-                    {practiceExams.map(p => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
-                    ))}
+                    <option value="essay">Tự luận / Coding (Essay)</option>
+                    <option value="quiz">Trắc nghiệm (Quiz)</option>
                   </select>
-                )}
-                <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 6 }}>
-                  Học viên của batch này sẽ làm bài practice tại trang /practice (một bài làm duy nhất).
-                </p>
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="block text-sm font-bold text-slate-700">Screen Recording</label>
+                  <select
+                    value={formData.record_mode}
+                    disabled={!isAdmin}
+                    onChange={e => setFormData(prev => ({ ...prev, record_mode: e.target.value as 'none' | 'local' | 's3' }))}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:bg-slate-100"
+                  >
+                    <option value="none">Default (No recording)</option>
+                    <option value="local">Record Local (Save on student's machine)</option>
+                    <option value="s3">Record S3 (Save to AWS S3)</option>
+                  </select>
+                  {!isAdmin && (
+                    <p className="text-xs text-amber-600 font-medium">Only admin accounts can change this setting.</p>
+                  )}
+                </div>
               </div>
-            ) : (
-            <>
-            {/* Loại đề: tự luận/coding (chấm AI) hoặc trắc nghiệm (chấm tự động) */}
-            <div className="form-group" style={{ marginTop: 12 }}>
-              <label>Exam Type</label>
-              <select
-                value={formData.exam_type}
-                onChange={e => setFormData(prev => ({ ...prev, exam_type: e.target.value as 'essay' | 'quiz' }))}
-                style={{ width: 'auto' }}
-              >
-                <option value="essay">Tự luận / Coding</option>
-                <option value="quiz">Trắc nghiệm (Quiz)</option>
-              </select>
-            </div>
 
-            <h4 style={{ marginTop: 20, marginBottom: 10 }}>
-              Exam Blueprint (Total: {totalQuestions}/{formData.exam_type === 'quiz' ? 100 : 20})
-            </h4>
+            <h4 className="mt-6 mb-3 text-base font-bold text-slate-900">Exam Blueprint (Total: {totalQuestions}/100)</h4>
 
             {/* Blueprint Mode Toggle */}
             <BlueprintModeToggle value={blueprintMode} onChange={switchBlueprintMode} />
 
-            {moduleGroups.length === 0 && blueprintMode === 'module' ? (
+            {modules.length === 0 && blueprintMode === 'module' ? (
               <p className="error">Please import questions first to configure the blueprint.</p>
             ) : typeStats.length === 0 && blueprintMode === 'type' ? (
               <p className="error">Please import questions first to configure the blueprint.</p>
             ) : blueprintMode === 'module' ? (
               <>
                 {/* Stats panel – By Module */}
-                <QuestionBankStatsPanel moduleGroupStats={moduleGroupStats} />
+                <QuestionBankStatsPanel />
 
                 <table className="matrix-table">
                   <thead>
@@ -1013,15 +867,21 @@ function BatchManagement() {
                   </thead>
                   <tbody>
                     {formData.blueprint.map((item, index) => {
-                      const stats = getStatsForModuleGroup(item.module, item.question_group);
+                      const stats = getStatsForModule(item.module);
                       return (
                         <tr key={index}>
                           <td>
-                            <ModuleGroupSelect
-                              moduleGroups={moduleGroups}
-                              value={item}
-                              onChange={(module, question_group) => updateBlueprintModuleGroup(index, module, question_group)}
-                            />
+                            <select
+                              name={`module_${index}`}
+                              id={`module_${index}`}
+                              style={{ width: '100%', padding: '8px' }}
+                              value={item.module}
+                              onChange={e => updateBlueprint(index, 'module', e.target.value)}
+                            >
+                              {modules.map(m => (
+                                <option key={m} value={m}>{m}</option>
+                              ))}
+                            </select>
                             <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4, paddingLeft: 2 }}>
                               Available: {stats.easy}E / {stats.medium}M / {stats.hard}H
                             </div>
@@ -1055,7 +915,7 @@ function BatchManagement() {
             ) : (
               <>
                 {/* Stats panel – By Module + Type */}
-                <QuestionBankTypeStatsPanel moduleGroupTypeStats={moduleGroupTypeStats} moduleGroups={moduleGroups} />
+                <QuestionBankTypeStatsPanel />
 
                 <table className="matrix-table">
                   <thead>
@@ -1071,19 +931,23 @@ function BatchManagement() {
                   </thead>
                   <tbody>
                     {formData.blueprintByType.map((item, index) => {
-                      const stats = getStatsForModuleGroupType(item.module, item.question_group, item.type);
+                      const stats = getStatsForModuleType(item.module, item.type);
                       // Combos used by OTHER rows
                       const otherCombos = formData.blueprintByType
                         .filter((_, i) => i !== index)
-                        .map(i => `${i.module}||${i.question_group}||${i.type}`);
+                        .map(i => `${i.module}||${i.type}`);
                       return (
                         <tr key={index}>
-                          <td style={{ minWidth: 160 }}>
-                            <ModuleGroupSelect
-                              moduleGroups={moduleGroups}
-                              value={item}
-                              onChange={(module, question_group) => updateTypeBlueprintModuleGroup(index, module, question_group)}
-                            />
+                          <td style={{ minWidth: 140 }}>
+                            <select
+                              style={{ width: '100%', padding: '8px' }}
+                              value={item.module}
+                              onChange={e => updateTypeBlueprint(index, 'module', e.target.value)}
+                            >
+                              {modules.map(m => (
+                                <option key={m} value={m}>{m}</option>
+                              ))}
+                            </select>
                           </td>
                           <td style={{ minWidth: 120 }}>
                             <select
@@ -1092,7 +956,7 @@ function BatchManagement() {
                               onChange={e => updateTypeBlueprint(index, 'type', e.target.value as QuestionType)}
                             >
                               {QUESTION_TYPES.map(t => {
-                                const combo = `${item.module}||${item.question_group}||${t}`;
+                                const combo = `${item.module}||${t}`;
                                 const isUsed = otherCombos.includes(combo);
                                 return (
                                   <option key={t} value={t} disabled={isUsed}>
@@ -1139,507 +1003,637 @@ function BatchManagement() {
                 </button>
               </>
             )}
-            </>
-            )}
 
-            {/* Validation errors */}
-            {(feasibilityErrors.length > 0 || createBlueprintErrors.length > 0) && (
-              <div style={{ marginTop: 15, padding: '12px 16px', background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 8 }}>
-                <strong style={{ color: '#991b1b', fontSize: 13 }}>⚠️ Lỗi Blueprint:</strong>
-                {[...feasibilityErrors, ...createBlueprintErrors.filter(e => !feasibilityErrors.includes(e))].map((err, i) => (
-                  <p key={i} style={{ color: '#b91c1c', margin: '4px 0 0', fontSize: 13 }}>{err}</p>
-                ))}
-              </div>
-            )}
+              {/* Validation errors */}
+              {(feasibilityErrors.length > 0 || createBlueprintErrors.length > 0) && (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-xl space-y-2">
+                  <strong className="text-red-800 text-sm flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    Blueprint Errors:
+                  </strong>
+                  {[...feasibilityErrors, ...createBlueprintErrors.filter(e => !feasibilityErrors.includes(e))].map((err, i) => (
+                    <p key={i} className="text-red-700 text-sm ml-6">{err}</p>
+                  ))}
+                </div>
+              )}
 
-            <button
-              type="submit"
-              disabled={
-                loading ||
-                (examMode === 'practice'
-                  ? !selectedPracticeId
-                  : (
+              <div className="pt-6 border-t border-slate-100 flex justify-end">
+                <button
+                  type="submit"
+                  disabled={
+                    loading ||
                     totalQuestions < 1 ||
-                    totalQuestions > (formData.exam_type === 'quiz' ? 100 : 20) ||
-                    (blueprintMode === 'module' && moduleGroups.length === 0) ||
-                    (blueprintMode === 'type' && moduleGroupTypeStats.length === 0) ||
+                    totalQuestions > 100 ||
+                    (blueprintMode === 'module' && modules.length === 0) ||
+                    (blueprintMode === 'type' && moduleTypeStats.length === 0) ||
                     createBlueprintErrors.length > 0
-                  ))
-              }
-              className="btn btn-primary"
-              style={{ marginTop: 20 }}
-            >
-              {loading ? 'Creating...' : 'Create Batch'}
-            </button>
-          </form>
+                  }
+                  className="inline-flex items-center justify-center gap-2 px-8 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors shadow-md shadow-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {loading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      Creating...
+                    </>
+                  ) : (
+                    'Create Batch'
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
       {/* ── Invite Students Form ───────────────────────────────────────── */}
       {showInviteForm && selectedBatchId && (
-        <div className="card" style={{ borderColor: '#22c55e', background: '#f0fdf4' }}>
-          <h3 style={{ color: '#166534' }}>Invite Students to Batch #{selectedBatchId}</h3>
-          <p style={{ color: '#166534', fontSize: 14 }}>Enter email addresses (one per line)</p>
-          <textarea
-            value={emails}
-            onChange={e => setEmails(e.target.value)}
-            placeholder={`student1@example.com\nstudent2@example.com\nstudent3@example.com`}
-            rows={6}
-            style={{ width: '100%', padding: 10, marginTop: 10, fontFamily: 'monospace' }}
-          />
-          <div style={{ marginTop: 10, display: 'flex', gap: 10 }}>
-            <button
-              onClick={handleInviteStudents}
-              disabled={loading || !emails.trim()}
-              className="btn btn-primary"
-            >
-              {loading ? 'Inviting...' : 'Invite Students'}
-            </button>
-            <button
-              onClick={() => { setShowInviteForm(false); setInviteResult(null); }}
-              className="btn btn-secondary"
-            >
-              Close
-            </button>
+        <div className="bg-emerald-50 rounded-2xl shadow-sm border border-emerald-200 overflow-hidden mb-6">
+          <div className="p-6 border-b border-emerald-100 bg-emerald-100/50">
+            <h3 className="text-lg font-bold text-emerald-800 flex items-center gap-2">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+              </svg>
+              Invite Students to Batch #{selectedBatchId}
+            </h3>
+            <p className="text-emerald-700 text-sm mt-1">Enter email addresses (one per line)</p>
           </div>
-
-          {inviteResult && (
-            <div style={{ marginTop: 20 }}>
-              <h4 style={{ color: '#166534' }}>Invited {inviteResult.success} students:</h4>
-              <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 10 }}>
-                <thead>
-                  <tr style={{ background: '#e5e7eb' }}>
-                    <th style={{ padding: 8, textAlign: 'left' }}>Email</th>
-                    <th style={{ padding: 8, textAlign: 'left' }}>Access Code</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {inviteResult.emails.map((s, i) => (
-                    <tr key={i} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                      <td style={{ padding: 8 }}>{s.email}</td>
-                      <td style={{ padding: 8, fontFamily: 'monospace', fontWeight: 'bold' }}>{s.code}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div className="p-6 space-y-4">
+            <textarea
+              value={emails}
+              onChange={e => setEmails(e.target.value)}
+              placeholder="student1@example.com&#10;student2@example.com"
+              rows={6}
+              className="w-full px-4 py-3 rounded-xl border border-emerald-200 bg-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all outline-none font-mono text-sm shadow-inner"
+            />
+            <div className="flex gap-3">
               <button
-                onClick={() => exportStudents(selectedBatchId)}
-                className="btn btn-secondary"
-                style={{ marginTop: 10 }}
+                onClick={handleInviteStudents}
+                disabled={loading || !emails.trim()}
+                className="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 text-white rounded-lg font-bold hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50"
               >
-                Export to Excel
+                {loading ? 'Inviting...' : 'Invite Students'}
+              </button>
+              <button
+                onClick={() => { setShowInviteForm(false); setInviteResult(null); }}
+                className="inline-flex items-center gap-2 px-6 py-2.5 bg-white text-slate-700 border border-slate-300 rounded-lg font-bold hover:bg-slate-50 transition-colors shadow-sm"
+              >
+                Close
               </button>
             </div>
-          )}
+
+            {inviteResult && (
+              <div className="mt-6 pt-6 border-t border-emerald-200">
+                <h4 className="text-emerald-800 font-bold mb-4">Invited {inviteResult.success} students successfully:</h4>
+                <div className="bg-white rounded-xl border border-emerald-100 overflow-hidden shadow-sm">
+                  <table className="w-full text-left text-sm text-slate-600">
+                    <thead className="bg-emerald-50 text-emerald-800 border-b border-emerald-100">
+                      <tr>
+                        <th className="px-6 py-3 font-bold">Email</th>
+                        <th className="px-6 py-3 font-bold">Access Code</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-emerald-50">
+                      {inviteResult.emails.map((s, i) => (
+                        <tr key={i} className="hover:bg-emerald-50/50 transition-colors">
+                          <td className="px-6 py-3">{s.email}</td>
+                          <td className="px-6 py-3 font-mono font-bold text-emerald-600">{s.code}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <button
+                  onClick={() => exportStudents(selectedBatchId)}
+                  className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-emerald-100 text-emerald-700 rounded-lg font-bold hover:bg-emerald-200 transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                  Export to Excel
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {/* ── Batches Table ──────────────────────────────────────────────── */}
-      <div className="card">
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Name</th>
-              <th>Start Time</th>
-              <th>End Time</th>
-              <th>Duration</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {batches.map(batch => (
-              <tr key={batch.id}>
-                <td>{batch.id}</td>
-                <td>
-                  {batch.name}
-                  {batch.practice_exam_id && (
-                    <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: '#0369a1', background: '#e0f2fe', padding: '2px 8px', borderRadius: 10 }}>
-                      Practice
-                    </span>
-                  )}
-                </td>
-                <td>{formatGMT7(batch.start_time)}</td>
-                <td>{formatGMT7(batch.end_time)}</td>
-                <td>{batch.duration} min</td>
-                <td>
-                  <button
-                    onClick={() => { setSelectedBatchId(batch.id); setShowInviteForm(true); setInviteResult(null); }}
-                    className="btn btn-primary"
-                    style={{ marginRight: 5, fontSize: 12 }}
-                  >
-                    Invite
-                  </button>
-                  <Link to={`/admin/batches/${batch.id}/students`} className="btn btn-secondary" style={{ marginRight: 5, fontSize: 12 }}>
-                    Students
-                  </Link>
-                  <Link to={`/admin/batches/${batch.id}/results`} className="btn btn-secondary" style={{ marginRight: 5, fontSize: 12 }}>
-                    Results
-                  </Link>
-                  <button
-                    onClick={() => handleEditBatch(batch)}
-                    className="btn btn-secondary"
-                    style={{ marginRight: 5, fontSize: 12 }}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (confirm('Delete this batch? All students and exam data will be lost.')) {
-                        adminApi.deleteBatch(batch.id).then(() => {
-                          setBatches(batches.filter(b => b.id !== batch.id));
-                        });
-                      }
-                    }}
-                    className="btn btn-danger"
-                    style={{ fontSize: 12 }}
-                  >
-                    Delete
-                  </button>
-                </td>
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="p-6 border-b border-slate-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+          <h3 className="text-lg font-bold text-slate-900 m-0 border-none pb-0">
+            Batches List <span className="text-slate-400 font-normal ml-1">({batches.length} total)</span>
+          </h3>
+          <div className="flex items-center gap-3 bg-slate-50 px-4 py-2 rounded-lg border border-slate-200">
+            <span className="text-sm font-medium text-slate-600">Show:</span>
+            <select
+              value={batchPageSize}
+              onChange={e => handleBatchPageSizeChange(Number(e.target.value) as BatchPageSize)}
+              className="bg-transparent text-sm font-bold text-slate-800 outline-none cursor-pointer"
+            >
+              {BATCH_PAGE_SIZE_OPTIONS.map(s => (
+                <option key={s} value={s}>{s} / page</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm text-slate-600">
+            <thead className="bg-slate-50 text-slate-800 border-b border-slate-200">
+              <tr>
+                <th className="px-6 py-4 font-bold">ID</th>
+                <th className="px-6 py-4 font-bold">Name</th>
+                <th className="px-6 py-4 font-bold">Start Time</th>
+                <th className="px-6 py-4 font-bold">End Time</th>
+                <th className="px-6 py-4 font-bold">Duration</th>
+                <th className="px-6 py-4 font-bold text-right">Actions</th>
               </tr>
-            ))}
-            {batches.length === 0 && (
-              <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-light)' }}>No batches yet</td></tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {paginatedBatches.map(batch => {
+                const editable = canEditBatch(batch);
+                return (
+                  <tr key={batch.id} className="hover:bg-slate-50/50 transition-colors">
+                    <td className="px-6 py-4 font-mono font-medium text-slate-500">#{batch.id}</td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-900">{batch.name}</span>
+                        {!editable && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-500 uppercase tracking-wider">
+                            View Only
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">{formatGMT7(batch.start_time)}</td>
+                    <td className="px-6 py-4">{formatGMT7(batch.end_time)}</td>
+                    <td className="px-6 py-4 font-medium">{batch.duration} min</td>
+                    <td className="px-6 py-4 text-right space-x-2">
+                      <div className="inline-flex items-center justify-end gap-2">
+                        {editable && (
+                          <button
+                            onClick={() => { setSelectedBatchId(batch.id); setShowInviteForm(true); setInviteResult(null); }}
+                            className="inline-flex items-center px-3 py-1.5 bg-emerald-100 text-emerald-700 hover:bg-emerald-200 rounded-md text-xs font-bold transition-colors"
+                          >
+                            Invite
+                          </button>
+                        )}
+                        <Link to={`/admin/batches/${batch.id}/students`} className="inline-flex items-center px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-md text-xs font-bold transition-colors">
+                          Students
+                        </Link>
+                        <Link to={`/admin/batches/${batch.id}/results`} className="inline-flex items-center px-3 py-1.5 bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 rounded-md text-xs font-bold transition-colors">
+                          Results
+                        </Link>
+                        {editable && (
+                          <>
+                            <button
+                              onClick={() => handleEditBatch(batch)}
+                              className="inline-flex items-center px-3 py-1.5 bg-white text-slate-700 hover:bg-slate-50 border border-slate-300 rounded-md text-xs font-bold transition-colors"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (confirm('Delete this batch? All students and exam data will be lost.')) {
+                                  adminApi.deleteBatch(batch.id).then(() => {
+                                    setBatches(prev => prev.filter(b => b.id !== batch.id));
+                                  });
+                                }
+                              }}
+                              className="inline-flex items-center px-3 py-1.5 bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 rounded-md text-xs font-bold transition-colors"
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {batches.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center text-slate-500">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <svg className="w-8 h-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                      </svg>
+                      No batches found.
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination controls */}
+        {batchTotalPages > 1 && (
+          <div className="p-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50/50">
+            <span className="text-sm text-slate-500 font-medium">
+              Page {batchCurrentPage} of {batchTotalPages} <span className="mx-2 text-slate-300">|</span> 
+              Showing {(batchCurrentPage - 1) * batchPageSize + 1} to {Math.min(batchCurrentPage * batchPageSize, batches.length)} of {batches.length}
+            </span>
+            <div className="flex gap-1">
+              <button
+                onClick={() => setBatchCurrentPage(p => Math.max(1, p - 1))}
+                disabled={batchCurrentPage === 1}
+                className="px-3 py-1.5 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+              {getBatchPageNumbers().map((p, i) =>
+                p === '...' ? (
+                  <span key={`el-${i}`} className="px-3 py-1.5 text-slate-400">…</span>
+                ) : (
+                  <button
+                    key={p}
+                    onClick={() => setBatchCurrentPage(p as number)}
+                    className={`px-3 py-1.5 rounded-md text-sm font-bold transition-colors min-w-[32px] ${
+                      batchCurrentPage === p 
+                        ? 'bg-blue-600 text-white shadow-sm' 
+                        : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    {p}
+                  </button>
+                )
+              )}
+              <button
+                onClick={() => setBatchCurrentPage(p => Math.min(batchTotalPages, p + 1))}
+                disabled={batchCurrentPage === batchTotalPages}
+                className="px-3 py-1.5 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Edit Batch Form ────────────────────────────────────────────── */}
       {editingBatch && (
-        <div className="card" style={{ marginTop: 20, borderColor: '#3b82f6', background: '#eff6ff' }}>
-          <h3 style={{ color: '#1d4ed8' }}>Edit Batch #{editingBatch.id}</h3>
-
-          <div className="form-group">
-            <label>Batch Name</label>
-            <input
-              type="text"
-              value={editingBatch.name}
-              onChange={e => setEditingBatch({ ...editingBatch, name: e.target.value })}
-              required
-            />
+        <div className="bg-blue-50 rounded-2xl shadow-sm border border-blue-200 overflow-hidden mt-8">
+          <div className="p-6 border-b border-blue-100 bg-blue-100/50">
+            <h3 className="text-lg font-bold text-blue-800 flex items-center gap-2">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              Edit Batch #{editingBatch.id}
+            </h3>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <div className="form-group">
-              <label>Start Time</label>
-              <input
-                type="datetime-local"
-                value={editingBatch.start_time || ''}
-                onChange={e => setEditingBatch({ ...editingBatch, start_time: e.target.value })}
-                required
-              />
+          <div className="p-6 space-y-6">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-1">Batch Name</label>
+                <input
+                  type="text"
+                  value={editingBatch.name}
+                  onChange={e => setEditingBatch({ ...editingBatch, name: e.target.value })}
+                  required
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none text-slate-900"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-1">Start Time</label>
+                  <input
+                    type="datetime-local"
+                    value={editingBatch.start_time || ''}
+                    onChange={e => setEditingBatch({ ...editingBatch, start_time: e.target.value })}
+                    required
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-1">End Time</label>
+                  <input
+                    type="datetime-local"
+                    value={editingBatch.end_time || ''}
+                    onChange={e => setEditingBatch({ ...editingBatch, end_time: e.target.value })}
+                    required
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none text-slate-900"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-1">Duration (minutes)</label>
+                <input
+                  type="number"
+                  value={editingBatch.duration}
+                  onChange={e => setEditingBatch({ ...editingBatch, duration: parseInt(e.target.value) })}
+                  min={1}
+                  required
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none text-slate-900"
+                />
+              </div>
+
+              {/* Exam type */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-1">Exam Type</label>
+                <select
+                  value={editingBatch.exam_type === 'quiz' ? 'quiz' : 'essay'}
+                  onChange={e => setEditingBatch({ ...editingBatch, exam_type: e.target.value })}
+                  className="px-4 py-2.5 rounded-xl border border-slate-300 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none text-slate-900 min-w-[200px]"
+                >
+                  <option value="essay">Tự luận / Coding</option>
+                  <option value="quiz">Trắc nghiệm (Quiz)</option>
+                </select>
+              </div>
+
+              {/* Chế độ ghi màn hình */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-1">Screen Recording</label>
+                <select
+                  value={editingBatch.record_mode || 'none'}
+                  disabled={!isAdmin}
+                  onChange={e => setEditingBatch({ ...editingBatch, record_mode: e.target.value })}
+                  className="px-4 py-2.5 rounded-xl border border-slate-300 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none text-slate-900 min-w-[300px] disabled:bg-slate-50 disabled:text-slate-500"
+                >
+                  <option value="none">Default (No recording)</option>
+                  <option value="local">Record Local (Save on student's machine, encrypted)</option>
+                  <option value="s3">Record S3 (Save to AWS S3)</option>
+                </select>
+                {!isAdmin && (
+                  <p className="mt-2 text-sm text-amber-600 font-medium">Only admin accounts can change this setting.</p>
+                )}
+              </div>
             </div>
-            <div className="form-group">
-              <label>End Time</label>
-              <input
-                type="datetime-local"
-                value={editingBatch.end_time || ''}
-                onChange={e => setEditingBatch({ ...editingBatch, end_time: e.target.value })}
-                required
-              />
-            </div>
-          </div>
 
-          <div className="form-group">
-            <label>Duration (minutes)</label>
-            <input
-              type="number"
-              value={editingBatch.duration}
-              onChange={e => setEditingBatch({ ...editingBatch, duration: parseInt(e.target.value) })}
-              min={1}
-              required
-            />
-          </div>
+            <div className="pt-6 border-t border-blue-200">
+              <h4 className="text-lg font-bold text-blue-800 mb-4">Exam Blueprint</h4>
 
-          {/* tenant_admin controls recording; backend preserves the current mode for regular admin. */}
-          <div className="form-group">
-            <label>Screen Recording</label>
-            <select
-              value={editingBatch.record_mode || 'none'}
-              disabled={!isTenantAdmin}
-              onChange={e => setEditingBatch({ ...editingBatch, record_mode: e.target.value })}
-              style={{ width: 'auto' }}
-            >
-              <option value="none">Default (No recording)</option>
-              <option value="local">Record Local (Save on student's machine, encrypted)</option>
-              <option value="s3">Record S3 (Save to AWS S3)</option>
-            </select>
-            {!isTenantAdmin && (
-              <small style={{ color: 'var(--text-light)', display: 'block' }}>Only the tenant administrator can change this setting.</small>
-            )}
-          </div>
+              {/* Blueprint Mode Toggle */}
+              <div className="mb-4">
+                <BlueprintModeToggle value={editBlueprintMode} onChange={switchEditBlueprintMode} />
+              </div>
 
-          {editingBatch.practice_exam_id ? (
-            <div className="form-group" style={{ maxWidth: 500 }}>
-              <h4 style={{ marginTop: 16, marginBottom: 10, color: '#1e40af' }}>Practice Exam</h4>
-              <select
-                value={String(editingBatch.practice_exam_id)}
-                onChange={e => setEditingBatch({ ...editingBatch, practice_exam_id: parseInt(e.target.value) })}
-                style={{ width: '100%', padding: 8 }}
-              >
-                {practiceExams.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-            </div>
-          ) : (
-          <>
-          {/* Exam type */}
-          <div className="form-group">
-            <label>Exam Type</label>
-            <select
-              value={editingBatch.exam_type === 'quiz' ? 'quiz' : 'essay'}
-              onChange={e => setEditingBatch({ ...editingBatch, exam_type: e.target.value })}
-              style={{ width: 'auto' }}
-            >
-              <option value="essay">Tự luận / Coding</option>
-              <option value="quiz">Trắc nghiệm (Quiz)</option>
-            </select>
-          </div>
+              {editBlueprintMode === 'module' ? (
+                modules.length === 0 ? (
+                  <div className="p-4 bg-red-50 text-red-700 rounded-xl border border-red-200">No modules available</div>
+                ) : (
+                  <>
+                    <QuestionBankStatsPanel />
+                    <div className="overflow-x-auto bg-white rounded-xl border border-blue-100 shadow-sm">
+                      <table className="w-full text-left text-sm text-slate-600">
+                        <thead className="bg-blue-50 text-blue-800 border-b border-blue-100">
+                          <tr>
+                            <th className="px-4 py-3 font-bold">Module</th>
+                            <th className="px-4 py-3 font-bold text-center">🟢 Easy</th>
+                            <th className="px-4 py-3 font-bold text-center">🟡 Medium</th>
+                            <th className="px-4 py-3 font-bold text-center">🔴 Hard</th>
+                            <th className="px-4 py-3"></th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-blue-50">
+                          {(editingBatch.blueprint || []).map((item: any, index: number) => {
+                            const stats = getStatsForModule(item.module);
+                            return (
+                              <tr key={index} className="hover:bg-blue-50/30 transition-colors">
+                                <td className="px-4 py-3 align-top min-w-[200px]">
+                                  <select
+                                    value={item.module}
+                                    onChange={e => {
+                                      const newBlueprint = [...editingBatch.blueprint];
+                                      newBlueprint[index].module = e.target.value;
+                                      setEditingBatch({ ...editingBatch, blueprint: newBlueprint });
+                                    }}
+                                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-slate-700"
+                                  >
+                                    {modules.map(m => <option key={m} value={m}>{m}</option>)}
+                                  </select>
+                                  <div className="text-[11px] text-slate-500 mt-1.5 ml-1 font-medium">
+                                    Available: {stats.easy}E / {stats.medium}M / {stats.hard}H
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3 align-top">
+                                  <ValidatedInput value={item.easy || 0} max={stats.easy} onChange={v => {
+                                    const nb = [...editingBatch.blueprint]; nb[index].easy = parseInt(v) || 0;
+                                    setEditingBatch({ ...editingBatch, blueprint: nb });
+                                  }} />
+                                </td>
+                                <td className="px-4 py-3 align-top">
+                                  <ValidatedInput value={item.medium || 0} max={stats.medium} onChange={v => {
+                                    const nb = [...editingBatch.blueprint]; nb[index].medium = parseInt(v) || 0;
+                                    setEditingBatch({ ...editingBatch, blueprint: nb });
+                                  }} />
+                                </td>
+                                <td className="px-4 py-3 align-top">
+                                  <ValidatedInput value={item.hard || 0} max={stats.hard} onChange={v => {
+                                    const nb = [...editingBatch.blueprint]; nb[index].hard = parseInt(v) || 0;
+                                    setEditingBatch({ ...editingBatch, blueprint: nb });
+                                  }} />
+                                </td>
+                                <td className="px-4 py-3 align-top text-right">
+                                  <button
+                                    onClick={() => setEditingBatch({
+                                      ...editingBatch,
+                                      blueprint: editingBatch.blueprint.filter((_: any, i: number) => i !== index)
+                                    })}
+                                    className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                    title="Remove"
+                                  >
+                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )
+              ) : (
+                moduleTypeStats.length === 0 ? (
+                  <div className="p-4 bg-red-50 text-red-700 rounded-xl border border-red-200">No type data available</div>
+                ) : (
+                  <>
+                    <QuestionBankTypeStatsPanel />
+                    <div className="overflow-x-auto bg-white rounded-xl border border-blue-100 shadow-sm">
+                      <table className="w-full text-left text-sm text-slate-600">
+                        <thead className="bg-blue-50 text-blue-800 border-b border-blue-100">
+                          <tr>
+                            <th className="px-4 py-3 font-bold">Module</th>
+                            <th className="px-4 py-3 font-bold">Type</th>
+                            <th className="px-4 py-3 font-bold text-center">🟢 Easy</th>
+                            <th className="px-4 py-3 font-bold text-center">🟡 Medium</th>
+                            <th className="px-4 py-3 font-bold text-center">🔴 Hard</th>
+                            <th className="px-4 py-3"></th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-blue-50">
+                          {((editingBatch.blueprintByType || []) as BlueprintItemByType[]).map((item, index) => {
+                            const stats = getStatsForModuleType(item.module, item.type);
+                            const otherCombos = ((editingBatch.blueprintByType || []) as BlueprintItemByType[])
+                              .filter((_, i) => i !== index)
+                              .map(i => `${i.module}||${i.type}`);
+                            return (
+                              <tr key={index} className="hover:bg-blue-50/30 transition-colors">
+                                <td className="px-4 py-3 align-top min-w-[140px]">
+                                  <select
+                                    value={item.module}
+                                    onChange={e => {
+                                      const nb = [...editingBatch.blueprintByType];
+                                      nb[index].module = e.target.value;
+                                      setEditingBatch({ ...editingBatch, blueprintByType: nb });
+                                    }}
+                                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-slate-700"
+                                  >
+                                    {modules.map(m => <option key={m} value={m}>{m}</option>)}
+                                  </select>
+                                </td>
+                                <td className="px-4 py-3 align-top min-w-[140px]">
+                                  <select
+                                    value={item.type}
+                                    onChange={e => {
+                                      const nb = [...editingBatch.blueprintByType];
+                                      nb[index].type = e.target.value;
+                                      setEditingBatch({ ...editingBatch, blueprintByType: nb });
+                                    }}
+                                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-slate-700"
+                                  >
+                                    {QUESTION_TYPES.map(t => {
+                                      const combo = `${item.module}||${t}`;
+                                      const isUsed = otherCombos.includes(combo);
+                                      return (
+                                        <option key={t} value={t} disabled={isUsed}>
+                                          {t}{isUsed ? ' (selected)' : ''}
+                                        </option>
+                                      );
+                                    })}
+                                  </select>
+                                  <div className="text-[11px] text-slate-500 mt-1.5 ml-1 font-medium">
+                                    Available: {stats.easy}E / {stats.medium}M / {stats.hard}H
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3 align-top">
+                                  <ValidatedInput value={item.easy || 0} max={stats.easy} onChange={v => {
+                                    const nb = [...editingBatch.blueprintByType]; nb[index].easy = parseInt(v) || 0;
+                                    setEditingBatch({ ...editingBatch, blueprintByType: nb });
+                                  }} />
+                                </td>
+                                <td className="px-4 py-3 align-top">
+                                  <ValidatedInput value={item.medium || 0} max={stats.medium} onChange={v => {
+                                    const nb = [...editingBatch.blueprintByType]; nb[index].medium = parseInt(v) || 0;
+                                    setEditingBatch({ ...editingBatch, blueprintByType: nb });
+                                  }} />
+                                </td>
+                                <td className="px-4 py-3 align-top">
+                                  <ValidatedInput value={item.hard || 0} max={stats.hard} onChange={v => {
+                                    const nb = [...editingBatch.blueprintByType]; nb[index].hard = parseInt(v) || 0;
+                                    setEditingBatch({ ...editingBatch, blueprintByType: nb });
+                                  }} />
+                                </td>
+                                <td className="px-4 py-3 align-top text-right">
+                                  <button
+                                    onClick={() => setEditingBatch({
+                                      ...editingBatch,
+                                      blueprintByType: (editingBatch.blueprintByType || []).filter((_: any, i: number) => i !== index)
+                                    })}
+                                    className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                    title="Remove"
+                                  >
+                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )
+              )}
 
-          <h4 style={{ marginTop: 16, marginBottom: 10, color: '#1e40af' }}>Exam Blueprint</h4>
+              {/* Edit blueprint validation errors */}
+              {editBlueprintErrors.length > 0 && (
+                <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-xl">
+                  <strong className="text-red-800 text-sm font-bold flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    Blueprint exceeds available question count:
+                  </strong>
+                  <ul className="mt-2 space-y-1 list-disc list-inside">
+                    {editBlueprintErrors.map((err, i) => (
+                      <li key={i} className="text-red-700 text-sm">{err}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
-          {/* Blueprint Mode Toggle for Edit form */}
-          <BlueprintModeToggle value={editBlueprintMode} onChange={switchEditBlueprintMode} />
-
-          {editBlueprintMode === 'module' ? (
-            moduleGroups.length === 0 ? (
-              <p className="error">No modules available</p>
-            ) : (
-              <>
-                <QuestionBankStatsPanel moduleGroupStats={moduleGroupStats} />
-                <table className="matrix-table">
-                  <thead>
-                    <tr>
-                      <th>Module</th>
-                      <th style={{ textAlign: 'center' }}>🟢 Easy</th>
-                      <th style={{ textAlign: 'center' }}>🟡 Medium</th>
-                      <th style={{ textAlign: 'center' }}>🔴 Hard</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(editingBatch.blueprint || []).map((item: BlueprintItem, index: number) => {
-                      const stats = getStatsForModuleGroup(item.module, item.question_group || '');
-                      return (
-                        <tr key={index}>
-                          <td>
-                            <ModuleGroupSelect
-                              moduleGroups={moduleGroups}
-                              value={{ module: item.module, question_group: item.question_group || '' }}
-                              onChange={(module, question_group) => {
-                                const newBlueprint = [...editingBatch.blueprint];
-                                newBlueprint[index] = { ...newBlueprint[index], module, question_group };
-                                setEditingBatch({ ...editingBatch, blueprint: newBlueprint });
-                              }}
-                            />
-                            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4, paddingLeft: 2 }}>
-                              Available: {stats.easy}E / {stats.medium}M / {stats.hard}H
-                            </div>
-                          </td>
-                          <td>
-                            <ValidatedInput value={item.easy || 0} max={stats.easy} onChange={v => {
-                              const nb = [...editingBatch.blueprint]; nb[index].easy = parseInt(v) || 0;
-                              setEditingBatch({ ...editingBatch, blueprint: nb });
-                            }} />
-                          </td>
-                          <td>
-                            <ValidatedInput value={item.medium || 0} max={stats.medium} onChange={v => {
-                              const nb = [...editingBatch.blueprint]; nb[index].medium = parseInt(v) || 0;
-                              setEditingBatch({ ...editingBatch, blueprint: nb });
-                            }} />
-                          </td>
-                          <td>
-                            <ValidatedInput value={item.hard || 0} max={stats.hard} onChange={v => {
-                              const nb = [...editingBatch.blueprint]; nb[index].hard = parseInt(v) || 0;
-                              setEditingBatch({ ...editingBatch, blueprint: nb });
-                            }} />
-                          </td>
-                          <td>
-                            <button
-                              onClick={() => setEditingBatch({
-                                ...editingBatch,
-                                blueprint: editingBatch.blueprint.filter((_: any, i: number) => i !== index)
-                              })}
-                              className="btn btn-danger"
-                              style={{ fontSize: 12, padding: '4px 8px' }}
-                            >X</button>
-                          </td>
-                        </tr>
-                      );
+              <div className="mt-8 flex flex-wrap gap-3 items-center">
+                {editBlueprintMode === 'module' ? (
+                  <button
+                    onClick={() => setEditingBatch({
+                      ...editingBatch,
+                      blueprint: [...(editingBatch.blueprint || []), { module: modules[0], easy: 0, medium: 0, hard: 0 }]
                     })}
-                  </tbody>
-                </table>
-              </>
-            )
-          ) : (
-            moduleGroupTypeStats.length === 0 ? (
-              <p className="error">No type data available</p>
-            ) : (
-              <>
-                <QuestionBankTypeStatsPanel moduleGroupTypeStats={moduleGroupTypeStats} moduleGroups={moduleGroups} />
-                <table className="matrix-table">
-                  <thead>
-                    <tr>
-                      <th>Module</th>
-                      <th>Type</th>
-                      <th>🟢 Easy</th>
-                      <th>🟡 Medium</th>
-                      <th>🔴 Hard</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {((editingBatch.blueprintByType || []) as BlueprintItemByType[]).map((item, index) => {
-                      const stats = getStatsForModuleGroupType(item.module, item.question_group || '', item.type);
-                      const otherCombos = ((editingBatch.blueprintByType || []) as BlueprintItemByType[])
-                        .filter((_, i) => i !== index)
-                        .map(i => `${i.module}||${i.question_group}||${i.type}`);
-                      return (
-                        <tr key={index}>
-                          <td style={{ minWidth: 160 }}>
-                            <ModuleGroupSelect
-                              moduleGroups={moduleGroups}
-                              value={{ module: item.module, question_group: item.question_group || '' }}
-                              onChange={(module, question_group) => {
-                                const nb = [...editingBatch.blueprintByType];
-                                nb[index] = { ...nb[index], module, question_group };
-                                setEditingBatch({ ...editingBatch, blueprintByType: nb });
-                              }}
-                            />
-                          </td>
-                          <td style={{ minWidth: 120 }}>
-                            <select
-                              value={item.type}
-                              onChange={e => {
-                                const nb = [...editingBatch.blueprintByType];
-                                nb[index].type = e.target.value;
-                                setEditingBatch({ ...editingBatch, blueprintByType: nb });
-                              }}
-                              style={{ width: '100%' }}
-                            >
-                              {QUESTION_TYPES.map(t => {
-                                const combo = `${item.module}||${item.question_group}||${t}`;
-                                const isUsed = otherCombos.includes(combo);
-                                return (
-                                  <option key={t} value={t} disabled={isUsed}>
-                                    {t}{isUsed ? ' (selected)' : ''}
-                                  </option>
-                                );
-                              })}
-                            </select>
-                            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4, paddingLeft: 2 }}>
-                              Available: {stats.easy}E / {stats.medium}M / {stats.hard}H
-                            </div>
-                          </td>
-                          <td>
-                            <ValidatedInput value={item.easy || 0} max={stats.easy} onChange={v => {
-                              const nb = [...editingBatch.blueprintByType]; nb[index].easy = parseInt(v) || 0;
-                              setEditingBatch({ ...editingBatch, blueprintByType: nb });
-                            }} />
-                          </td>
-                          <td>
-                            <ValidatedInput value={item.medium || 0} max={stats.medium} onChange={v => {
-                              const nb = [...editingBatch.blueprintByType]; nb[index].medium = parseInt(v) || 0;
-                              setEditingBatch({ ...editingBatch, blueprintByType: nb });
-                            }} />
-                          </td>
-                          <td>
-                            <ValidatedInput value={item.hard || 0} max={stats.hard} onChange={v => {
-                              const nb = [...editingBatch.blueprintByType]; nb[index].hard = parseInt(v) || 0;
-                              setEditingBatch({ ...editingBatch, blueprintByType: nb });
-                            }} />
-                          </td>
-                          <td>
-                            <button
-                              onClick={() => setEditingBatch({
-                                ...editingBatch,
-                                blueprintByType: (editingBatch.blueprintByType || []).filter((_: any, i: number) => i !== index)
-                              })}
-                              className="btn btn-danger"
-                              style={{ fontSize: 12, padding: '4px 8px' }}
-                            >X</button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </>
-            )
-          )}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg font-bold hover:bg-slate-50 transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    Add Module
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      if (!nextAvailableModuleTypeEdit) return;
+                      setEditingBatch({
+                        ...editingBatch,
+                        blueprintByType: [
+                          ...(editingBatch.blueprintByType || []),
+                          { module: nextAvailableModuleTypeEdit.module, type: nextAvailableModuleTypeEdit.type, easy: 0, medium: 0, hard: 0 }
+                        ]
+                      });
+                    }}
+                    disabled={!nextAvailableModuleTypeEdit}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg font-bold hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={!nextAvailableModuleTypeEdit ? 'All combinations have been added' : ''}
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    Add Module / Type
+                  </button>
+                )}
 
-          {/* Edit blueprint validation errors */}
-          {editBlueprintErrors.length > 0 && (
-            <div style={{ marginTop: 12, padding: '12px 16px', background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 8 }}>
-              <strong style={{ color: '#991b1b', fontSize: 13 }}>⚠️ Blueprint exceeds available question count:</strong>
-              {editBlueprintErrors.map((err, i) => (
-                <p key={i} style={{ color: '#b91c1c', margin: '4px 0 0', fontSize: 13 }}>{err}</p>
-              ))}
+                <button
+                  onClick={handleUpdateBatch}
+                  disabled={loading || editBlueprintErrors.length > 0}
+                  className="inline-flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {loading ? 'Saving...' : 'Save Changes'}
+                </button>
+
+                <button
+                  onClick={() => setEditingBatch(null)}
+                  className="inline-flex items-center gap-2 px-6 py-2.5 bg-slate-100 text-slate-700 rounded-lg font-bold hover:bg-slate-200 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
-          )}
-          </>
-          )}
-
-          <div style={{ marginTop: 14, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            {!editingBatch.practice_exam_id && (editBlueprintMode === 'module' ? (
-              <button
-                onClick={() => setEditingBatch({
-                  ...editingBatch,
-                  blueprint: [...(editingBatch.blueprint || []), {
-                    module: moduleGroups[0]?.module || '',
-                    question_group: moduleGroups[0]?.question_group || '',
-                    easy: 0, medium: 0, hard: 0
-                  }]
-                })}
-                className="btn btn-secondary"
-              >
-                + Add Module
-              </button>
-            ) : (
-              <button
-                onClick={() => {
-                  if (!nextAvailableModuleTypeEdit) return;
-                  setEditingBatch({
-                    ...editingBatch,
-                    blueprintByType: [
-                      ...(editingBatch.blueprintByType || []),
-                      {
-                        module: nextAvailableModuleTypeEdit.module,
-                        question_group: nextAvailableModuleTypeEdit.question_group,
-                        type: nextAvailableModuleTypeEdit.type,
-                        easy: 0, medium: 0, hard: 0
-                      }
-                    ]
-                  });
-                }}
-                disabled={!nextAvailableModuleTypeEdit}
-                className="btn btn-secondary"
-                title={!nextAvailableModuleTypeEdit ? 'All combinations have been added' : ''}
-              >
-                + Add Module / Type
-              </button>
-            ))}
-
-            <button
-              onClick={handleUpdateBatch}
-              disabled={loading || (!editingBatch.practice_exam_id && editBlueprintErrors.length > 0)}
-              className="btn btn-primary"
-            >
-              {loading ? 'Saving...' : 'Save Changes'}
-            </button>
-
-            <button
-              onClick={() => setEditingBatch(null)}
-              className="btn btn-secondary"
-            >
-              Cancel
-            </button>
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
