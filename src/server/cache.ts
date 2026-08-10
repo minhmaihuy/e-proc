@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
+import { stripHtml } from '../utils/string.js';
 
 dotenv.config();
 
@@ -432,7 +433,7 @@ Provide a JSON response with "score" (0-10) and "feedback" (detailed feedback):
 `;
         } else {
           const examResult = await query(`
-            SELECT eq.*, q.question_sample, q.rubric_must_have, q.rubric_nice_to_have, q.rubric_optional
+            SELECT eq.*, q.question_sample, q.question_plain, q.rubric_must_have, q.rubric_nice_to_have, q.rubric_optional
             FROM exam_questions eq
             JOIN question_bank q ON eq.question_id = q.id
               AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
@@ -445,9 +446,12 @@ Provide a JSON response with "score" (0-10) and "feedback" (detailed feedback):
           const eq = examResult.rows[0];
           answer = eq.answer;
 
+          // Prompt phải nhận plain-text: question_sample chứa HTML, nhét thẳng vào thì AI
+          // phải đọc lẫn thẻ markup. Fallback stripHtml cho hàng import trước khi có cột.
+          const questionText = eq.question_plain || stripHtml(eq.question_sample || '');
           prompt = `You are an expert technical interviewer. Evaluate the following answer based on the rubric.
 
-Question: ${eq.question_sample}
+Question: ${questionText}
 Answer: ${eq.answer}
 
 Rubric Must-have (70%): ${eq.rubric_must_have}

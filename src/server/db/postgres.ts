@@ -64,6 +64,10 @@ async function initPostgres() {
   // đúng 100 câu của bộ thứ nhất — mất trắng dữ liệu, không có cảnh báo nào.
   try {
     await client.query(`ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS question_group TEXT`);
+    // Bản plain-text của question_sample, sinh tự động lúc import. Dùng cho mọi nơi
+    // KHÔNG phải renderer của học viên: prompt chấm AI và export Excel. Đưa HTML thô
+    // vào prompt khiến AI phải đọc lẫn thẻ markup.
+    await client.query(`ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS question_plain TEXT`);
     await client.query(`UPDATE question_bank SET question_group = '' WHERE question_group IS NULL`);
     await client.query(`ALTER TABLE question_bank ALTER COLUMN question_group SET DEFAULT ''`);
     await client.query(`ALTER TABLE question_bank ALTER COLUMN question_group SET NOT NULL`);
@@ -648,6 +652,9 @@ function initSqlite() {
     if (!qbCols.includes('question_group')) {
       sqliteDb.exec("ALTER TABLE question_bank ADD COLUMN question_group TEXT NOT NULL DEFAULT ''");
     }
+    if (!qbCols.includes('question_plain')) {
+      sqliteDb.exec('ALTER TABLE question_bank ADD COLUMN question_plain TEXT');
+    }
     // Migration: phân biệt job chấm exam_questions vs practice_submissions
     const aiQueueCols = (sqliteDb.prepare("PRAGMA table_info(ai_queue)").all() as { name: string }[]).map(c => c.name);
     if (!aiQueueCols.includes('kind')) {
@@ -668,7 +675,7 @@ function initSqlite() {
     if (!(qbPk.length === 2 && qbPk[0] === 'id' && qbPk[1] === 'question_group')) {
       console.log('[DB] question_bank PK:', qbPk, '→ rebuild sang (id, question_group)');
       const cols = (sqliteDb.prepare("PRAGMA table_info(question_bank)").all() as { name: string }[]).map(c => c.name);
-      const optional = ['options', 'correct_answers', 'score', 'uploaded_by'].filter(c => cols.includes(c));
+      const optional = ['options', 'correct_answers', 'score', 'uploaded_by', 'question_plain'].filter(c => cols.includes(c));
       const copyCols = ['id', 'type', 'level', 'module', 'question_group', 'question_sample',
         'rubric_must_have', 'rubric_nice_to_have', 'rubric_optional', 'created_at', 'updated_at', ...optional];
       sqliteDb.exec('DROP TABLE IF EXISTS question_bank_new');
@@ -680,6 +687,7 @@ function initSqlite() {
           module TEXT NOT NULL,
           question_group TEXT NOT NULL DEFAULT '',
           question_sample TEXT NOT NULL,
+          question_plain TEXT,
           rubric_must_have TEXT NOT NULL,
           rubric_nice_to_have TEXT NOT NULL,
           rubric_optional TEXT NOT NULL,

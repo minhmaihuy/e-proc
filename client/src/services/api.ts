@@ -265,11 +265,11 @@ export const adminApi = {
   getQuestions: () =>
     api.get('/admin/questions'),
   
+  getQuestionGroups: () =>
+    api.get<string[]>('/admin/questions/question-groups'),
+
   getModules: () =>
     api.get('/admin/questions/modules'),
-
-  getQuestionGroups: () =>
-    api.get('/admin/questions/question-groups'),
 
   getModuleGroups: () =>
     api.get('/admin/questions/module-groups'),

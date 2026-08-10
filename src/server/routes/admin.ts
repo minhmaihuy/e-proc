@@ -401,6 +401,9 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
       }
 
       const normalizedModule = normalizeUnicode(module.toString());
+      // question_plain luôn được TÍNH LẠI lúc import, không nhận từ file: nó phải bám
+      // sát question_sample, nếu để người dùng cung cấp thì hai bên dễ lệch nhau.
+      const questionPlain = stripHtml(question.toString());
 
       // Trùng lặp tính theo CẶP (id, question_group): hai bộ đề khác nhau được phép dùng
       // chung mã ID mà không ghi đè nhau. Dùng '?' vì query này chạy cho cả hai DB mode —
@@ -419,19 +422,20 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
       if (USE_SQLITE) {
         await db.query(`
           INSERT OR REPLACE INTO question_bank 
-          (id, type, level, module, question_group, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at, uploaded_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
-        `, [id, type, level, normalizedModule, questionGroup, question, rubricMustHave, rubricNice, rubricOpt, req.adminUser?.id ?? null]);
+          (id, type, level, module, question_group, question_sample, question_plain, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at, uploaded_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+        `, [id, type, level, normalizedModule, questionGroup, question, questionPlain, rubricMustHave, rubricNice, rubricOpt, req.adminUser?.id ?? null]);
       } else {
         const pgQuery = `
           INSERT INTO question_bank 
-          (id, type, level, module, question_group, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at, uploaded_by)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10)
+          (id, type, level, module, question_group, question_sample, question_plain, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at, uploaded_by)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP, $11)
           ON CONFLICT (id, question_group) DO UPDATE SET
             type = EXCLUDED.type,
             level = EXCLUDED.level,
             module = EXCLUDED.module,
             question_sample = EXCLUDED.question_sample,
+            question_plain = EXCLUDED.question_plain,
             rubric_must_have = EXCLUDED.rubric_must_have,
             rubric_nice_to_have = EXCLUDED.rubric_nice_to_have,
             rubric_optional = EXCLUDED.rubric_optional,
@@ -439,7 +443,7 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
             uploaded_by = EXCLUDED.uploaded_by
         `;
         console.log('[Import] PG Query:', pgQuery);
-        await db.query(pgQuery, [id, type, level, normalizedModule, questionGroup, question, rubricMustHave, rubricNice, rubricOpt, req.adminUser?.id ?? null]);
+        await db.query(pgQuery, [id, type, level, normalizedModule, questionGroup, question, questionPlain, rubricMustHave, rubricNice, rubricOpt, req.adminUser?.id ?? null]);
       }
     }
 
@@ -561,6 +565,7 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
         : 1;
 
       const normalizedModule = normalizeUnicode(module);
+      const questionPlain = stripHtml(question);
       const optionsJson = JSON.stringify(options);
       const correctJson = JSON.stringify(correct);
 
@@ -574,25 +579,26 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
       if (USE_SQLITE) {
         await db.query(`
           INSERT OR REPLACE INTO question_bank
-          (id, type, level, module, question_group, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at, uploaded_by)
-          VALUES (?, ?, ?, ?, ?, ?, '', '', '', ?, ?, ?, datetime('now'), ?)
-        `, [id, type, level, normalizedModule, questionGroup, question, optionsJson, correctJson, score, req.adminUser?.id ?? null]);
+          (id, type, level, module, question_group, question_sample, question_plain, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at, uploaded_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, ?, datetime('now'), ?)
+        `, [id, type, level, normalizedModule, questionGroup, question, questionPlain, optionsJson, correctJson, score, req.adminUser?.id ?? null]);
       } else {
         await db.query(`
           INSERT INTO question_bank
-          (id, type, level, module, question_group, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at, uploaded_by)
-          VALUES ($1, $2, $3, $4, $5, $6, '', '', '', $7, $8, $9, CURRENT_TIMESTAMP, $10)
+          (id, type, level, module, question_group, question_sample, question_plain, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at, uploaded_by)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, '', '', '', $8, $9, $10, CURRENT_TIMESTAMP, $11)
           ON CONFLICT (id, question_group) DO UPDATE SET
             type = EXCLUDED.type,
             level = EXCLUDED.level,
             module = EXCLUDED.module,
             question_sample = EXCLUDED.question_sample,
+            question_plain = EXCLUDED.question_plain,
             options = EXCLUDED.options,
             correct_answers = EXCLUDED.correct_answers,
             score = EXCLUDED.score,
             updated_at = CURRENT_TIMESTAMP,
             uploaded_by = EXCLUDED.uploaded_by
-        `, [id, type, level, normalizedModule, questionGroup, question, optionsJson, correctJson, score, req.adminUser?.id ?? null]);
+        `, [id, type, level, normalizedModule, questionGroup, question, questionPlain, optionsJson, correctJson, score, req.adminUser?.id ?? null]);
       }
     }
 
@@ -614,6 +620,24 @@ router.get('/questions', async (req: Request, res: Response) => {
   try {
     const result = await db.query('SELECT * FROM question_bank ORDER BY module, level');
     res.json(result.rows);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/admin/questions/question-groups — danh sách bộ đề đang có.
+ * Dùng cho dropdown lọc ở trang Question Bank: khi hai bộ dùng chung mã ID thì cột
+ * ID không còn phân biệt được câu nào thuộc bộ nào.
+ */
+router.get('/questions/question-groups', async (_req: Request, res: Response) => {
+  try {
+    const result = await db.query(`
+      SELECT DISTINCT question_group FROM question_bank
+      WHERE question_group IS NOT NULL AND question_group != ''
+      ORDER BY question_group
+    `);
+    res.json(result.rows.map((r: any) => r.question_group));
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

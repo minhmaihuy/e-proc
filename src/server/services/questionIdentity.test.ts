@@ -79,3 +79,21 @@ test('SQLite chạy .all() cho INSERT ... RETURNING', () => {
   const source = readSource('src', 'server', 'db', 'postgres.ts');
   assert.match(source, /upper\.includes\('RETURNING'\)/);
 });
+
+test('question_plain được sinh lúc import và dùng cho prompt chấm AI', () => {
+  const admin = readSource('src', 'server', 'routes', 'admin.ts');
+  // Phải TÍNH LẠI từ question_sample, không nhận từ file Excel.
+  assert.match(admin, /stripHtml\(question(\.toString\(\))?\)/, 'import không sinh question_plain');
+  assert.equal(
+    [...admin.matchAll(/question_plain = EXCLUDED\.question_plain/g)].length,
+    2,
+    'cả hai upsert (tự luận + quiz) đều phải cập nhật question_plain',
+  );
+
+  const cache = readSource('src', 'server', 'cache.ts');
+  assert.match(
+    cache,
+    /eq\.question_plain \|\| stripHtml\(/,
+    'prompt chấm AI phải dùng question_plain, không nhét HTML thô vào model',
+  );
+});

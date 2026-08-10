@@ -20,6 +20,9 @@ function QuestionBank() {
 
   // Filter & pagination
   const [selectedModule, setSelectedModule] = useState<string>('');
+  // Bộ đề: khi hai bộ dùng chung mã ID thì cột ID không phân biệt được câu nào của bộ nào.
+  const [questionGroups, setQuestionGroups] = useState<string[]>([]);
+  const [selectedQuestionGroup, setSelectedQuestionGroup] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'essay' | 'quiz'>('all');
   const [pageSize, setPageSize] = useState<PageSize>(25);
   const [currentPage, setCurrentPage] = useState(1);
@@ -31,6 +34,7 @@ function QuestionBank() {
   useEffect(() => {
     loadQuestions();
     loadModules();
+    loadQuestionGroups();
   }, []);
 
   const loadQuestions = async () => {
@@ -47,6 +51,15 @@ function QuestionBank() {
     try {
       const res = await adminApi.getModules();
       setModules(res.data);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const loadQuestionGroups = async () => {
+    try {
+      const res = await adminApi.getQuestionGroups();
+      setQuestionGroups(res.data);
     } catch (error) {
       console.error(error);
     }
@@ -72,6 +85,7 @@ function QuestionBank() {
       setMessage(msg);
       loadQuestions();
       loadModules();
+      loadQuestionGroups();
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (error: any) {
@@ -116,11 +130,12 @@ function QuestionBank() {
   const filtered = useMemo(() =>
     questions.filter(q => {
       if (selectedModule && q.module !== selectedModule) return false;
+      if (selectedQuestionGroup && (q.question_group || '') !== selectedQuestionGroup) return false;
       if (selectedCategory === 'quiz') return QUIZ_TYPES.includes(q.type);
       if (selectedCategory === 'essay') return !QUIZ_TYPES.includes(q.type);
       return true;
     }),
-    [questions, selectedModule, selectedCategory]
+    [questions, selectedModule, selectedQuestionGroup, selectedCategory]
   );
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -313,6 +328,24 @@ function QuestionBank() {
             </select>
           </div>
 
+          {questionGroups.length > 0 && (
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-slate-600 flex items-center gap-1.5">
+                <Filter size={14} className="text-slate-400" /> Bộ đề
+              </label>
+              <select
+                value={selectedQuestionGroup}
+                onChange={e => { setSelectedQuestionGroup(e.target.value); setCurrentPage(1); setSelectedIds(new Set()); }}
+                className="block w-48 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 text-sm focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Tất cả bộ đề</option>
+                {questionGroups.map(g => (
+                  <option key={g} value={g}>{g}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div className="flex items-center gap-2">
             <label className="text-sm font-medium text-slate-600 flex items-center gap-1.5">
               <FileQuestion size={14} className="text-slate-400" /> Type
@@ -361,6 +394,7 @@ function QuestionBank() {
                 <th className="px-4 py-3 font-semibold text-slate-600 whitespace-nowrap">Type</th>
                 <th className="px-4 py-3 font-semibold text-slate-600 whitespace-nowrap">Level</th>
                 <th className="px-4 py-3 font-semibold text-slate-600 whitespace-nowrap">Module</th>
+                <th className="px-4 py-3 font-semibold text-slate-600 whitespace-nowrap">Bộ đề</th>
                 <th className="px-4 py-3 font-semibold text-slate-600 w-1/2">Question</th>
                 <th className="px-4 py-3 font-semibold text-slate-600 text-right">Actions</th>
               </tr>
@@ -401,9 +435,16 @@ function QuestionBank() {
                       </span>
                     </td>
                     <td className="px-4 py-3 font-medium text-slate-800 whitespace-nowrap">{q.module}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      {q.question_group
+                        ? <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100 text-xs font-medium">{q.question_group}</span>
+                        : <span className="text-slate-300 text-xs">—</span>}
+                    </td>
                     <td className="px-4 py-3">
-                      <div className="max-w-xs md:max-w-md lg:max-w-xl xl:max-w-3xl truncate text-slate-600" title={q.question_sample}>
-                        {q.question_sample}
+                      {/* question_plain là bản đã bỏ thẻ HTML, sinh lúc import. Hiện
+                          question_sample thô ở đây khiến admin phải đọc lẫn <p>, <strong>. */}
+                      <div className="max-w-xs md:max-w-md lg:max-w-xl xl:max-w-3xl truncate text-slate-600" title={q.question_plain || q.question_sample}>
+                        {q.question_plain || q.question_sample}
                       </div>
                     </td>
                     <td className="px-4 py-3 text-right">
