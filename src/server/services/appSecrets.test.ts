@@ -134,10 +134,10 @@ test('trạng thái chỉ phơi ra tên khóa, không có giá trị', async () 
     APP_SECRETS_ARN: VALID_ARN,
     AWS_REGION: 'ap-southeast-1',
   };
-  await loadAppSecrets(env, async () => JSON.stringify({ JWT_SECRET: 'gia-tri-tuyet-mat' }));
+  await loadAppSecrets(env, async () => JSON.stringify({ JWT_SECRET: 'v-ngam' }));
   const status = getAppSecretsStatus();
   assert.deepEqual(status.appliedKeys, ['JWT_SECRET']);
-  assert.ok(!JSON.stringify(status).includes('gia-tri-tuyet-mat'), 'trạng thái không được chứa giá trị secret');
+  assert.ok(!JSON.stringify(status).includes('v-ngam'), 'trạng thái không được chứa giá trị secret');
   assert.ok(status.loadedAt);
 });
 
@@ -145,7 +145,7 @@ test('kiểm tra kết nối không làm thay đổi process.env đang chạy', 
   resetAppSecretsStatusForTests();
   const before = process.env.JWT_SECRET;
   const result = await inspectAppSecret(VALID_ARN, 'ap-southeast-1', async () =>
-    JSON.stringify({ JWT_SECRET: 'khong-duoc-ap-dung', LA: 'x' }),
+    JSON.stringify({ JWT_SECRET: 'v-bo-qua', LA: 'x' }),
   );
   assert.deepEqual(result.appliedKeys, ['JWT_SECRET']);
   assert.deepEqual(result.ignoredKeys, ['LA']);

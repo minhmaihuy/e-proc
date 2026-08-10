@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { RecordMode, parseAllowedRecordModes } from '../services/recordingPolicy.js';
 import { getCurrentTenantConfig } from '../tenantContext.js';
 import db from '../db/controlPlane.js';
 
@@ -10,6 +11,12 @@ export interface AdminUser {
   tenantId?: number | null;
   tenantSlug?: string | null;
   tenantName?: string | null;
+  /**
+   * Chế độ ghi màn hình tenant được phép dùng, nạp từ control-plane mỗi request.
+   * Route trong data-plane KHÔNG được tự truy vấn bảng tenants (vi phạm ranh giới
+   * giữa hai plane) — đọc giá trị này thay vì mở kết nối chéo.
+   */
+  allowedRecordModes?: RecordMode[];
 }
 
 // Extend Express Request type
@@ -49,7 +56,8 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
   try {
     const result = await db.query(
       `SELECT u.id, u.username, u.role, u.tenant_id, t.slug AS tenant_slug,
-              t.name AS tenant_name, t.status AS tenant_status
+              t.name AS tenant_name, t.status AS tenant_status,
+              t.allowed_record_modes AS tenant_allowed_record_modes
        FROM admin_users u LEFT JOIN tenants t ON t.id = u.tenant_id
        WHERE u.id = ?`,
       [payload.id],
@@ -79,6 +87,11 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       tenantId: isSuperAdmin ? null : tenantId,
       tenantSlug: isSuperAdmin ? null : tenantSlug,
       tenantName: isSuperAdmin ? null : String(current.tenant_name),
+      // Superadmin không thuộc tenant nào nên không có allowlist; route assessment
+      // của nó vốn đã bị chặn ở tầng khác.
+      allowedRecordModes: isSuperAdmin
+        ? undefined
+        : parseAllowedRecordModes(current.tenant_allowed_record_modes),
     };
     next();
   } catch (error) {

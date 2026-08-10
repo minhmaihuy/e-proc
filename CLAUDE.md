@@ -335,6 +335,16 @@ Deletion: S3 Lifecycle rule auto-expires objects after N days (no backend script
 - **Admin retrieval:** the password is surfaced on the **Results page** (`Results.tsx`) next to each student (`r.student.recording_password`, admin-only) so an admin can decrypt the GitLab-committed zip. It rides along in the `/batches/:id/results` payload via `SELECT s.*`.
 - **DB columns:** `batches.record_mode` (VARCHAR(16)/TEXT default `'none'`) and `students.recording_password` (TEXT), created + migrated in `src/server/db/postgres.ts` for both Postgres and SQLite. Migration backfills `record_mode='s3'` where the old `record_enabled` was true. **Deploy note (Vercel + Supabase):** these `ALTER TABLE`s run automatically at DB init on cold-start (idempotent, `IF NOT EXISTS` + try/catch), but to avoid a race on the first few requests after deploy, prefer running them manually in the Supabase SQL Editor **before** deploying.
 
+### Per-tenant recording policy (2026-08-10)
+- Recording now has **two layers**. `tenants.allowed_record_modes` (control-plane, superadmin, comma list such as `none,local,s3`) says which modes a tenant *may* use; `batches.record_mode` (data-plane, tenant_admin) says which one a given exam *does* use. A batch may only pick from its tenant's list.
+- `src/server/services/recordingPolicy.ts` holds the pure logic (`parseAllowedRecordModes`, `serializeAllowedRecordModes`, `resolveBatchRecordMode`) and is unit-tested without a database. A rejected mode never silently upgrades: on create it falls back to `none`, on update it keeps the value already stored, and the route answers `403`.
+- The allowlist reaches data-plane routes through `authMiddleware`, which already reloads the tenant row per request — `req.adminUser.allowedRecordModes`. Do **not** query `tenants` from `admin.ts`; that would cross the control/data-plane boundary.
+- **Migration deliberately backfills existing tenants to `none,local,s3`** while the column default for new tenants is `none`. Tightening existing rows on upgrade would silently disable recording for batches already configured for it.
+- Role rule corrected: only `tenant_admin` may change `record_mode`. The code previously tested `role === 'admin'`, which blocked the *more* privileged `tenant_admin` while allowing plain admins — the opposite of the documented policy.
+- **Reviewing S3 recordings now exists.** `GET /api/admin/batches/:id/students/:studentId/recordings` returns each part plus a presigned GET URL (5-minute expiry, shorter than the 15-minute upload URL) and `Results.tsx` plays them inline. Object keys come from `recording_parts`, never from the client, and the route verifies the student belongs to the batch before signing anything. Before this, parts were tracked but there was no way to watch the evidence.
+- `local` mode gets explicit hand-off instructions on the submit page (`StudentSubmit.tsx`), gated on `recordMode` read **before** the page's `localStorage.clear()` runs. Without those steps the candidate keeps the only copy of the evidence.
+- `GET /api/admin/recording-config` tells the batch form which options to show. It is UX only — the backend check is authoritative.
+
 ### Queue / AI grading
 - Queue and answer-buffer orchestration live in `src/server/cache.ts`
 - AI evaluation provider settings are also read there (`ai_settings` plus env fallback)

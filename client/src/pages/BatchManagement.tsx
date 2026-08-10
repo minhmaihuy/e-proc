@@ -75,6 +75,13 @@ interface ModuleTypeStats {
 function BatchManagement() {
   const { isAdmin, userId } = useAuth();
   const [batches, setBatches] = useState<any[]>([]);
+  // Chế độ ghi màn hình superadmin cấp cho tenant này. Backend chặn độc lập; đây chỉ để
+  // không bày ra lựa chọn chắc chắn bị từ chối.
+  const [recordingConfig, setRecordingConfig] = useState<{ allowed: string[]; canChange: boolean; s3Configured: boolean }>({
+    allowed: ['none'],
+    canChange: false,
+    s3Configured: false,
+  });
   const [modules, setModules] = useState<string[]>([]);
   const [moduleStats, setModuleStats] = useState<ModuleStats[]>([]);
   const [typeStats, setTypeStats] = useState<TypeStats[]>([]);
@@ -158,6 +165,14 @@ function BatchManagement() {
   // ─── Effects ────────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    adminApi
+      .getRecordingConfig()
+      .then(res => setRecordingConfig({
+        allowed: res.data.allowed_record_modes || ['none'],
+        canChange: Boolean(res.data.can_change),
+        s3Configured: Boolean(res.data.s3_configured),
+      }))
+      .catch(() => { /* giữ mặc định chỉ 'none' nếu không lấy được */ });
     loadBatches();
     loadModules();
     loadModuleStats();
@@ -826,16 +841,30 @@ function BatchManagement() {
                   <label className="block text-sm font-bold text-slate-700">Screen Recording</label>
                   <select
                     value={formData.record_mode}
-                    disabled={!isAdmin}
+                    disabled={!recordingConfig.canChange}
                     onChange={e => setFormData(prev => ({ ...prev, record_mode: e.target.value as 'none' | 'local' | 's3' }))}
                     className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:bg-slate-100"
                   >
                     <option value="none">Default (No recording)</option>
-                    <option value="local">Record Local (Save on student's machine)</option>
-                    <option value="s3">Record S3 (Save to AWS S3)</option>
+                    {recordingConfig.allowed.includes('local') && (
+                      <option value="local">Record Local (Save on student's machine)</option>
+                    )}
+                    {recordingConfig.allowed.includes('s3') && (
+                      <option value="s3">Record S3 (Save to AWS S3)</option>
+                    )}
                   </select>
-                  {!isAdmin && (
-                    <p className="text-xs text-amber-600 font-medium">Only admin accounts can change this setting.</p>
+                  {!recordingConfig.canChange && (
+                    <p className="text-xs text-amber-600 font-medium">Chỉ tenant admin đổi được cấu hình này.</p>
+                  )}
+                  {recordingConfig.canChange && recordingConfig.allowed.length === 1 && (
+                    <p className="text-xs text-slate-500">
+                      Tenant chưa được cấp chế độ ghi màn hình nào. Liên hệ superadmin để bật ở trang quản lý tenant.
+                    </p>
+                  )}
+                  {formData.record_mode === 's3' && !recordingConfig.s3Configured && (
+                    <p className="text-xs text-amber-600 font-medium">
+                      ⚠ Máy chủ chưa cấu hình S3 — video sẽ không tải lên được.
+                    </p>
                   )}
                 </div>
               </div>

@@ -14,6 +14,7 @@ const EMPTY_CONFIG: TenantConfiguration = {
   aws_region: 'ap-southeast-1',
   instance_type: 't3.micro',
   root_volume_size: 12,
+  allowed_record_modes: 'none',
   compiler_enabled: false,
   compiler_memory_mb: 512,
   compiler_timeout_seconds: 15,
@@ -52,6 +53,7 @@ function configFromTenant(tenant: Tenant): TenantConfiguration {
     aws_region: tenant.aws_region,
     instance_type: tenant.instance_type,
     root_volume_size: Number(tenant.root_volume_size),
+    allowed_record_modes: tenant.allowed_record_modes || 'none',
     compiler_enabled: Boolean(tenant.compiler_enabled),
     compiler_memory_mb: Number(tenant.compiler_memory_mb || 512),
     compiler_timeout_seconds: Number(tenant.compiler_timeout_seconds || 15),
@@ -352,6 +354,36 @@ function TenantManagement() {
                   <label className="field"><span>AWS region</span><select value={form.aws_region} onChange={(event) => handleConfigChange('aws_region', event.target.value)}>{REGIONS.map((region) => <option key={region} value={region}>{region}</option>)}</select></label>
                   <label className="field"><span>Instance type</span><select value={form.instance_type} onChange={(event) => handleConfigChange('instance_type', event.target.value)}>{INSTANCE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
                   <label className="field"><span>Root volume (GiB)</span><input type="number" min={8} max={100} value={form.root_volume_size} onChange={(event) => handleConfigChange('root_volume_size', Number(event.target.value))} /></label>
+                  <div className="field field-wide">
+                    <span>Screen recording</span>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center', paddingTop: 4 }}>
+                      {(['local', 's3'] as const).map((mode) => {
+                        const current = (form.allowed_record_modes || 'none').split(',').map((m) => m.trim());
+                        const checked = current.includes(mode);
+                        return (
+                          <label key={mode} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400 }}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) => {
+                                const next = new Set(current.filter((m) => m === 'local' || m === 's3'));
+                                if (event.target.checked) next.add(mode);
+                                else next.delete(mode);
+                                // 'none' luôn có mặt: tenant nào cũng được phép không ghi màn hình.
+                                const ordered = ['none', ...(['local', 's3'] as const).filter((m) => next.has(m))];
+                                handleConfigChange('allowed_record_modes', ordered.join(','));
+                              }}
+                            />
+                            {mode === 'local' ? 'Record Local (máy học viên, mã hóa)' : 'Record S3 (tải lên AWS S3)'}
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <small style={{ color: 'var(--text-light)' }}>
+                      Tenant admin chỉ chọn được các chế độ đã bật ở đây khi tạo đợt thi. Không bật gì
+                      nghĩa là tenant chỉ được thi không ghi màn hình.
+                    </small>
+                  </div>
                   <label className="field checkbox-field"><span>Practice compiler</span><span><input type="checkbox" checked={form.compiler_enabled} onChange={(event) => handleConfigChange('compiler_enabled', event.target.checked)} /> Execute Run Code with AWS Lambda</span></label>
                   {form.compiler_enabled && <label className="field"><span>Compiler memory (MB)</span><input type="number" min={256} max={3008} step={64} value={form.compiler_memory_mb} onChange={(event) => handleConfigChange('compiler_memory_mb', Number(event.target.value))} /></label>}
                   {form.compiler_enabled && <label className="field"><span>Compiler timeout (seconds)</span><input type="number" min={10} max={30} value={form.compiler_timeout_seconds} onChange={(event) => handleConfigChange('compiler_timeout_seconds', Number(event.target.value))} /></label>}

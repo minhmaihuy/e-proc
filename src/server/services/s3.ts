@@ -7,12 +7,13 @@
 // Xóa video: dùng S3 Lifecycle rule trên bucket (tự xóa sau N ngày) — không cần
 // script backend.
 
-import { S3Client, PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const BUCKET = process.env.S3_RECORDINGS_BUCKET || '';
-const URL_EXPIRES_SECONDS = 15 * 60; // presigned URL hết hạn 15 phút
+const URL_EXPIRES_SECONDS = 15 * 60; // presigned URL upload hết hạn 15 phút
+const RECORDING_VIEW_EXPIRES_SECONDS = 5 * 60; // link xem lại hết hạn 5 phút
 
 let s3Client: S3Client | null = null;
 
@@ -66,4 +67,16 @@ export async function createRecordingUploadUrl(params: {
 export async function inspectRecordingObject(key: string): Promise<{ byteSize: number }> {
   const result = await getClient().send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }));
   return { byteSize: Number(result.ContentLength || 0) };
+}
+
+/**
+ * Presigned GET URL để trainer xem/tải lại một phần video.
+ *
+ * Hết hạn ngắn hơn URL upload (5 phút): link này mở ra được nguyên bằng chứng
+ * chống gian lận của một thí sinh, nên không nên để nó sống lâu hay bị chia sẻ lại.
+ * Key do backend đọc từ bảng recording_parts, không nhận từ client.
+ */
+export async function createRecordingViewUrl(key: string): Promise<string> {
+  const command = new GetObjectCommand({ Bucket: BUCKET, Key: key });
+  return getSignedUrl(getClient(), command, { expiresIn: RECORDING_VIEW_EXPIRES_SECONDS });
 }

@@ -10,6 +10,8 @@ import rateLimit from 'express-rate-limit';
 import { authMiddleware, requireTenantUserManager } from '../middleware/auth.js';
 import crypto from 'crypto';
 import { parseBlueprintCompat } from '../services/blueprint.js';
+import { resolveBatchRecordMode } from '../services/recordingPolicy.js';
+import { createRecordingViewUrl, isS3Configured } from '../services/s3.js';
 
 dotenv.config();
 
@@ -771,11 +773,18 @@ router.post('/batches', async (req: Request, res: Response) => {
     const endUTC = toStorageTime(end_time);
     console.log('[CreateBatch] Times (UTC stored):', { start_time: startUTC, end_time: endUTC });
     
-    // Chế độ record ('none' | 'local' | 's3') chỉ được đặt khác 'none' bởi role 'admin'.
-    // Mod tạo batch → luôn ép 'none'. record_enabled giữ đồng bộ (= mode==='s3') để tương thích ngược.
-    const RECORD_MODES = ['none', 'local', 's3'];
-    let recordMode = RECORD_MODES.includes(record_mode) ? record_mode : 'none';
-    if (req.adminUser?.role !== 'admin') recordMode = 'none';
+    // Chế độ ghi màn hình phải nằm trong allowlist mà superadmin cấp cho tenant, và chỉ
+    // tenant_admin được đặt. record_enabled giữ đồng bộ (= mode==='s3') để tương thích ngược.
+    const recordDecision = resolveBatchRecordMode({
+      requested: record_mode,
+      allowedForTenant: req.adminUser?.allowedRecordModes ?? ['none'],
+      fallback: 'none',
+      canChange: req.adminUser?.role === 'tenant_admin',
+    });
+    if (recordDecision.rejected) {
+      return res.status(403).json({ error: recordDecision.reason });
+    }
+    const recordMode = recordDecision.mode;
     const recordFlag = recordMode === 's3' ? 1 : 0;
 
     // Lưu người tạo batch
@@ -857,15 +866,21 @@ router.put('/batches/:id', async (req: Request, res: Response) => {
     const startUTC = toStorageTime(start_time);
     const endUTC = toStorageTime(end_time);
 
-    // Chế độ record: admin dùng giá trị client gửi; mod KHÔNG đổi được → giữ nguyên mode cũ trong DB.
-    const RECORD_MODES = ['none', 'local', 's3'];
-    let recordMode: string;
-    if (req.adminUser?.role === 'admin') {
-      recordMode = RECORD_MODES.includes(record_mode) ? record_mode : 'none';
-    } else {
-      const cur = await db.query('SELECT record_mode FROM batches WHERE id = ?', [parseInt(id)]);
-      recordMode = cur.rows[0]?.record_mode || 'none';
+    // Chế độ ghi màn hình: chỉ tenant_admin đổi được, và chỉ trong allowlist của tenant.
+    // Vai trò khác (hoặc mode bị từ chối) → giữ nguyên giá trị đang lưu, không hạ về
+    // 'none' vì như vậy sẽ âm thầm tắt ghi màn hình của một đợt thi đang cấu hình sẵn.
+    const currentRecord = await db.query('SELECT record_mode FROM batches WHERE id = ?', [parseInt(id)]);
+    const existingMode = currentRecord.rows[0]?.record_mode || 'none';
+    const recordDecision = resolveBatchRecordMode({
+      requested: record_mode,
+      allowedForTenant: req.adminUser?.allowedRecordModes ?? ['none'],
+      fallback: existingMode,
+      canChange: req.adminUser?.role === 'tenant_admin',
+    });
+    if (recordDecision.rejected) {
+      return res.status(403).json({ error: recordDecision.reason });
     }
+    const recordMode = recordDecision.mode;
     const recordFlag = recordMode === 's3' ? 1 : 0;
 
     if (USE_SQLITE) {
@@ -1193,6 +1208,90 @@ router.post('/students/:studentId/reset', async (req: Request, res: Response) =>
     res.json({ success: true, message: 'Student exam reset successfully' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/admin/batches/:id/students/:studentId/recordings
+ *
+ * Trả về danh sách phần video S3 của một thí sinh kèm presigned GET URL để trainer
+ * xem ngay trong trình duyệt. Trước đây hệ thống chỉ ghi nhận "có bao nhiêu phần đã
+ * upload" mà không có cách nào mở video ra xem — bằng chứng thu được nhưng không dùng
+ * được để phán xử.
+ *
+ * Ràng buộc an toàn:
+ *  - object key lấy từ bảng recording_parts, KHÔNG nhận từ client (tránh việc đoán key
+ *    của thí sinh khác hay của tenant khác).
+ *  - kiểm tra student thực sự thuộc batch trong URL trước khi ký bất cứ thứ gì.
+ *  - chỉ ký cho batch có record_mode='s3'; mode 'local' thì video không nằm trên S3.
+ */
+/**
+ * GET /api/admin/recording-config — chế độ ghi màn hình tenant hiện tại được phép dùng.
+ * Trang tạo batch dùng để chỉ hiện những lựa chọn hợp lệ; backend vẫn chặn độc lập.
+ */
+router.get('/recording-config', async (req: Request, res: Response) => {
+  return res.json({
+    allowed_record_modes: req.adminUser?.allowedRecordModes ?? ['none'],
+    can_change: req.adminUser?.role === 'tenant_admin',
+    s3_configured: isS3Configured(),
+  });
+});
+
+router.get('/batches/:id/students/:studentId/recordings', async (req: Request, res: Response) => {
+  try {
+    const batchId = parseInt(req.params.id);
+    const studentId = parseInt(req.params.studentId);
+    if (!Number.isInteger(batchId) || !Number.isInteger(studentId)) {
+      return res.status(400).json({ error: 'Invalid batch or student id' });
+    }
+
+    const student = await db.query(
+      'SELECT s.id, s.email, b.record_mode FROM students s JOIN batches b ON b.id = s.batch_id WHERE s.id = ? AND s.batch_id = ?',
+      [studentId, batchId],
+    );
+    if (student.rows.length === 0) {
+      return res.status(404).json({ error: 'Student not found in this batch' });
+    }
+
+    const recordMode = student.rows[0].record_mode || 'none';
+    if (recordMode !== 's3') {
+      return res.json({
+        record_mode: recordMode,
+        parts: [],
+        message: recordMode === 'local'
+          ? 'Batch dùng chế độ ghi cục bộ: video nằm trong repo học viên nộp, không có trên S3.'
+          : 'Batch này không bật ghi màn hình.',
+      });
+    }
+    if (!isS3Configured()) {
+      return res.status(503).json({ error: 'S3 chưa được cấu hình trên máy chủ này.' });
+    }
+
+    const parts = await db.query(
+      'SELECT part_index, object_key, byte_size, uploaded_at, is_final FROM recording_parts WHERE student_id = ? ORDER BY part_index',
+      [studentId],
+    );
+
+    const signed = await Promise.all(
+      parts.rows.map(async (part: any) => ({
+        part_index: part.part_index,
+        byte_size: Number(part.byte_size || 0),
+        uploaded_at: part.uploaded_at,
+        is_final: Boolean(part.is_final),
+        url: await createRecordingViewUrl(String(part.object_key)),
+      })),
+    );
+
+    return res.json({
+      record_mode: 's3',
+      email: student.rows[0].email,
+      parts: signed,
+      // Link ký ngắn hạn: nói rõ để UI nhắc trainer tải lại khi hết hạn.
+      url_expires_seconds: 300,
+    });
+  } catch (error: any) {
+    console.error('[Recordings] list error:', error);
+    return res.status(500).json({ error: 'Không lấy được danh sách bản ghi.' });
   }
 });
 

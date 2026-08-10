@@ -1,12 +1,33 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { adminApi } from '../services/api';
+import { StudentRecordings, adminApi } from '../services/api';
 import AdminNav from '../components/AdminNav';
 import { ArrowLeft, Download, Search, AlertCircle, FileText, CheckCircle2, FileJson, X, Settings2, ShieldAlert, Cpu, KeyRound } from 'lucide-react';
 import DOMPurify from 'dompurify';
 
 function Results() {
   const { id } = useParams<{ id: string }>();
+  // Xem lại video ghi màn hình trên S3 của MỘT học viên. Link presigned hết hạn ngắn
+  // nên luôn tải mới mỗi lần mở, không cache lại giữa các lần xem.
+  const [recordingsFor, setRecordingsFor] = useState<{ studentId: number; email: string } | null>(null);
+  const [recordings, setRecordings] = useState<StudentRecordings | null>(null);
+  const [recordingsLoading, setRecordingsLoading] = useState(false);
+  const [recordingsError, setRecordingsError] = useState('');
+
+  const openRecordings = async (studentId: number, email: string) => {
+    setRecordingsFor({ studentId, email });
+    setRecordings(null);
+    setRecordingsError('');
+    setRecordingsLoading(true);
+    try {
+      const res = await adminApi.getStudentRecordings(Number(id), studentId);
+      setRecordings(res.data);
+    } catch (err: any) {
+      setRecordingsError(err.response?.data?.error || 'Không tải được danh sách bản ghi.');
+    } finally {
+      setRecordingsLoading(false);
+    }
+  };
   const [results, setResults] = useState<any[]>([]);
   const [batch, setBatch] = useState<any>(null);
   const [selectedStudent, setSelectedStudent] = useState<any>(null);
@@ -163,6 +184,15 @@ function Results() {
                               ? `Recording evidence: ${r.recording_parts.length} part(s), ${r.recording_parts.reduce((sum: number, part: any) => sum + Number(part.byte_size || 0), 0).toLocaleString()} bytes`
                               : 'Recording evidence missing'}
                           </div>
+                        )}
+                        {batch?.record_mode === 's3' && !!r.recording_parts?.length && (
+                          <button
+                            type="button"
+                            onClick={() => openRecordings(r.student.id, r.student.email)}
+                            className="mt-1.5 text-xs font-semibold text-blue-700 hover:text-blue-900 underline underline-offset-2"
+                          >
+                            ▶ Xem lại video ({r.recording_parts.length} phần)
+                          </button>
                         )}
                       </td>
                       <td className="px-6 py-4 text-center">
@@ -493,7 +523,83 @@ function Results() {
           </div>
         </div>
       )}
+      {/* Xem lại video ghi màn hình (S3) của một học viên */}
+      {recordingsFor && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4"
+          role="presentation"
+          onMouseDown={() => setRecordingsFor(null)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Bản ghi màn hình của ${recordingsFor.email}`}
+            className="w-full max-w-3xl max-h-[85vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl"
+            onMouseDown={event => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">Bản ghi màn hình</h3>
+                <p className="text-sm text-slate-500">{recordingsFor.email}</p>
+              </div>
+              <button
+                type="button"
+                aria-label="Đóng"
+                onClick={() => setRecordingsFor(null)}
+                className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {recordingsLoading && <p className="mt-6 text-sm text-slate-500">Đang tạo link xem…</p>}
+            {recordingsError && <p className="mt-6 text-sm font-medium text-red-700">{recordingsError}</p>}
+
+            {recordings && !recordingsLoading && (
+              <>
+                {recordings.parts.length === 0 ? (
+                  <p className="mt-6 text-sm text-slate-600">{recordings.message || 'Không có phần nào.'}</p>
+                ) : (
+                  <>
+                    <p className="mt-4 text-xs text-slate-500">
+                      Mỗi phần là một đoạn 5 phút. Link xem hết hạn sau{' '}
+                      {Math.round((recordings.url_expires_seconds || 300) / 60)} phút — đóng và mở lại
+                      để lấy link mới.
+                    </p>
+                    <ul className="mt-4 space-y-4">
+                      {recordings.parts.map(part => (
+                        <li key={part.part_index} className="rounded-xl border border-slate-200 p-3">
+                          <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+                            <span className="font-semibold text-slate-800">
+                              Phần {part.part_index}
+                              {part.is_final && ' (cuối)'}
+                            </span>
+                            <span>
+                              {(part.byte_size / (1024 * 1024)).toFixed(1)} MB ·{' '}
+                              {part.uploaded_at ? new Date(part.uploaded_at).toLocaleString() : '—'}
+                            </span>
+                          </div>
+                          <video src={part.url} controls preload="none" className="w-full rounded-lg bg-black" />
+                          <a
+                            href={part.url}
+                            download
+                            className="mt-2 inline-block text-xs font-semibold text-blue-700 underline underline-offset-2 hover:text-blue-900"
+                          >
+                            Tải phần này về
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </>
+            )}
+          </section>
+        </div>
+      )}
+
     </div>
+
   );
 }
 

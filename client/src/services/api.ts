@@ -29,6 +29,30 @@ export interface AppSecretsTestResult {
   message: string;
 }
 
+/** Chế độ ghi màn hình tenant hiện tại được phép dùng (backend chặn độc lập). */
+export interface RecordingConfig {
+  allowed_record_modes: ('none' | 'local' | 's3')[];
+  can_change: boolean;
+  s3_configured: boolean;
+}
+
+export interface RecordingPart {
+  part_index: number;
+  byte_size: number;
+  uploaded_at: string;
+  is_final: boolean;
+  /** Presigned GET, hết hạn ngắn — tải lại danh sách khi quá hạn. */
+  url: string;
+}
+
+export interface StudentRecordings {
+  record_mode: 'none' | 'local' | 's3';
+  email?: string;
+  parts: RecordingPart[];
+  message?: string;
+  url_expires_seconds?: number;
+}
+
 export interface AdminUser {
   id: number;
   username: string;
@@ -49,6 +73,8 @@ export interface Tenant {
   aws_region: string;
   instance_type: string;
   root_volume_size: number;
+  /** Chế độ ghi màn hình tenant được phép dùng, vd "none,local,s3". */
+  allowed_record_modes?: string;
   compiler_enabled: boolean | number;
   compiler_memory_mb: number;
   compiler_timeout_seconds: number;
@@ -111,6 +137,7 @@ export interface TenantConfiguration {
   aws_region: string;
   instance_type: string;
   root_volume_size: number;
+  allowed_record_modes?: string;
   compiler_enabled: boolean;
   compiler_memory_mb: number;
   compiler_timeout_seconds: number;
@@ -190,6 +217,13 @@ export const adminApi = {
 
   testSecret: (secretArn: string, awsRegion: string) =>
     api.post<AppSecretsTestResult>('/admin/secrets/test', { secret_arn: secretArn, aws_region: awsRegion }),
+
+  // --- Ghi màn hình ---
+  getRecordingConfig: () =>
+    api.get<RecordingConfig>('/admin/recording-config'),
+
+  getStudentRecordings: (batchId: number, studentId: number) =>
+    api.get<StudentRecordings>(`/admin/batches/${batchId}/students/${studentId}/recordings`),
 
   // --- Tenant-aware user management ---
   listUsers: () =>

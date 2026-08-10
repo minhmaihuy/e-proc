@@ -48,6 +48,12 @@ function placeholders(count: number): string {
 
 export async function query(text: string, params: any[] = []): Promise<DbResult> {
   if (sqliteDb) {
+    // better-sqlite3 chỉ bind number/string/bigint/buffer/null. Cột boolean của
+    // control-plane (compiler_enabled...) được code truyền xuống dạng boolean JS, chạy
+    // tốt trên Postgres nhưng ném "SQLite3 can only bind..." ở dev local — nghĩa là
+    // tạo/sửa tenant không dùng được khi phát triển. Quy đổi tại đây để mọi câu lệnh
+    // đều an toàn, thay vì bắt từng call site nhớ ép kiểu.
+    params = params.map((value) => (typeof value === 'boolean' ? (value ? 1 : 0) : value));
     const stmt = sqliteDb.prepare(text);
     const normalized = text.trim().toUpperCase();
     if (normalized.startsWith('SELECT') || normalized.includes('RETURNING')) {
@@ -97,6 +103,10 @@ async function initPostgres(config: ControlPlaneConnectionConfig) {
         instance_type VARCHAR(32) NOT NULL DEFAULT 't3.micro',
         root_volume_size INTEGER NOT NULL DEFAULT 12,
         compiler_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        -- Danh sách chế độ ghi màn hình tenant được PHÉP dùng (batch chọn trong đó).
+        -- Tenant mới mặc định chỉ 'none': bật ghi màn hình là quyết định có chủ đích
+        -- của superadmin, không phải mặc định im lặng.
+        allowed_record_modes TEXT NOT NULL DEFAULT 'none',
         compiler_memory_mb INTEGER NOT NULL DEFAULT 512,
         compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15,
         compiler_concurrency INTEGER NOT NULL DEFAULT 2,
@@ -145,6 +155,11 @@ async function initPostgres(config: ControlPlaneConnectionConfig) {
     `);
     await client.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS tenant_id INTEGER`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+    // Tenant ĐANG CHẠY trước khi có allowlist vẫn được dùng đủ ba chế độ: siết lại
+    // ngay lúc migrate sẽ vô hiệu hóa cấu hình ghi màn hình của các batch đang có.
+    // Tenant tạo MỚI thì theo DEFAULT 'none' của cột.
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS allowed_record_modes TEXT NOT NULL DEFAULT 'none,local,s3'`);
+    await client.query(`ALTER TABLE tenants ALTER COLUMN allowed_record_modes SET DEFAULT 'none'`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_memory_mb INTEGER NOT NULL DEFAULT 512`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_concurrency INTEGER NOT NULL DEFAULT 2`);
@@ -180,6 +195,7 @@ function initSqlite(config: ControlPlaneConnectionConfig) {
       instance_type TEXT NOT NULL DEFAULT 't3.micro',
       root_volume_size INTEGER NOT NULL DEFAULT 12,
       compiler_enabled INTEGER NOT NULL DEFAULT 0,
+      allowed_record_modes TEXT NOT NULL DEFAULT 'none',
       compiler_memory_mb INTEGER NOT NULL DEFAULT 512,
       compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15,
       compiler_concurrency INTEGER NOT NULL DEFAULT 2,
@@ -226,12 +242,22 @@ function initSqlite(config: ControlPlaneConnectionConfig) {
     );
     CREATE INDEX IF NOT EXISTS idx_tenant_audit_tenant ON tenant_audit_events(tenant_id, created_at DESC);
   `);
+
+  // SQLite không có ADD COLUMN IF NOT EXISTS → phải tự kiểm tra. Backfill 'none,local,s3'
+  // cho tenant có sẵn để không tắt mất cấu hình ghi màn hình đang chạy; tenant tạo mới
+  // theo DEFAULT 'none' của cột.
+  const tenantColumns = (sqliteDb.prepare('PRAGMA table_info(tenants)').all() as { name: string }[])
+    .map((column) => column.name);
+  if (!tenantColumns.includes('allowed_record_modes')) {
+    sqliteDb.exec("ALTER TABLE tenants ADD COLUMN allowed_record_modes TEXT NOT NULL DEFAULT 'none'");
+    sqliteDb.exec("UPDATE tenants SET allowed_record_modes = 'none,local,s3'");
+  }
 }
 
 const ADMIN_COLUMNS = ['id', 'username', 'password_hash', 'role', 'tenant_id', 'created_at', 'updated_at'];
 const TENANT_COLUMNS = [
   'id', 'slug', 'name', 'contact_email', 'status', 'aws_region', 'instance_type', 'root_volume_size',
-  'compiler_enabled', 'compiler_memory_mb', 'compiler_timeout_seconds', 'compiler_concurrency',
+  'allowed_record_modes', 'compiler_enabled', 'compiler_memory_mb', 'compiler_timeout_seconds', 'compiler_concurrency',
   'compiler_lambda_arn', 'domain_name', 'route53_zone_id', 'secret_arn', 'repository_url',
   'repository_ref', 'provision_status', 'terraform_state_key', 'instance_id', 'public_ip',
   'ipv6_address', 'app_url', 'last_error', 'approved_by', 'approved_at', 'created_by', 'created_at', 'updated_at',

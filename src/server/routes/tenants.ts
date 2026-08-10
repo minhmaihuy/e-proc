@@ -9,6 +9,7 @@ import {
 } from '../services/tenantIssueQuery.js';
 import { TenantLogAccessError, readTenantIssues } from '../services/tenantLogReader.js';
 import { isTenantDomainForSlug, tenantDomainForSlug } from '../tenantContext.js';
+import { serializeAllowedRecordModes } from '../services/recordingPolicy.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -35,6 +36,7 @@ interface TenantInput {
   domainName: string;
   route53ZoneId: string;
   secretArn: string;
+  allowedRecordModes: string;
   repositoryUrl: string;
   repositoryRef: string;
 }
@@ -66,6 +68,10 @@ function normalizeTenantInput(body: unknown, existing?: Partial<TenantRow>): Ten
     domainName: configuredDomain || tenantDomainForSlug(slug),
     route53ZoneId: String(input.route53_zone_id ?? input.route53ZoneId ?? existing?.route53_zone_id ?? '').trim(),
     secretArn: String(input.secret_arn ?? input.secretArn ?? existing?.secret_arn ?? '').trim(),
+    // Chuẩn hóa tại đây để dữ liệu bẩn từ client không lọt xuống DB.
+    allowedRecordModes: serializeAllowedRecordModes(
+      input.allowed_record_modes ?? input.allowedRecordModes ?? existing?.allowed_record_modes ?? 'none',
+    ),
     repositoryUrl: String(input.repository_url ?? input.repositoryUrl ?? existing?.repository_url ?? 'https://github.com/minhmaihuy/e-proc.git').trim(),
     repositoryRef: String(input.repository_ref ?? input.repositoryRef ?? existing?.repository_ref ?? 'main').trim(),
   };
@@ -192,12 +198,12 @@ router.post('/', requireSuperAdmin, async (req: Request, res: Response) => {
       `INSERT INTO tenants
        (slug, name, contact_email, aws_region, instance_type, root_volume_size, compiler_enabled,
         compiler_memory_mb, compiler_timeout_seconds, compiler_concurrency, domain_name,
-        route53_zone_id, secret_arn, repository_url, repository_ref, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        route53_zone_id, secret_arn, allowed_record_modes, repository_url, repository_ref, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [input.slug, input.name, input.contactEmail, input.awsRegion, input.instanceType,
         input.rootVolumeSize, input.compilerEnabled, input.compilerMemoryMb, input.compilerTimeoutSeconds,
         input.compilerConcurrency, input.domainName, input.route53ZoneId, input.secretArn,
-        input.repositoryUrl, input.repositoryRef, req.adminUser!.id],
+        input.allowedRecordModes, input.repositoryUrl, input.repositoryRef, req.adminUser!.id],
     );
     const tenantId = Number(created.lastInsertRowid || (await db.query('SELECT id FROM tenants WHERE slug = ?', [input.slug])).rows[0]?.id);
     try {
@@ -240,12 +246,14 @@ router.put('/:id', async (req: Request, res: Response) => {
       `UPDATE tenants SET name = ?, contact_email = ?, aws_region = ?, instance_type = ?,
        root_volume_size = ?, compiler_enabled = ?, compiler_memory_mb = ?, compiler_timeout_seconds = ?,
        compiler_concurrency = ?, domain_name = ?, route53_zone_id = ?, secret_arn = ?,
-       repository_url = ?, repository_ref = ?, status = 'pending', provision_status = 'not_started',
+       allowed_record_modes = ?, repository_url = ?, repository_ref = ?,
+       status = 'pending', provision_status = 'not_started',
        approved_by = NULL, approved_at = NULL, last_error = NULL, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [input.name, input.contactEmail, input.awsRegion, input.instanceType, input.rootVolumeSize,
         input.compilerEnabled, input.compilerMemoryMb, input.compilerTimeoutSeconds, input.compilerConcurrency,
-        input.domainName, input.route53ZoneId, input.secretArn, input.repositoryUrl, input.repositoryRef, tenantId],
+        input.domainName, input.route53ZoneId, input.secretArn, input.allowedRecordModes,
+        input.repositoryUrl, input.repositoryRef, tenantId],
     );
     await audit(tenantId, req.adminUser!.id, 'tenant.configuration_updated');
     return res.json({ success: true, status: 'pending' });

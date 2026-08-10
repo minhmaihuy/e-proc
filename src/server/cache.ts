@@ -49,8 +49,12 @@ class FileCache {
   private cachedAISettings: AISettings | null = null;
   private settingsLastFetched: number = 0;
   
-  private dataDir: string;
-  private queueFile: string;
+  // Phải khởi tạo ngay tại class field: constructor gọi ensureDataDir() TRƯỚC khi có
+  // cơ hội gán ở chỗ khác, nên để trống sẽ crash `npm run dev` ngay lúc khởi động với
+  // ERR_INVALID_ARG_TYPE trong fs.mkdirSync. Production không lộ lỗi này vì
+  // ensureDataDir() return sớm, khiến nó rất dễ lọt qua review.
+  private dataDir: string = path.join(process.cwd(), 'data');
+  private queueFile: string = path.join(process.cwd(), 'data', 'queue.json');
 
   constructor() {
     this.ensureDataDir();
