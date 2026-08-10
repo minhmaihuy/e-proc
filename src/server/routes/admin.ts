@@ -1,14 +1,15 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
-import mammoth from 'mammoth';
 import db from '../db/postgres.js';
-import controlDb from '../db/controlPlane.js';
-import { normalizeUnicode, stripHtml, sanitizeFilename, buildContentDisposition } from '../../utils/string.js';
+import { normalizeUnicode } from '../../utils/string.js';
 import dotenv from 'dotenv';
+import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import { authMiddleware, requireTenantDataAdmin, requireTenantUserManager } from '../middleware/auth.js';
-import { canManageTenantUser } from '../tenantContext.js';
+import rateLimit from 'express-rate-limit';
+import { authMiddleware, requireTenantUserManager } from '../middleware/auth.js';
+import crypto from 'crypto';
+import { parseBlueprintCompat } from '../services/blueprint.js';
 
 dotenv.config();
 
@@ -19,206 +20,232 @@ console.log('[Admin] USE_SQLITE:', USE_SQLITE, 'NODE_ENV:', process.env.NODE_ENV
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Rate limit riêng cho login: 10 request/phút
+const loginRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { error: 'Too many login attempts. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// [C-5] Rate limit cho setup: 5 lần/giờ — chỉ dùng một lần trong vòng đời app
+const setupRateLimit = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 giờ
+  max: 5,
+  message: { error: 'Too many setup attempts. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// =============================================
+// AUTH ROUTES (không require JWT)
+// =============================================
+
+// GET /api/admin/is-initialized — Kiểm tra xem admin đã được tạo chưa
+router.get('/is-initialized', async (req: Request, res: Response) => {
+  try {
+    const existing = await db.query('SELECT COUNT(*) as count FROM admin_users');
+    const count = Number(existing.rows[0]?.count ?? existing.rows[0]?.COUNT ?? 0);
+    return res.json({ initialized: count > 0 });
+  } catch (err: any) {
+    console.error('[Auth] is-initialized error:', err);
+    return res.status(500).json({ error: 'Failed to check initialization status' });
+  }
+});
+
+// POST /api/admin/setup — Tạo admin lần đầu (chỉ hoạt động khi bảng trống)
+router.post('/setup', setupRateLimit, async (req: Request, res: Response) => {
+
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required' });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    // Kiểm tra xem đã có admin chưa
+    const existing = await db.query('SELECT COUNT(*) as count FROM admin_users');
+    const count = Number(existing.rows[0]?.count ?? existing.rows[0]?.COUNT ?? 0);
+    if (count > 0) {
+      return res.status(403).json({ error: 'Admin already initialized. Use change-password to update credentials.' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    await db.query(
+      'INSERT INTO admin_users (username, password_hash) VALUES (?, ?)',
+      [username.trim(), passwordHash]
+    );
+
+    console.log('[Auth] Admin user created:', username);
+    return res.status(201).json({ success: true, message: 'Admin account created successfully' });
+  } catch (err: any) {
+    console.error('[Auth] Setup error:', err);
+    return res.status(500).json({ error: 'Failed to create admin account' });
+  }
+});
+
+// POST /api/admin/login — Đăng nhập, nhận JWT
+router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required' });
+    }
+
+    const result = await db.query(
+      'SELECT * FROM admin_users WHERE username = ?',
+      [username.trim()]
+    );
+
+    const user = result.rows[0];
+    if (!user) {
+      // Trả về cùng message để tránh user enumeration
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+
+    const isValid = await bcrypt.compare(password, user.password_hash);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+
+    const expiresIn = '24h';
+    const role = user.role || 'admin';
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role },
+      secret,
+      { expiresIn }
+    );
+
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    console.log('[Auth] Login success:', username, 'role:', role);
+    return res.json({ token, expiresAt, role, userId: user.id });
+  } catch (err: any) {
+    console.error('[Auth] Login error:', err);
+    return res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// POST /api/admin/logout — Client xóa token (stateless)
+router.post('/logout', (req: Request, res: Response) => {
+  return res.json({ success: true });
+});
+
 // =============================================
 // PROTECTED ROUTES — Require JWT từ đây trở xuống
 // =============================================
 router.use(authMiddleware);
 
-// User-management routes are intentionally registered before the platform-admin
-// gate so tenant_admin can manage identities in its own JWT tenant.
-type ManagedAdminRole = 'admin' | 'tenant_admin';
-interface ManagedUserRow {
-  id: number;
-  username: string;
-  role: string;
-  tenant_id?: number | null;
-}
-const MANAGED_ADMIN_ROLES = new Set<ManagedAdminRole>(['admin', 'tenant_admin']);
-const USERNAME_PATTERN = /^[A-Za-z0-9_.@-]{3,100}$/;
+// ── Quản lý user (chỉ admin) ─────────────────────────────────────────────
 
-function canManageUser(req: Request, target: ManagedUserRow): boolean {
-  if (!req.adminUser) return false;
-  return canManageTenantUser(req.adminUser, {
-    role: target.role,
-    tenantId: target.tenant_id ? Number(target.tenant_id) : null,
-  });
-}
-
-async function tenantExists(tenantId: number): Promise<boolean> {
-  if (!Number.isInteger(tenantId) || tenantId <= 0) return false;
-  const result = await controlDb.query('SELECT id FROM tenants WHERE id = ?', [tenantId]);
-  return Boolean(result.rows[0]);
-}
-
-async function auditUserChange(tenantId: number | null, actorId: number, action: string, detail: Record<string, unknown>) {
-  if (!tenantId) return;
-  await controlDb.query(
-    'INSERT INTO tenant_audit_events (tenant_id, actor_id, action, detail) VALUES (?, ?, ?, ?)',
-    [tenantId, actorId, action, JSON.stringify(detail)],
-  );
-}
-
-async function isLastTenantAdmin(tenantId?: number | null): Promise<boolean> {
-  const result = await controlDb.query(
-    "SELECT COUNT(*) AS count FROM admin_users WHERE role = 'tenant_admin' AND tenant_id = ?",
-    [tenantId],
-  );
-  return Number(result.rows[0]?.count ?? result.rows[0]?.COUNT ?? 0) <= 1;
-}
-
-// =============================================
-// USER MANAGEMENT — tenant_admin is scoped to the current tenant
-// =============================================
-
-// GET /api/admin/users — Danh sách tài khoản admin (không trả password_hash)
-router.get('/users', requireTenantUserManager, async (req: Request, res: Response) => {
+// GET /api/admin/users — liệt kê user (chỉ admin)
+router.get('/users', requireTenantUserManager, async (_req: Request, res: Response) => {
   try {
-    const select = `SELECT u.id, u.username, u.role, u.tenant_id, u.created_at, u.updated_at,
-                           t.slug AS tenant_slug, t.name AS tenant_name
-                    FROM admin_users u LEFT JOIN tenants t ON t.id = u.tenant_id`;
-    const result = await controlDb.query(
-      `${select} WHERE u.tenant_id = ? AND u.role <> 'superadmin' ORDER BY u.created_at ASC`,
-      [req.adminUser!.tenantId],
+    const result = await db.query(
+      'SELECT id, username, role, created_at FROM admin_users ORDER BY id ASC'
     );
     return res.json(result.rows);
   } catch (err: any) {
-    console.error('[Users] List error:', err);
-    return res.status(500).json({ error: 'Failed to list admin users' });
+    return res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/admin/users — Tạo tài khoản admin mới
+// POST /api/admin/users — tạo user với role 'admin' hoặc 'mod' (chỉ admin)
 router.post('/users', requireTenantUserManager, async (req: Request, res: Response) => {
   try {
-    const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
-    const password = typeof req.body?.password === 'string' ? req.body.password : '';
-    const role = req.body?.role as ManagedAdminRole;
-
-    if (!USERNAME_PATTERN.test(username)) return res.status(400).json({ error: 'Username must be 3-100 valid characters.' });
-    if (password.length < 8 || password.length > 128) return res.status(400).json({ error: 'Password must be 8-128 characters.' });
-    if (!MANAGED_ADMIN_ROLES.has(role)) return res.status(400).json({ error: 'Invalid role.' });
-    const tenantId = req.adminUser!.tenantId!;
-    if (!(await tenantExists(Number(tenantId)))) {
-      return res.status(400).json({ error: 'A valid tenant is required for tenant accounts.' });
+    const { username, password, role } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required' });
+    }
+    if (role !== 'admin' && role !== 'mod') {
+      return res.status(400).json({ error: 'Role must be "admin" or "mod"' });
+    }
+    if (String(password).length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    const existing = await controlDb.query('SELECT id FROM admin_users WHERE username = ?', [username]);
+    const existing = await db.query('SELECT id FROM admin_users WHERE username = ?', [username.trim()]);
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: 'Username already exists' });
     }
 
-    const passwordHash = await bcrypt.hash(password, 12);
-    await controlDb.query(
-      'INSERT INTO admin_users (username, password_hash, role, tenant_id) VALUES (?, ?, ?, ?)',
-      [username, passwordHash, role, tenantId]
+    const passwordHash = await bcrypt.hash(password, 10);
+    await db.query(
+      'INSERT INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)',
+      [username.trim(), passwordHash, role]
     );
-
-    await auditUserChange(tenantId, req.adminUser!.id, 'tenant_user.created', { username, role });
-    console.log('[Users] Created admin user:', username, 'role:', role, 'tenant:', tenantId || 'global', 'by:', req.adminUser!.username);
+    console.log('[Auth] User created:', username, 'role:', role);
     return res.status(201).json({ success: true });
   } catch (err: any) {
-    console.error('[Users] Create error:', err);
-    return res.status(500).json({ error: 'Failed to create admin user' });
+    return res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /api/admin/users/:id — Đổi role và/hoặc reset password của một tài khoản admin
-router.put('/users/:id', requireTenantUserManager, async (req: Request, res: Response) => {
-  try {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid user ID.' });
-
-    const existing = await controlDb.query('SELECT * FROM admin_users WHERE id = ?', [id]);
-    const target = existing.rows[0];
-    if (!target || !canManageUser(req, target)) {
-      return res.status(404).json({ error: 'Admin user not found' });
-    }
-
-    const role = (req.body?.role ?? target.role) as ManagedAdminRole;
-    if (!MANAGED_ADMIN_ROLES.has(role)) return res.status(400).json({ error: 'Invalid role.' });
-    const tenantId = req.adminUser!.tenantId!;
-    if (!(await tenantExists(Number(tenantId)))) {
-      return res.status(400).json({ error: 'A valid tenant is required for tenant accounts.' });
-    }
-    // Self-service password changes require the current password on /change-password.
-    if (id === req.adminUser!.id && (role !== target.role || Number(tenantId) !== Number(target.tenant_id) || req.body?.password !== undefined)) {
-      return res.status(400).json({ error: 'Use Change Password for your own account; you cannot change your own role or tenant.' });
-    }
-    const leavesTenantAdminRole = target.role === 'tenant_admin'
-      && (role !== 'tenant_admin' || Number(tenantId) !== Number(target.tenant_id));
-    if (leavesTenantAdminRole && await isLastTenantAdmin(Number(target.tenant_id))) {
-      return res.status(400).json({ error: 'Cannot remove the last tenant administrator.' });
-    }
-
-    const password = req.body?.password;
-    if (password !== undefined && (typeof password !== 'string' || password.length < 8 || password.length > 128)) {
-      return res.status(400).json({ error: 'Password must be 8-128 characters.' });
-    }
-    if (password !== undefined) {
-      const passwordHash = await bcrypt.hash(password, 12);
-      await controlDb.query(
-        'UPDATE admin_users SET role = ?, tenant_id = ?, password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [role, tenantId, passwordHash, id],
-      );
-    } else {
-      await controlDb.query(
-        'UPDATE admin_users SET role = ?, tenant_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [role, tenantId, id],
-      );
-    }
-
-    const oldTenantId = target.tenant_id ? Number(target.tenant_id) : null;
-    await auditUserChange(oldTenantId, req.adminUser!.id, 'tenant_user.updated', {
-      username: target.username, previousRole: target.role, role, tenantId,
-    });
-    if (tenantId && tenantId !== oldTenantId) {
-      await auditUserChange(tenantId, req.adminUser!.id, 'tenant_user.assigned', { username: target.username, role });
-    }
-    console.log('[Users] Updated admin user:', target.username, 'tenant:', tenantId || 'global', 'by:', req.adminUser!.username);
-    return res.json({ success: true });
-  } catch (err: any) {
-    console.error('[Users] Update error:', err);
-    return res.status(500).json({ error: 'Failed to update admin user' });
-  }
-});
-
-// DELETE /api/admin/users/:id — Xoá tài khoản admin
+// DELETE /api/admin/users/:id — xóa user (chỉ admin; không cho tự xóa chính mình)
 router.delete('/users/:id', requireTenantUserManager, async (req: Request, res: Response) => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid user ID.' });
-
-    if (id === req.adminUser!.id) {
-      return res.status(400).json({ error: 'You cannot delete your own account' });
+    const targetId = parseInt(req.params.id);
+    if (req.adminUser?.id === targetId) {
+      return res.status(400).json({ error: 'Cannot delete your own account' });
     }
-
-    const existing = await controlDb.query('SELECT * FROM admin_users WHERE id = ?', [id]);
-    const target = existing.rows[0];
-    if (!target || !canManageUser(req, target)) {
-      return res.status(404).json({ error: 'Admin user not found' });
-    }
-
-    if (target.role === 'tenant_admin' && await isLastTenantAdmin(Number(target.tenant_id))) {
-      return res.status(400).json({ error: 'Cannot delete the last tenant administrator' });
-    }
-
-    await controlDb.query('DELETE FROM admin_users WHERE id = ?', [id]);
-    await auditUserChange(target.tenant_id ? Number(target.tenant_id) : null, req.adminUser!.id, 'tenant_user.deleted', {
-      username: target.username, role: target.role,
-    });
-    console.log('[Users] Deleted admin user:', target.username, 'by:', req.adminUser!.username);
+    await db.query('DELETE FROM admin_users WHERE id = ?', [targetId]);
     return res.json({ success: true });
   } catch (err: any) {
-    console.error('[Users] Delete error:', err);
-    return res.status(500).json({ error: 'Failed to delete admin user' });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/admin/change-password — Đổi password (require JWT)
+router.put('/change-password', async (req: Request, res: Response) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const adminUser = req.adminUser;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'currentPassword and newPassword are required' });
+    }
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters' });
+    }
+
+    const result = await db.query(
+      'SELECT * FROM admin_users WHERE id = ?',
+      [adminUser!.id]
+    );
+    const user = result.rows[0];
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const isValid = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await db.query(
+      'UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [newHash, adminUser!.id]
+    );
+
+    console.log('[Auth] Password changed for user:', adminUser!.username);
+    return res.json({ success: true, message: 'Password changed successfully' });
+  } catch (err: any) {
+    console.error('[Auth] Change password error:', err);
+    return res.status(500).json({ error: 'Failed to change password' });
   }
 });
 
 // Client gửi UTC ISO string, server chỉ cần validate và normalize
-// Assessment routes belong only to admin/tenant_admin accounts of this server's tenant.
-// A global superadmin is deliberately excluded from tenant assessment data.
-router.use(requireTenantDataAdmin);
-
 const toStorageTime = (isoStr: string): string => {
   if (!isoStr) return isoStr;
   return new Date(isoStr).toISOString();
@@ -256,7 +283,8 @@ router.get('/test-blueprint/:id', async (req: Request, res: Response) => {
     const modulesResult = await db.query('SELECT DISTINCT module FROM question_bank');
     console.log('Available modules:', modulesResult.rows.map(r => r.module));
     
-    for (const item of blueprint || []) {
+    const { items: blueprintItems } = parseBlueprintCompat(blueprint);
+    for (const item of blueprintItems) {
       const easy = item.easy || 0;
       const medium = item.medium || 0;
       const hard = item.hard || 0;
@@ -344,9 +372,7 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
       const level = colIndex['Level'] !== undefined ? row[colIndex['Level']] : row[2];
       const module = colIndex['Topic'] !== undefined ? row[colIndex['Topic']] : (colIndex['Module'] !== undefined ? row[colIndex['Module']] : row[3]);
       const question = colIndex['Question Sample'] !== undefined ? row[colIndex['Question Sample']] : row[4];
-      const questionGroupRaw = colIndex['QuestionGroup'] ?? colIndex['Question Set'] ?? colIndex['Bộ đề'];
-      const questionGroup = (questionGroupRaw !== undefined ? row[questionGroupRaw]?.toString().trim() : '') || '';
-
+      
       const rubricMustHave = row[rubricMustHaveCol]?.toString() || '';
       const rubricNice = row[rubricNiceCol]?.toString() || '';
       const rubricOpt = row[rubricOptCol]?.toString() || '';
@@ -369,15 +395,9 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
       }
 
       const normalizedModule = normalizeUnicode(module.toString());
-      const questionPlain = stripHtml(question.toString());
 
-      // Trùng lặp tính theo CẶP (id, question_group): hai bộ đề khác nhau được phép dùng
-      // chung mã ID mà không ghi đè nhau.
-      const existing = await db.query(
-        "SELECT id FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
-        [id, questionGroup]
-      );
-
+      const existing = await db.query('SELECT id FROM question_bank WHERE id = $1', [id]);
+      
       if (existing.rows.length > 0) {
         updated++;
       } else {
@@ -386,29 +406,28 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
 
       if (USE_SQLITE) {
         await db.query(`
-          INSERT OR REPLACE INTO question_bank
-          (id, type, level, module, question_group, question_sample, question_plain, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        `, [id, type, level, normalizedModule, questionGroup, question, questionPlain, rubricMustHave, rubricNice, rubricOpt]);
+          INSERT OR REPLACE INTO question_bank 
+          (id, type, level, module, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at, uploaded_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+        `, [id, type, level, normalizedModule, question, rubricMustHave, rubricNice, rubricOpt, req.adminUser?.id ?? null]);
       } else {
         const pgQuery = `
-          INSERT INTO question_bank
-          (id, type, level, module, question_group, question_sample, question_plain, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
-          ON CONFLICT (id, question_group) DO UPDATE SET
+          INSERT INTO question_bank 
+          (id, type, level, module, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, updated_at, uploaded_by)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, $9)
+          ON CONFLICT (id) DO UPDATE SET
             type = EXCLUDED.type,
             level = EXCLUDED.level,
             module = EXCLUDED.module,
-            question_group = EXCLUDED.question_group,
             question_sample = EXCLUDED.question_sample,
-            question_plain = EXCLUDED.question_plain,
             rubric_must_have = EXCLUDED.rubric_must_have,
             rubric_nice_to_have = EXCLUDED.rubric_nice_to_have,
             rubric_optional = EXCLUDED.rubric_optional,
-            updated_at = CURRENT_TIMESTAMP
+            updated_at = CURRENT_TIMESTAMP,
+            uploaded_by = EXCLUDED.uploaded_by
         `;
         console.log('[Import] PG Query:', pgQuery);
-        await db.query(pgQuery, [id, type, level, normalizedModule, questionGroup, question, questionPlain, rubricMustHave, rubricNice, rubricOpt]);
+        await db.query(pgQuery, [id, type, level, normalizedModule, question, rubricMustHave, rubricNice, rubricOpt, req.adminUser?.id ?? null]);
       }
     }
 
@@ -472,10 +491,6 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
       const level = get(row, 'Level')?.toString().trim();
       const module = (get(row, 'Topic') ?? get(row, 'Module'))?.toString();
       const question = get(row, 'Question Sample')?.toString();
-      // Bộ đề — cùng alias với import tự luận; để trống nếu file không có cột này
-      const questionGroup = (
-        get(row, 'QuestionGroup') ?? get(row, 'Question Set') ?? get(row, 'Bộ đề')
-      )?.toString().trim() || '';
 
       if (!id || !type || !level || !module || !question) {
         skipped++;
@@ -532,39 +547,33 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
       const normalizedModule = normalizeUnicode(module);
       const optionsJson = JSON.stringify(options);
       const correctJson = JSON.stringify(correct);
-      const questionPlain = stripHtml(question);
 
-      // Trùng lặp tính theo CẶP (id, question_group) — xem giải thích ở import tự luận.
-      // Lưu ý: dùng '?' chứ không phải '$1' vì query này chạy chung cho cả SQLite lẫn Postgres.
-      const existing = await db.query(
-        "SELECT id FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
-        [id, questionGroup]
-      );
+      const existing = await db.query('SELECT id FROM question_bank WHERE id = $1', [id]);
       if (existing.rows.length > 0) updated++; else imported++;
 
       // rubric_* là NOT NULL trong schema → điền '' cho câu quiz
       if (USE_SQLITE) {
         await db.query(`
           INSERT OR REPLACE INTO question_bank
-          (id, type, level, module, question_group, question_sample, question_plain, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, ?, datetime('now'))
-        `, [id, type, level, normalizedModule, questionGroup, question, questionPlain, optionsJson, correctJson, score]);
+          (id, type, level, module, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at, uploaded_by)
+          VALUES (?, ?, ?, ?, ?, '', '', '', ?, ?, ?, datetime('now'), ?)
+        `, [id, type, level, normalizedModule, question, optionsJson, correctJson, score, req.adminUser?.id ?? null]);
       } else {
         await db.query(`
           INSERT INTO question_bank
-          (id, type, level, module, question_group, question_sample, question_plain, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, '', '', '', $8, $9, $10, CURRENT_TIMESTAMP)
-          ON CONFLICT (id, question_group) DO UPDATE SET
+          (id, type, level, module, question_sample, rubric_must_have, rubric_nice_to_have, rubric_optional, options, correct_answers, score, updated_at, uploaded_by)
+          VALUES ($1, $2, $3, $4, $5, '', '', '', $6, $7, $8, CURRENT_TIMESTAMP, $9)
+          ON CONFLICT (id) DO UPDATE SET
             type = EXCLUDED.type,
             level = EXCLUDED.level,
             module = EXCLUDED.module,
             question_sample = EXCLUDED.question_sample,
-            question_plain = EXCLUDED.question_plain,
             options = EXCLUDED.options,
             correct_answers = EXCLUDED.correct_answers,
             score = EXCLUDED.score,
-            updated_at = CURRENT_TIMESTAMP
-        `, [id, type, level, normalizedModule, questionGroup, question, questionPlain, optionsJson, correctJson, score]);
+            updated_at = CURRENT_TIMESTAMP,
+            uploaded_by = EXCLUDED.uploaded_by
+        `, [id, type, level, normalizedModule, question, optionsJson, correctJson, score, req.adminUser?.id ?? null]);
       }
     }
 
@@ -600,37 +609,6 @@ router.get('/questions/modules', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/questions/question-groups', async (req: Request, res: Response) => {
-  try {
-    const result = await db.query(`
-      SELECT DISTINCT question_group FROM question_bank
-      WHERE question_group IS NOT NULL AND question_group != ''
-      ORDER BY question_group
-    `);
-    res.json(result.rows.map((r: any) => r.question_group));
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Distinct (module, question_group) combos — used to disambiguate modules that
-// exist under multiple question groups (e.g. "Unit Testing" in both CPP_EMB_PRINT_IOT
-// and CPP_EMB_AUTOSAR) when building exam blueprints.
-router.get('/questions/module-groups', async (req: Request, res: Response) => {
-  try {
-    const result = await db.query(`
-      SELECT DISTINCT module, question_group FROM question_bank
-      ORDER BY module, question_group
-    `);
-    res.json(result.rows.map((r: any) => ({
-      module: r.module,
-      question_group: r.question_group || '',
-    })));
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Returns question counts per module broken down by difficulty level
 router.get('/questions/module-stats', async (req: Request, res: Response) => {
   try {
@@ -646,32 +624,6 @@ router.get('/questions/module-stats', async (req: Request, res: Response) => {
     `);
     res.json(result.rows.map((r: any) => ({
       module: r.module,
-      easy:   Number(r.easy)   || 0,
-      medium: Number(r.medium) || 0,
-      hard:   Number(r.hard)   || 0,
-    })));
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Returns question counts per (module, question_group) combination broken down by difficulty level
-router.get('/questions/module-group-stats', async (req: Request, res: Response) => {
-  try {
-    const result = await db.query(`
-      SELECT
-        module,
-        question_group,
-        SUM(CASE WHEN LOWER(level) = 'easy'   THEN 1 ELSE 0 END) AS easy,
-        SUM(CASE WHEN LOWER(level) = 'medium' THEN 1 ELSE 0 END) AS medium,
-        SUM(CASE WHEN LOWER(level) = 'hard'   THEN 1 ELSE 0 END) AS hard
-      FROM question_bank
-      GROUP BY module, question_group
-      ORDER BY module, question_group
-    `);
-    res.json(result.rows.map((r: any) => ({
-      module: r.module,
-      question_group: r.question_group || '',
       easy:   Number(r.easy)   || 0,
       medium: Number(r.medium) || 0,
       hard:   Number(r.hard)   || 0,
@@ -731,49 +683,6 @@ router.get('/questions/module-type-stats', async (req: Request, res: Response) =
   }
 });
 
-// Returns question counts per (module, question_group, type) combination broken down by difficulty level
-router.get('/questions/module-group-type-stats', async (req: Request, res: Response) => {
-  try {
-    const result = await db.query(`
-      SELECT
-        module,
-        question_group,
-        type,
-        SUM(CASE WHEN LOWER(level) = 'easy'   THEN 1 ELSE 0 END) AS easy,
-        SUM(CASE WHEN LOWER(level) = 'medium' THEN 1 ELSE 0 END) AS medium,
-        SUM(CASE WHEN LOWER(level) = 'hard'   THEN 1 ELSE 0 END) AS hard
-      FROM question_bank
-      GROUP BY module, question_group, type
-      ORDER BY module, question_group, type
-    `);
-    res.json(result.rows.map((r: any) => ({
-      module: r.module,
-      question_group: r.question_group || '',
-      type:   r.type,
-      easy:   Number(r.easy)   || 0,
-      medium: Number(r.medium) || 0,
-      hard:   Number(r.hard)   || 0,
-    })));
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Parse blueprint supporting both formats:
- *  - Legacy (array): [{ module, easy, medium, hard }]
- *  - New (object):   { blueprintMode: 'module'|'type', items: [...] }
- */
-function parseBlueprintCompat(raw: any): { blueprintMode: 'module' | 'type'; items: any[] } {
-  if (Array.isArray(raw)) {
-    return { blueprintMode: 'module', items: raw };
-  }
-  if (raw && typeof raw === 'object' && raw.blueprintMode) {
-    return { blueprintMode: raw.blueprintMode || 'module', items: raw.items || [] };
-  }
-  return { blueprintMode: 'module', items: [] };
-}
-
 router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
   try {
     const { ids } = req.body;
@@ -781,28 +690,41 @@ router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'No question IDs provided' });
     }
 
-    // Câu hỏi được định danh bằng CẶP (id, question_group) → client gửi "id|||group".
-    // Chuỗi không có "|||" là định dạng cũ (chỉ id): xóa mọi group mang id đó, giữ
-    // nguyên hành vi trước đây cho client cũ.
-    let deleted = 0;
-    for (const raw of ids) {
-      const key = String(raw);
-      const sep = key.indexOf('|||');
-      if (sep === -1) {
-        const r = await db.query('DELETE FROM question_bank WHERE id = ?', [key]);
-        deleted += r.rowCount ?? 0;
-      } else {
-        const qId = key.slice(0, sep);
-        const qGroup = key.slice(sep + 3);
-        const r = await db.query(
-          "DELETE FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
-          [qId, qGroup]
+    // Kiểm tra quyền: mod chỉ được xóa question của mình
+    if (req.adminUser?.role !== 'admin') {
+      const userId = req.adminUser?.id;
+      if (USE_SQLITE) {
+        const placeholders = ids.map(() => '?').join(', ');
+        const owned = await db.query(
+          `SELECT id FROM question_bank WHERE id IN (${placeholders}) AND uploaded_by = ?`,
+          [...ids, userId]
         );
-        deleted += r.rowCount ?? 0;
+        const ownedIds = new Set(owned.rows.map((r: any) => r.id));
+        const forbidden = ids.filter(id => !ownedIds.has(id));
+        if (forbidden.length > 0) {
+          return res.status(403).json({ error: 'Forbidden: You can only delete questions you uploaded' });
+        }
+      } else {
+        const owned = await db.query(
+          `SELECT id FROM question_bank WHERE id = ANY($1::text[]) AND uploaded_by = $2`,
+          [ids, userId]
+        );
+        const ownedIds = new Set(owned.rows.map((r: any) => r.id));
+        const forbidden = ids.filter(id => !ownedIds.has(id));
+        if (forbidden.length > 0) {
+          return res.status(403).json({ error: 'Forbidden: You can only delete questions you uploaded' });
+        }
       }
     }
 
-    res.json({ success: true, deleted });
+    if (USE_SQLITE) {
+      const placeholders = ids.map(() => '?').join(', ');
+      await db.query(`DELETE FROM question_bank WHERE id IN (${placeholders})`, ids);
+    } else {
+      await db.query(`DELETE FROM question_bank WHERE id = ANY($1::text[])`, [ids]);
+    }
+
+    res.json({ success: true, deleted: ids.length });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -811,98 +733,14 @@ router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
 router.delete('/questions/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    // ?group=<question_group> giới hạn xóa đúng bộ đề đó. Không truyền group → xóa mọi
-    // bộ đề có mã này (hành vi cũ, giữ cho client cũ).
-    const group = req.query.group;
-    if (group !== undefined) {
-      await db.query(
-        "DELETE FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
-        [id, String(group)]
-      );
-    } else {
-      await db.query('DELETE FROM question_bank WHERE id = ?', [id]);
+    // Kiểm tra quyền: mod chỉ được xóa question của mình
+    if (req.adminUser?.role !== 'admin') {
+      const own = await db.query('SELECT uploaded_by FROM question_bank WHERE id = ?', [id]);
+      if (!own.rows[0] || own.rows[0].uploaded_by !== req.adminUser?.id) {
+        return res.status(403).json({ error: 'Forbidden: You can only delete questions you uploaded' });
+      }
     }
-    res.json({ success: true });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// =============================================
-// PRACTICE EXAMS — Quản lý riêng, import từ .docx
-// =============================================
-
-// POST /api/admin/practice/import — Upload file .docx + tên bài, convert sang HTML
-router.post('/practice/import', upload.single('file'), async (req: Request, res: Response) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-    const name = (req.body.name || '').toString().trim() || req.file.originalname.replace(/\.docx?$/i, '');
-
-    if (!/\.docx$/i.test(req.file.originalname)) {
-      return res.status(400).json({ error: 'Only .docx files are supported' });
-    }
-
-    const conversion = await mammoth.convertToHtml({ buffer: req.file.buffer });
-    const contentHtml = conversion.value;
-    if (!contentHtml || contentHtml.trim().length === 0) {
-      return res.status(400).json({ error: 'Could not extract any content from the .docx file' });
-    }
-    const contentPlain = stripHtml(contentHtml);
-
-    const result = await db.query(
-      `INSERT INTO practice_exams (name, content_html, content_plain) VALUES (?, ?, ?) RETURNING id`,
-      [name, contentHtml, contentPlain]
-    );
-    const id = result.rows[0]?.id ?? result.lastInsertRowid;
-
-    console.log('[Practice] Imported:', name, 'id:', id, 'html length:', contentHtml.length);
-    res.status(201).json({ success: true, id, name, warnings: conversion.messages?.map((m: any) => m.message) });
-  } catch (error: any) {
-    console.error('[Practice] Import error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /api/admin/practice — Danh sách bài practice (kèm số batch đang dùng)
-router.get('/practice', async (req: Request, res: Response) => {
-  try {
-    const result = await db.query(`
-      SELECT p.id, p.name, p.created_at,
-             (SELECT COUNT(*) FROM batches b WHERE b.practice_exam_id = p.id) as batches_count
-      FROM practice_exams p
-      ORDER BY p.created_at DESC
-    `);
-    res.json(result.rows);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /api/admin/practice/:id — Chi tiết (kèm content_html để preview)
-router.get('/practice/:id', async (req: Request, res: Response) => {
-  try {
-    const result = await db.query('SELECT * FROM practice_exams WHERE id = ?', [parseInt(req.params.id)]);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Practice exam not found' });
-    }
-    res.json(result.rows[0]);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// DELETE /api/admin/practice/:id — Chặn xoá nếu còn batch đang tham chiếu
-router.delete('/practice/:id', async (req: Request, res: Response) => {
-  try {
-    const id = parseInt(req.params.id);
-    const used = await db.query('SELECT COUNT(*) as count FROM batches WHERE practice_exam_id = ?', [id]);
-    const count = Number(used.rows[0]?.count ?? used.rows[0]?.COUNT ?? 0);
-    if (count > 0) {
-      return res.status(400).json({ error: `Practice exam is used by ${count} batch(es). Delete those batches first.` });
-    }
-    await db.query('DELETE FROM practice_exams WHERE id = ?', [id]);
+    await db.query('DELETE FROM question_bank WHERE id = ?', [id]);
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -911,65 +749,55 @@ router.delete('/practice/:id', async (req: Request, res: Response) => {
 
 router.post('/batches', async (req: Request, res: Response) => {
   try {
-    const { name, start_time, end_time, duration, blueprint, practice_exam_id, record_mode, exam_type } = req.body;
-    console.log('[CreateBatch] Input:', { name, start_time, end_time, duration, blueprint, practice_exam_id, exam_type, record_mode });
+    const { name, start_time, end_time, duration, blueprint, record_mode, exam_type } = req.body;
+    console.log('[CreateBatch] Input:', { name, start_time, end_time, duration, blueprint, exam_type, record_mode });
     const examType = exam_type === 'quiz' ? 'quiz' : 'essay';
 
     if (!name || !start_time || !end_time || !duration) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    const isPractice = practice_exam_id !== undefined && practice_exam_id !== null && practice_exam_id !== '';
-    let blueprintJson: string | null = null;
-
-    if (isPractice) {
-      // Batch dạng Practice: không dùng blueprint; xác nhận bài practice tồn tại
-      const pe = await db.query('SELECT id FROM practice_exams WHERE id = ?', [parseInt(practice_exam_id)]);
-      if (pe.rows.length === 0) {
-        return res.status(400).json({ error: 'Practice exam not found' });
-      }
-    } else {
-      // Support both legacy array format and new { blueprintMode, items } object format
-      const { items: blueprintItems } = parseBlueprintCompat(blueprint);
-      const totalQuestions = blueprintItems.reduce((sum: number, item: any) => sum + (item.easy || 0) + (item.medium || 0) + (item.hard || 0), 0);
-      // Đề quiz (trắc nghiệm) cho phép tới 100 câu; đề tự luận giữ giới hạn 20 câu như trước.
-      const maxQuestions = examType === 'quiz' ? 100 : 20;
-      if (totalQuestions < 1 || totalQuestions > maxQuestions) {
-        return res.status(400).json({ error: `Total questions must be between 1 and ${maxQuestions}` });
-      }
-      blueprintJson = JSON.stringify(blueprint);
-      console.log('[CreateBatch] Blueprint JSON:', blueprintJson);
+    // Support both legacy array format and new { blueprintMode, items } object format
+    const { items: blueprintItems } = parseBlueprintCompat(blueprint);
+    const totalQuestions = blueprintItems.reduce((sum: number, item: any) => sum + (item.easy || 0) + (item.medium || 0) + (item.hard || 0), 0);
+    if (totalQuestions < 1 || totalQuestions > 100) {
+      return res.status(400).json({ error: 'Total questions must be between 1 and 100' });
     }
 
+    const blueprintJson = JSON.stringify(blueprint);
+    console.log('[CreateBatch] Blueprint JSON:', blueprintJson);
+    
     const startUTC = toStorageTime(start_time);
     const endUTC = toStorageTime(end_time);
     console.log('[CreateBatch] Times (UTC stored):', { start_time: startUTC, end_time: endUTC });
-
-    // Only tenant_admin may set recording to local or S3. Regular admin is forced to none.
-    // record_enabled remains synchronized (= mode==='s3') for backward compatibility.
+    
+    // Chế độ record ('none' | 'local' | 's3') chỉ được đặt khác 'none' bởi role 'admin'.
+    // Mod tạo batch → luôn ép 'none'. record_enabled giữ đồng bộ (= mode==='s3') để tương thích ngược.
     const RECORD_MODES = ['none', 'local', 's3'];
     let recordMode = RECORD_MODES.includes(record_mode) ? record_mode : 'none';
-    if (req.adminUser?.role !== 'tenant_admin') recordMode = 'none';
+    if (req.adminUser?.role !== 'admin') recordMode = 'none';
     const recordFlag = recordMode === 's3' ? 1 : 0;
 
-    const practiceExamId = isPractice ? parseInt(practice_exam_id) : null;
+    // Lưu người tạo batch
+    const createdBy = req.adminUser?.id ?? null;
+
     let result;
     if (USE_SQLITE) {
       result = await db.query(`
-        INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, exam_type)
+        INSERT INTO batches (name, start_time, end_time, duration, blueprint, record_enabled, record_mode, exam_type, created_by)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, recordFlag, recordMode, examType]);
+      `, [name, startUTC, endUTC, duration, blueprintJson, recordFlag, recordMode, examType, createdBy]);
     } else {
       result = await db.query(`
-        INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, exam_type)
+        INSERT INTO batches (name, start_time, end_time, duration, blueprint, record_enabled, record_mode, exam_type, created_by)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, !!recordFlag, recordMode, examType]);
+      `, [name, startUTC, endUTC, duration, blueprintJson, !!recordFlag, recordMode, examType, createdBy]);
     }
     console.log('[CreateBatch] Success, id:', result.lastInsertRowid);
     res.json({ success: true, id: result.lastInsertRowid || result.rows?.[0]?.id });
   } catch (error: any) {
     console.error('[CreateBatch] Error:', error);
-    res.status(500).json({ error: 'Failed to create batch' });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -1015,20 +843,24 @@ router.get('/batches/:id', async (req: Request, res: Response) => {
 router.put('/batches/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, start_time, end_time, duration, blueprint, practice_exam_id, record_mode, exam_type } = req.body;
+    const { name, start_time, end_time, duration, blueprint, record_mode, exam_type } = req.body;
     const examType = exam_type === 'quiz' ? 'quiz' : 'essay';
+
+    // Kiểm tra quyền: mod chỉ được sửa batch của mình
+    if (req.adminUser?.role !== 'admin') {
+      const own = await db.query('SELECT created_by FROM batches WHERE id = ?', [parseInt(id)]);
+      if (!own.rows[0] || own.rows[0].created_by !== req.adminUser?.id) {
+        return res.status(403).json({ error: 'Forbidden: You can only edit batches you created' });
+      }
+    }
 
     const startUTC = toStorageTime(start_time);
     const endUTC = toStorageTime(end_time);
 
-    const isPractice = practice_exam_id !== undefined && practice_exam_id !== null && practice_exam_id !== '';
-    const blueprintJson = isPractice ? null : JSON.stringify(blueprint);
-    const practiceExamId = isPractice ? parseInt(practice_exam_id) : null;
-
-    // tenant_admin may change recording; regular admin keeps the current database value.
+    // Chế độ record: admin dùng giá trị client gửi; mod KHÔNG đổi được → giữ nguyên mode cũ trong DB.
     const RECORD_MODES = ['none', 'local', 's3'];
     let recordMode: string;
-    if (req.adminUser?.role === 'tenant_admin') {
+    if (req.adminUser?.role === 'admin') {
       recordMode = RECORD_MODES.includes(record_mode) ? record_mode : 'none';
     } else {
       const cur = await db.query('SELECT record_mode FROM batches WHERE id = ?', [parseInt(id)]);
@@ -1038,14 +870,14 @@ router.put('/batches/:id', async (req: Request, res: Response) => {
 
     if (USE_SQLITE) {
       await db.query(`
-        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, practice_exam_id = ?, record_enabled = ?, record_mode = ?, exam_type = ?
+        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, record_enabled = ?, record_mode = ?, exam_type = ?
         WHERE id = ?
-      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, recordFlag, recordMode, examType, parseInt(id)]);
+      `, [name, startUTC, endUTC, duration, JSON.stringify(blueprint), recordFlag, recordMode, examType, parseInt(id)]);
     } else {
       await db.query(`
-        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, practice_exam_id = ?, record_enabled = ?, record_mode = ?, exam_type = ?
+        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, record_enabled = ?, record_mode = ?, exam_type = ?
         WHERE id = ?
-      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, !!recordFlag, recordMode, examType, parseInt(id)]);
+      `, [name, startUTC, endUTC, duration, JSON.stringify(blueprint), !!recordFlag, recordMode, examType, parseInt(id)]);
     }
 
     res.json({ success: true });
@@ -1058,10 +890,17 @@ router.delete('/batches/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const batchId = parseInt(id);
+
+    // Kiểm tra quyền: mod chỉ được xóa batch của mình
+    if (req.adminUser?.role !== 'admin') {
+      const own = await db.query('SELECT created_by FROM batches WHERE id = ?', [batchId]);
+      if (!own.rows[0] || own.rows[0].created_by !== req.adminUser?.id) {
+        return res.status(403).json({ error: 'Forbidden: You can only delete batches you created' });
+      }
+    }
     
-    // Delete cascade: exam_questions/practice_submissions -> students -> batch
+    // Delete cascade: exam_questions -> students -> batch
     await db.query('DELETE FROM exam_questions WHERE student_id IN (SELECT id FROM students WHERE batch_id = ?)', [batchId]);
-    await db.query('DELETE FROM practice_submissions WHERE student_id IN (SELECT id FROM students WHERE batch_id = ?)', [batchId]);
     await db.query('DELETE FROM violations WHERE student_id IN (SELECT id FROM students WHERE batch_id = ?)', [batchId]);
     await db.query('DELETE FROM students WHERE batch_id = ?', [batchId]);
     await db.query('DELETE FROM batches WHERE id = ?', [batchId]);
@@ -1076,27 +915,24 @@ router.post('/batches/:id/check-feasibility', async (req: Request, res: Response
   try {
     const { blueprint } = req.body;
     const errors: string[] = [];
+    const { blueprintMode, items: blueprintItems } = parseBlueprintCompat(blueprint);
 
-    for (const item of blueprint) {
+    for (const item of blueprintItems) {
       for (const level of ['Easy', 'Medium', 'Hard'] as const) {
         const count = item[level.toLowerCase() as 'easy' | 'medium' | 'hard'];
         if (count > 0) {
-          const conditions = ['module = ?', 'level = ?'];
-          const params: any[] = [item.module, level];
-          if (item.question_group) {
-            conditions.push('question_group = ?');
-            params.push(item.question_group);
-          }
-
+          const typeSql = blueprintMode === 'type' ? 'AND LOWER(type) = LOWER(?)' : '';
+          const params = blueprintMode === 'type'
+            ? [item.module, level, item.type]
+            : [item.module, level];
           const result = await db.query(`
             SELECT COUNT(*) as count FROM question_bank
-            WHERE ${conditions.join(' AND ')}
+            WHERE LOWER(module) = LOWER(?) AND LOWER(level) = LOWER(?) ${typeSql}
           `, params);
 
-          const label = item.question_group ? `${item.module} (${item.question_group})` : item.module;
           const available = parseInt(result.rows[0].count);
           if (available < count) {
-            errors.push(`Module ${label} Level ${level} has only ${available} questions, need ${count}`);
+            errors.push(`Module ${item.module} Level ${level} has only ${available} questions, need ${count}`);
           }
         }
       }
@@ -1107,38 +943,6 @@ router.post('/batches/:id/check-feasibility', async (req: Request, res: Response
     res.status(500).json({ error: error.message });
   }
 });
-
-/** Một câu hỏi đã chọn — định danh bằng cặp (id, question_group). */
-interface PickedQuestion { id: string; questionGroup: string }
-
-/**
- * Randomly pick `count` questions matching module/level (+ optional type, question_group).
- * Trả về CẶP (id, question_group) vì id một mình không còn định danh được câu hỏi —
- * hai bộ đề khác nhau được phép dùng chung mã ID.
- */
-async function pickQuestionIds(opts: { module: string; level: string; type?: string; questionGroup?: string; count: number }): Promise<PickedQuestion[]> {
-  const { module, level, type, questionGroup, count } = opts;
-  if (count <= 0) return [];
-
-  const conditions = ['LOWER(module) = ?', 'LOWER(level) = ?'];
-  const params: any[] = [module.toLowerCase().trim(), level.toLowerCase().trim()];
-  if (type) {
-    conditions.push('LOWER(type) = ?');
-    params.push(type.toLowerCase().trim());
-  }
-  if (questionGroup) {
-    conditions.push('LOWER(question_group) = ?');
-    params.push(questionGroup.toLowerCase().trim());
-  }
-  params.push(count);
-
-  const r = await db.query(
-    `SELECT id, COALESCE(question_group, '') AS question_group FROM question_bank
-     WHERE ${conditions.join(' AND ')} ORDER BY RANDOM() LIMIT ?`,
-    params
-  );
-  return r.rows.map((q: any) => ({ id: q.id, questionGroup: q.question_group || '' }));
-}
 
 router.post('/batches/:id/students/import', async (req: Request, res: Response) => {
   try {
@@ -1156,8 +960,8 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
     const generateCode = () => {
       const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
       let code = '';
-      for (let i = 0; i < 6; i++) {
-        code += chars.charAt(Math.floor(Math.random() * chars.length));
+      for (let i = 0; i < 8; i++) {
+        code += chars.charAt(crypto.randomInt(chars.length));
       }
       return code;
     };
@@ -1166,44 +970,34 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
     const students: {email: string; code: string}[] = [];
     
     console.log('Fetching batch...');
-    const batchResult = await db.query('SELECT id, blueprint, practice_exam_id FROM batches WHERE id = ?', [batchId]);
+    const batchResult = await db.query('SELECT id, blueprint FROM batches WHERE id = ?', [batchId]);
     const batch = batchResult.rows[0];
     console.log('Batch found:', batch ? 'yes' : 'no');
-    console.log('Batch blueprint:', batch?.blueprint, 'practice_exam_id:', batch?.practice_exam_id);
-
-    if (!batch) {
-      return res.status(404).json({ error: 'Batch not found' });
+    console.log('Batch blueprint:', batch?.blueprint);
+    
+    if (!batch || !batch.blueprint) {
+      console.log('[Import Students] ERROR: Batch has no blueprint');
+      return res.status(400).json({ error: 'Batch has no blueprint' });
     }
-
-    // Batch dạng Practice: không gán câu hỏi từ question_bank — học viên làm bài
-    // practice gắn với batch, chỉ cần tạo student + access code.
-    const isPracticeBatch = batch.practice_exam_id !== null && batch.practice_exam_id !== undefined;
-
-    let blueprint: any = [];
-    if (!isPracticeBatch) {
-      if (!batch.blueprint) {
-        console.log('[Import Students] ERROR: Batch has no blueprint');
-        return res.status(400).json({ error: 'Batch has no blueprint' });
+    
+    let blueprint;
+    try {
+      if (typeof batch.blueprint === 'string') {
+        blueprint = JSON.parse(batch.blueprint);
+      } else {
+        blueprint = batch.blueprint;
       }
-
-      try {
-        if (typeof batch.blueprint === 'string') {
-          blueprint = JSON.parse(batch.blueprint);
-        } else {
-          blueprint = batch.blueprint;
-        }
-      } catch (e) {
-        console.log('[Import Students] JSON parse error:', e);
-        blueprint = [];
-      }
-
-      console.log('Parsed blueprint:', JSON.stringify(blueprint));
-
-      // Support both legacy array and new { blueprintMode, items } formats
-      const { items: parsedBlueprintItems } = parseBlueprintCompat(blueprint);
-      if (!parsedBlueprintItems || parsedBlueprintItems.length === 0) {
-        return res.status(400).json({ error: 'Blueprint is empty' });
-      }
+    } catch (e) {
+      console.log('[Import Students] JSON parse error:', e);
+      blueprint = [];
+    }
+    
+    console.log('Parsed blueprint:', JSON.stringify(blueprint));
+    
+    // Support both legacy array and new { blueprintMode, items } formats
+    const { items: parsedBlueprintItems } = parseBlueprintCompat(blueprint);
+    if (!parsedBlueprintItems || parsedBlueprintItems.length === 0) {
+      return res.status(400).json({ error: 'Blueprint is empty' });
     }
     
     const existingResult = await db.query(
@@ -1238,25 +1032,30 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
     }
 
     for (const email of validEmails) {
-      const code = generateCode();
-      const studentResult = await db.query(`
-        INSERT INTO students (batch_id, email, access_code, status)
-        VALUES (?, ?, ?, 'pending')
-        RETURNING id
-      `, [batchId, email.trim(), code]);
+      let code = '';
+      let studentResult: any = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        code = generateCode();
+        try {
+          studentResult = await db.query(`
+            INSERT INTO students (batch_id, email, access_code, status)
+            VALUES (?, ?, ?, 'pending')
+            RETURNING id
+          `, [batchId, email.trim(), code]);
+          break;
+        } catch (error: any) {
+          const uniqueCollision = error?.code === '23505' || String(error?.message || '').includes('UNIQUE constraint failed');
+          if (!uniqueCollision || attempt === 4) throw error;
+        }
+      }
+      if (!studentResult) throw new Error('Could not generate a unique access code');
       
       const studentId = studentResult.rows[0]?.id;
       console.log('Student created:', studentId);
-
+      
       if (!studentId) continue;
-
-      // Batch dạng Practice: không gán câu hỏi từ question_bank
-      if (isPracticeBatch) {
-        students.push({ email: email.trim(), code });
-        continue;
-      }
-
-      const picked: PickedQuestion[] = [];
+      
+      const questionIds: string[] = [];
 
       // Parse blueprint supporting both legacy (array) and new ({ blueprintMode, items }) formats
       const { blueprintMode, items: blueprintItems } = parseBlueprintCompat(blueprint);
@@ -1266,28 +1065,56 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
         const easy   = item.easy   || 0;
         const medium = item.medium || 0;
         const hard   = item.hard   || 0;
-        const module = item.module || '';
-        const questionGroup = item.question_group || '';
-        const type = blueprintMode === 'type' ? (item.type || '') : undefined;
 
-        console.log(`Processing ${blueprintMode === 'type' ? `${module}/${type}` : module}${questionGroup ? ` (${questionGroup})` : ''}, easy=${easy}, medium=${medium}, hard=${hard}`);
+        if (blueprintMode === 'type') {
+          // By Module + Type: query WHERE module = ? AND type = ? AND level = ?
+          const moduleName = (item.module || '').toLowerCase().trim();
+          const typeName   = (item.type   || '').toLowerCase().trim();
+          console.log(`Processing by module+type: ${item.module}/${item.type}, easy=${easy}, medium=${medium}, hard=${hard}`);
 
-        for (const [level, count] of [['easy', easy], ['medium', medium], ['hard', hard]] as const) {
-          const found = await pickQuestionIds({ module, level, type, questionGroup, count });
-          console.log(`  ${level}: found ${found.length}`);
-          picked.push(...found);
+          if (easy > 0) {
+            const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(type) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, typeName, 'easy', easy]);
+            console.log(`  Module+Type Easy: found ${r.rows.length}`);
+            r.rows.forEach((q: any) => questionIds.push(q.id));
+          }
+          if (medium > 0) {
+            const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(type) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, typeName, 'medium', medium]);
+            console.log(`  Module+Type Medium: found ${r.rows.length}`);
+            r.rows.forEach((q: any) => questionIds.push(q.id));
+          }
+          if (hard > 0) {
+            const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(type) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, typeName, 'hard', hard]);
+            console.log(`  Module+Type Hard: found ${r.rows.length}`);
+            r.rows.forEach((q: any) => questionIds.push(q.id));
+          }
+        } else {
+          // Default: By Module only
+          const moduleName = (item.module || '').toLowerCase().trim();
+          console.log(`Processing by module: ${item.module} -> ${moduleName}, easy=${easy}, medium=${medium}, hard=${hard}`);
+
+          if (easy > 0) {
+            const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, 'easy', easy]);
+            console.log(`  Module Easy: found ${r.rows.length}`);
+            r.rows.forEach((q: any) => questionIds.push(q.id));
+          }
+          if (medium > 0) {
+            const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, 'medium', medium]);
+            console.log(`  Module Medium: found ${r.rows.length}`);
+            r.rows.forEach((q: any) => questionIds.push(q.id));
+          }
+          if (hard > 0) {
+            const r = await db.query('SELECT id FROM question_bank WHERE LOWER(module) = ? AND LOWER(level) = ? ORDER BY RANDOM() LIMIT ?', [moduleName, 'hard', hard]);
+            console.log(`  Module Hard: found ${r.rows.length}`);
+            r.rows.forEach((q: any) => questionIds.push(q.id));
+          }
         }
       }
       
-      console.log('Total questions:', picked.length);
+      console.log('Total questions:', questionIds.length);
       
-      // Insert into exam_questions — lưu kèm question_group để xác định đúng câu hỏi
-      // khi hai bộ đề dùng chung mã ID.
-      for (let i = 0; i < picked.length; i++) {
-        await db.query(
-          'INSERT INTO exam_questions (student_id, question_id, question_group, question_order) VALUES (?, ?, ?, ?)',
-          [studentId, picked[i].id, picked[i].questionGroup, i + 1]
-        );
+      // Insert into exam_questions
+      for (let i = 0; i < questionIds.length; i++) {
+        await db.query('INSERT INTO exam_questions (student_id, question_id, question_order) VALUES (?, ?, ?)', [studentId, questionIds[i], i + 1]);
       }
       console.log('Inserted into exam_questions');
       
@@ -1319,7 +1146,6 @@ router.delete('/students/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     await db.query('DELETE FROM exam_questions WHERE student_id = ?', [parseInt(id)]);
-    await db.query('DELETE FROM practice_submissions WHERE student_id = ?', [parseInt(id)]);
     await db.query('DELETE FROM violations WHERE student_id = ?', [parseInt(id)]);
     await db.query('DELETE FROM students WHERE id = ?', [parseInt(id)]);
     res.json({ success: true });
@@ -1331,17 +1157,11 @@ router.delete('/students/:id', async (req: Request, res: Response) => {
 router.get('/batches/:id/students/export', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const batchId = parseInt(id);
-
-    const batchResult = await db.query('SELECT name FROM batches WHERE id = ?', [batchId]);
-    const batchName = batchResult.rows[0]?.name;
-    const filenameBase = `${sanitizeFilename(batchName || `batch-${id}`)}-students`;
-
-    const result = await db.query('SELECT email, access_code FROM students WHERE batch_id = ?', [batchId]);
+    const result = await db.query('SELECT email, access_code FROM students WHERE batch_id = ?', [parseInt(id)]);
     const students = result.rows;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', buildContentDisposition(filenameBase, 'xlsx'));
+    res.setHeader('Content-Disposition', `attachment; filename=students-${id}.xlsx`);
 
     const workbook = XLSX.utils.book_new();
     const sheet = XLSX.utils.json_to_sheet(students);
@@ -1359,12 +1179,16 @@ router.post('/students/:studentId/reset', async (req: Request, res: Response) =>
     
     await db.query(`
       UPDATE students 
-      SET status = 'pending', exam_started_at = NULL, exam_deadline = NULL, disconnected_at = NULL 
+      SET status = 'pending', exam_started_at = NULL, exam_deadline = NULL, disconnected_at = NULL,
+          submitted_at = NULL, submit_reason = NULL, active_jti = NULL,
+          recording_finalized_at = NULL, recording_final_part_index = NULL, recording_incomplete = FALSE
       WHERE id = ?
     `, [parseInt(studentId)]);
     
     await db.query('DELETE FROM exam_questions WHERE student_id = ?', [parseInt(studentId)]);
-    await db.query('DELETE FROM practice_submissions WHERE student_id = ?', [parseInt(studentId)]);
+    await db.query('DELETE FROM recording_parts WHERE student_id = ?', [parseInt(studentId)]);
+    // Xóa phiên cũ để lần thi mới không bị false-positive concurrent_session
+    await db.query('DELETE FROM exam_sessions WHERE student_id = ?', [parseInt(studentId)]);
 
     res.json({ success: true, message: 'Student exam reset successfully' });
   } catch (error: any) {
@@ -1393,7 +1217,6 @@ router.get('/batches/:id/results', async (req: Request, res: Response) => {
         SELECT eq.*, q.type, q.level, q.module, q.question_sample, q.rubric_must_have, q.rubric_nice_to_have, q.rubric_optional
         FROM exam_questions eq
         JOIN question_bank q ON eq.question_id = q.id
-          AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
         WHERE eq.student_id = ?
         ORDER BY eq.question_order
       `, [student.id]);
@@ -1419,12 +1242,23 @@ router.get('/batches/:id/results', async (req: Request, res: Response) => {
       let violationEvents: any[] = [];
       try {
         const violationEventsResult = await db.query(`
-          SELECT type, text_length, content_preview, question_id, created_at
+          SELECT type, text_length, content_preview, question_id, metadata_json, created_at
           FROM violation_events WHERE student_id = ? ORDER BY created_at DESC
         `, [student.id]);
         violationEvents = violationEventsResult.rows;
       } catch (evErr: any) {
         console.error('[results] violation_events query failed (non-fatal):', evErr?.message);
+      }
+
+      let recordingParts: any[] = [];
+      try {
+        const recordingPartsResult = await db.query(`
+          SELECT part_index, object_key, byte_size, uploaded_at
+          FROM recording_parts WHERE student_id = ? ORDER BY part_index
+        `, [student.id]);
+        recordingParts = recordingPartsResult.rows;
+      } catch (recordErr: any) {
+        console.error('[results] recording_parts query failed (non-fatal):', recordErr?.message);
       }
 
       results.push({
@@ -1433,6 +1267,7 @@ router.get('/batches/:id/results', async (req: Request, res: Response) => {
         violations: parseInt(violationsResult.rows[0]?.total) || 0,
         violations_breakdown: violationsBreakdown,
         violation_events: violationEvents,
+        recording_parts: recordingParts,
       });
     }
 
@@ -1451,94 +1286,11 @@ router.put('/results/:studentId', async (req: Request, res: Response) => {
 
     for (const q of questionsResult.rows) {
       await db.query(`
-        UPDATE exam_questions
+        UPDATE exam_questions 
         SET trainer_score = ?, trainer_feedback = ?
         WHERE id = ?
       `, [trainer_score, trainer_feedback, q.id]);
     }
-
-    res.json({ success: true });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /api/admin/batches/:id/practice-results — Kết quả batch dạng Practice
-router.get('/batches/:id/practice-results', async (req: Request, res: Response) => {
-  try {
-    const batchId = parseInt(req.params.id);
-
-    const result = await db.query(`
-      SELECT s.id as student_id, s.email, s.status, s.exam_started_at,
-             ps.id as submission_id, ps.answer, ps.ai_score, ps.ai_feedback,
-             ps.trainer_score, ps.trainer_feedback,
-             (SELECT SUM(v.count) FROM violations v WHERE v.student_id = s.id) as violations
-      FROM students s
-      LEFT JOIN practice_submissions ps ON ps.student_id = s.id
-      WHERE s.batch_id = ?
-      ORDER BY s.email
-    `, [batchId]);
-
-    res.json(result.rows.map((r: any) => ({ ...r, violations: parseInt(r.violations) || 0 })));
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /api/admin/batches/:id/practice-results/export — Xuất Excel kết quả batch Practice
-router.get('/batches/:id/practice-results/export', async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const batchId = parseInt(id);
-
-    const batchResult = await db.query('SELECT name FROM batches WHERE id = ?', [batchId]);
-    const batchName = batchResult.rows[0]?.name;
-    const filenameBase = `${sanitizeFilename(batchName || `batch-${id}`)}-practice-results`;
-
-    const result = await db.query(`
-      SELECT s.email, s.status,
-             ps.answer, ps.ai_score, ps.ai_feedback, ps.trainer_score, ps.trainer_feedback,
-             (SELECT SUM(v.count) FROM violations v WHERE v.student_id = s.id) as violations
-      FROM students s
-      LEFT JOIN practice_submissions ps ON ps.student_id = s.id
-      WHERE s.batch_id = ?
-      ORDER BY s.email
-    `, [batchId]);
-
-    const data = result.rows.map((r: any) => ({
-      Email: r.email,
-      Status: r.status,
-      'Violation Count': parseInt(r.violations) || 0,
-      Answer: r.answer || '',
-      'AI Score': r.ai_score ?? 0,
-      'AI Feedback': r.ai_feedback || '',
-      'Trainer Score': r.trainer_score ?? r.ai_score ?? 0,
-      'Trainer Feedback': r.trainer_feedback || '',
-    }));
-
-    const workbook = XLSX.utils.book_new();
-    const sheet = XLSX.utils.json_to_sheet(data);
-    XLSX.utils.book_append_sheet(workbook, sheet, 'Practice Results');
-
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', buildContentDisposition(filenameBase, 'xlsx'));
-    res.send(XLSX.write(workbook, { type: 'buffer' }));
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// PUT /api/admin/practice-results/:studentId — Trainer chấm/ghi đè điểm bài practice
-router.put('/practice-results/:studentId', async (req: Request, res: Response) => {
-  try {
-    const { studentId } = req.params;
-    const { trainer_score, trainer_feedback } = req.body;
-
-    await db.query(`
-      UPDATE practice_submissions
-      SET trainer_score = ?, trainer_feedback = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE student_id = ?
-    `, [trainer_score, trainer_feedback, parseInt(studentId)]);
 
     res.json({ success: true });
   } catch (error: any) {
@@ -1551,21 +1303,16 @@ router.get('/batches/:id/results/export', async (req: Request, res: Response) =>
     const { id } = req.params;
     const batchId = parseInt(id);
 
-    const batchResult = await db.query('SELECT name FROM batches WHERE id = ?', [batchId]);
-    const batchName = batchResult.rows[0]?.name;
-    const filenameBase = `${sanitizeFilename(batchName || `batch-${id}`)}-results`;
-
     const studentsResult = await db.query('SELECT id, email FROM students WHERE batch_id = ?', [batchId]);
 
     const workbook = XLSX.utils.book_new();
 
     for (const student of studentsResult.rows) {
       const questionsResult = await db.query(`
-        SELECT eq.*, q.type, q.level, q.module, q.question_sample, q.question_plain,
+        SELECT eq.*, q.type, q.level, q.module, q.question_sample, 
           q.rubric_must_have, q.rubric_nice_to_have, q.rubric_optional
         FROM exam_questions eq
         JOIN question_bank q ON eq.question_id = q.id
-          AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
         WHERE eq.student_id = ?
         ORDER BY eq.question_order
       `, [student.id]);
@@ -1579,7 +1326,7 @@ router.get('/batches/:id/results/export', async (req: Request, res: Response) =>
         Type: q.type,
         Level: q.level,
         Module: q.module,
-        Question: q.question_plain || stripHtml(q.question_sample),
+        Question: q.question_sample,
         Answer: q.answer || '',
         'Rubric Must-have': q.rubric_must_have,
         'Rubric Nice-to-have': q.rubric_nice_to_have,
@@ -1597,7 +1344,7 @@ router.get('/batches/:id/results/export', async (req: Request, res: Response) =>
     }
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', buildContentDisposition(filenameBase, 'xlsx'));
+    res.setHeader('Content-Disposition', `attachment; filename=results-${id}.xlsx`);
     res.send(XLSX.write(workbook, { type: 'buffer' }));
   } catch (error: any) {
     res.status(500).json({ error: error.message });

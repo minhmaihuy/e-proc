@@ -6,9 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "npx vite build",
-    "preview": "vite preview",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -16,22 +14,19 @@
     "@zip.js/zip.js": "^2.8.34",
     "axios": "^1.6.5",
     "dompurify": "^3.4.9",
-    "JSCPP": "^2.0.9",
+    "lucide-react": "^1.30.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.21.3"
   },
   "devDependencies": {
-    "@testing-library/jest-dom": "^7.0.0",
-    "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.3",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^18.2.48",
     "@types/react-dom": "^18.2.18",
     "@vitejs/plugin-react": "^4.2.1",
-    "jsdom": "^29.1.1",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5.3.3",
     "vite": "^5.0.12",
-    "vite-plugin-javascript-obfuscator": "^3.1.0",
-    "vitest": "^2.1.9"
+    "vite-plugin-javascript-obfuscator": "^3.1.0"
   }
 }

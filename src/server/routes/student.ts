@@ -6,19 +6,27 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { studentAuthMiddleware } from '../middleware/studentAuth.js';
 import type { StudentTokenPayload } from '../middleware/studentAuth.js';
-import { runCode } from '../coderunner.js';
-import { createRecordingUploadUrl, isS3Configured } from '../services/s3.js';
-import {
-  getPracticeCompilerMode,
-  LAMBDA_COMPILER_LANGUAGES,
-  runCodeWithLambda,
-} from '../services/lambdaCompiler.js';
+import { createRecordingUploadUrl, inspectRecordingObject, isS3Configured } from '../services/s3.js';
+import rateLimit from 'express-rate-limit';
+import { sessionTracker, detectConcurrentSession } from '../middleware/sessionTracker.js';
+import { getExamContext, assertCanStart, computeExamDeadline, sendExamGuardError, ExamGuardError } from '../services/examGuard.js';
+import { parseBlueprintCompat } from '../services/blueprint.js';
 
 dotenv.config();
 
 const USE_SQLITE = process.env.USE_SQLITE === 'true' || process.env.NODE_ENV !== 'production';
 
 const router = Router();
+
+// [SEC] Rate-limit riêng cho /verify — chống brute-force access code.
+// 10 lần / phút / IP đủ cho retry hợp lệ nhưng chặn dò mã hàng loạt.
+const verifyRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts. Please wait a minute and try again.' },
+});
 
 const toGMT7 = (utcDate: Date): Date => {
   return new Date(utcDate.getTime() + 7 * 60 * 60 * 1000);
@@ -38,7 +46,6 @@ async function finalizeSubmission(studentId: number): Promise<void> {
       SELECT eq.id, eq.answer, q.type, q.correct_answers, q.score
       FROM exam_questions eq
       JOIN question_bank q ON eq.question_id = q.id
-        AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
       WHERE eq.student_id = ?
     `, [studentId]);
 
@@ -63,12 +70,187 @@ async function finalizeSubmission(studentId: number): Promise<void> {
   } else {
     const examQuestionsResult = await db.query('SELECT id FROM exam_questions WHERE student_id = ?', [studentId]);
     for (const eq of examQuestionsResult.rows) {
-      cache.addToQueue(eq.id, studentId);
+      const queued = await db.query('SELECT id FROM ai_queue WHERE exam_question_id = ?', [eq.id]);
+      if (queued.rows.length === 0) cache.addToQueue(eq.id, studentId);
     }
   }
 }
 
-router.post('/verify', async (req: Request, res: Response) => {
+type SubmitReason = 'manual' | 'timeout' | 'violation' | 'recording_stopped' | 'concurrent_session' | 'absent_too_long';
+
+async function submitExamAtomically(
+  studentId: number,
+  reason: SubmitReason,
+  options: { requireCompleteRecording?: boolean } = {}
+): Promise<{ already: boolean }> {
+  const transition = await db.withTransaction(async (tx) => {
+    const lockSql = `
+      SELECT s.status, s.exam_deadline, s.recording_finalized_at, b.record_mode, b.record_enabled
+      FROM students s JOIN batches b ON b.id = s.batch_id
+      WHERE s.id = ?${USE_SQLITE ? '' : ' FOR UPDATE'}
+    `;
+    const row = (await tx.query(lockSql, [studentId])).rows[0];
+    if (!row) throw new Error('Student not found');
+    if (row.status === 'submitted') return { already: true };
+    if (row.status !== 'in_progress') throw new Error('Exam is not in progress');
+
+    const recordMode = row.record_mode || (row.record_enabled ? 's3' : 'none');
+    const deadlinePassed = row.exam_deadline && new Date() >= new Date(row.exam_deadline);
+    const finalReason: SubmitReason = deadlinePassed ? 'timeout' : reason;
+    if (options.requireCompleteRecording && !deadlinePassed && recordMode === 's3' && !row.recording_finalized_at) {
+      const error: any = new Error('Screen recording has not finished uploading');
+      error.code = 'RECORDING_INCOMPLETE';
+      throw error;
+    }
+
+    await tx.query(
+      `UPDATE students
+       SET status = 'submitted', submitted_at = ?, submit_reason = ?,
+           recording_incomplete = CASE WHEN ? = 's3' AND recording_finalized_at IS NULL THEN TRUE ELSE recording_incomplete END
+       WHERE id = ? AND status = 'in_progress'`,
+      [new Date().toISOString(), finalReason, recordMode, studentId]
+    );
+    return { already: false };
+  });
+
+  // Idempotent scoring/queueing is deliberately outside the short row-lock transaction.
+  await finalizeSubmission(studentId);
+  return transition;
+}
+
+async function startExamAtomically(studentId: number): Promise<{ success: true; questions_count: number; resume?: boolean }> {
+  return db.withTransaction(async (tx) => {
+    const context = await getExamContext(studentId, tx);
+    assertCanStart(context, new Date(), USE_SQLITE || process.env.SKIP_TIME_CHECK === 'true');
+
+    const locked = (await tx.query(
+      `SELECT s.*, b.duration, b.end_time, b.blueprint, b.exam_type
+       FROM students s JOIN batches b ON b.id = s.batch_id
+       WHERE s.id = ?${USE_SQLITE ? '' : ' FOR UPDATE'}`,
+      [studentId]
+    )).rows[0];
+    assertCanStart({ ...context, status: locked.status }, new Date(), USE_SQLITE || process.env.SKIP_TIME_CHECK === 'true');
+    const existing = await tx.query('SELECT COUNT(*) AS count FROM exam_questions WHERE student_id = ?', [studentId]);
+    const existingCount = Number(existing.rows[0]?.count || 0);
+    if (locked.status === 'in_progress' && existingCount > 0) {
+      await tx.query('UPDATE students SET disconnected_at = NULL WHERE id = ?', [studentId]);
+      return { success: true, questions_count: existingCount, resume: true };
+    }
+
+    await tx.query('DELETE FROM exam_questions WHERE student_id = ?', [studentId]);
+    const { blueprintMode, items: blueprintItems } = parseBlueprintCompat(locked.blueprint);
+    if (blueprintItems.length === 0) {
+      throw new ExamGuardError(422, 'invalid_blueprint', 'Exam blueprint is empty or invalid');
+    }
+    const examType = locked.exam_type === 'quiz' ? 'quiz' : 'essay';
+    const typeFilterSql = examType === 'quiz'
+      ? `AND type IN ('SingleChoice', 'MultipleChoice')`
+      : `AND type NOT IN ('SingleChoice', 'MultipleChoice')`;
+    const picked: { id: string; type: string; options: string | null }[] = [];
+
+    for (const item of blueprintItems) {
+      if (!item || typeof item.module !== 'string' || !item.module.trim()) {
+        throw new ExamGuardError(422, 'invalid_blueprint', 'Exam blueprint contains an invalid module');
+      }
+      if (blueprintMode === 'type' && (typeof item.type !== 'string' || !item.type.trim())) {
+        throw new ExamGuardError(422, 'invalid_blueprint', 'Exam blueprint contains an invalid question type');
+      }
+      for (const level of ['Easy', 'Medium', 'Hard'] as const) {
+        const count = Number(item[level.toLowerCase()] || 0);
+        if (count <= 0) continue;
+        const blueprintTypeSql = blueprintMode === 'type' ? 'AND LOWER(type) = LOWER(?)' : '';
+        const queryParams = blueprintMode === 'type'
+          ? [item.module.trim(), level, item.type!.trim(), count]
+          : [item.module.trim(), level, count];
+        const available = await tx.query(`
+          SELECT id, type, options FROM question_bank
+          WHERE LOWER(module) = LOWER(?) AND LOWER(level) = LOWER(?) ${blueprintTypeSql} ${typeFilterSql}
+          ORDER BY RANDOM() LIMIT ?
+        `, queryParams);
+        for (const q of available.rows) picked.push({ id: q.id, type: q.type, options: q.options ?? null });
+      }
+    }
+
+    for (let i = picked.length - 1; i > 0; i--) {
+      const j = crypto.randomInt(i + 1);
+      [picked[i], picked[j]] = [picked[j], picked[i]];
+    }
+    for (let i = 0; i < picked.length; i++) {
+      const q = picked[i];
+      let optionOrder: string | null = null;
+      if ((q.type === 'SingleChoice' || q.type === 'MultipleChoice') && q.options) {
+        try {
+          const keys = (JSON.parse(q.options) as { key: string }[]).map((option) => option.key);
+          for (let a = keys.length - 1; a > 0; a--) {
+            const b = crypto.randomInt(a + 1);
+            [keys[a], keys[b]] = [keys[b], keys[a]];
+          }
+          optionOrder = JSON.stringify(keys);
+        } catch {}
+      }
+      await tx.query(
+        'INSERT INTO exam_questions (student_id, question_id, question_order, option_order) VALUES (?, ?, ?, ?)',
+        [studentId, q.id, i + 1, optionOrder]
+      );
+    }
+
+    const now = new Date();
+    const batchEnd = new Date(locked.end_time);
+    const deadline = computeExamDeadline(now, Number(locked.duration || 30), batchEnd);
+    await tx.query(
+      `UPDATE students SET status = 'in_progress', exam_started_at = ?, exam_deadline = ?,
+       disconnected_at = NULL, recording_finalized_at = NULL, recording_final_part_index = NULL,
+       recording_incomplete = FALSE WHERE id = ?`,
+      [now.toISOString(), deadline.toISOString(), studentId]
+    );
+    return { success: true, questions_count: picked.length };
+  });
+}
+
+/**
+ * Anti-Cheat: đánh giá phiên đồng thời và cưỡng chế xử lý.
+ * - suspicious (đổi IP/UA/nhiều jti) → chỉ ghi forensic 'concurrent_session'.
+ * - lockable (chồng lấn thời gian) → ghi forensic + auto-submit ngay ở backend.
+ * Bọc try/catch toàn bộ: lỗi detect KHÔNG được làm hỏng request thi.
+ * Trả về true nếu đã auto-lock (để caller biết mà dừng phục vụ nội dung).
+ */
+async function enforceConcurrentSession(studentId: number, batchId: number): Promise<boolean> {
+  try {
+    const ev = await detectConcurrentSession(studentId);
+    if (!ev.suspicious) return false;
+
+    // Ghi forensic một lần cho mỗi lần phát hiện (append-only)
+    try {
+      const metadataJson = JSON.stringify({
+        ips: ev.ips,
+        userAgents: ev.userAgents,
+        jtis: ev.jtis,
+        overlap: ev.overlap,
+      }).slice(0, 2000);
+      await db.query(
+        'INSERT INTO violation_events (student_id, batch_id, type, text_length, content_preview, question_id, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [studentId, batchId, 'concurrent_session', ev.ips.length, `IPs: ${ev.ips.join(', ')}`.slice(0, 500), null, metadataJson]
+      );
+    } catch (logErr: any) {
+      console.error('[concurrent_session] forensic log failed (non-fatal):', logErr?.message);
+    }
+
+    if (ev.lockable) {
+      const statusRow = await db.query('SELECT status FROM students WHERE id = ?', [studentId]);
+      if (statusRow.rows[0]?.status === 'in_progress') {
+        await submitExamAtomically(studentId, 'concurrent_session');
+        console.log('[concurrent_session] Auto-submitted (overlap) student:', studentId, 'ips:', ev.ips);
+        return true;
+      }
+    }
+    return false;
+  } catch (err: any) {
+    console.error('[enforceConcurrentSession] failed:', err?.message);
+    throw err;
+  }
+}
+
+router.post('/verify', verifyRateLimit, async (req: Request, res: Response) => {
   try {
     const { access_code } = req.body;
 
@@ -77,7 +259,7 @@ router.post('/verify', async (req: Request, res: Response) => {
     }
 
     const result = await db.query(`
-      SELECT s.*, b.name as batch_name, b.start_time, b.end_time, b.duration, b.practice_exam_id, b.record_enabled, b.record_mode
+      SELECT s.*, b.name as batch_name, b.start_time, b.end_time, b.duration, b.record_enabled, b.record_mode
       FROM students s
       JOIN batches b ON s.batch_id = b.id
       WHERE s.access_code = ?
@@ -116,8 +298,11 @@ router.post('/verify', async (req: Request, res: Response) => {
 
     // [C-4] Cấp student token (JWT ngắn hạn 4h) — không trả raw studentId dạng tin tưởng nữa
     const secret = process.env.JWT_SECRET!;
+    // jti: định danh phiên riêng cho mỗi lần verify — dùng phát hiện dùng đồng thời nhiều client
+    const jti = crypto.randomUUID();
+    await db.query('UPDATE students SET active_jti = ? WHERE id = ?', [jti, student.id]);
     const studentToken = jwt.sign(
-      { studentId: student.id, batchId: student.batch_id } as StudentTokenPayload,
+      { studentId: student.id, batchId: student.batch_id, jti } as StudentTokenPayload,
       secret,
       { expiresIn: '4h' }
     );
@@ -144,14 +329,13 @@ router.post('/verify', async (req: Request, res: Response) => {
       dev_mode: isDevMode,
       exam_start: startTime.toISOString(),
       exam_end: endTime.toISOString(),
-      // Batch dạng Practice → frontend điều hướng /practice thay vì /exam
-      exam_kind: student.practice_exam_id ? 'practice' : 'exam',
       record_enabled: !!student.record_enabled, // giữ để tương thích ngược
       record_mode: recordMode,
       // chỉ trả pass khi local — client dùng ngầm để mã hóa, không hiển thị
       recording_password: recordMode === 'local' ? recordingPassword : undefined,
     });
   } catch (error: any) {
+    if (sendExamGuardError(res, error)) return;
     res.status(500).json({ error: error.message });
   }
 });
@@ -172,15 +356,19 @@ router.post('/select-email', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/exam/start', async (req: Request, res: Response) => {
+router.post('/exam/start', studentAuthMiddleware, async (req: Request, res: Response) => {
   try {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     
-    const { student_id } = req.body;
+    const student_id = req.studentPayload!.studentId;
+    const startedExam = await startExamAtomically(student_id);
+    return res.json(startedExam);
+
+    /* Legacy implementation retained temporarily below for source compatibility; unreachable after atomic start. */
     console.log('[startExam] student_id:', student_id);
 
     const studentResult = await db.query(
-      'SELECT s.*, b.duration, b.practice_exam_id FROM students s JOIN batches b ON s.batch_id = b.id WHERE s.id = ?',
+      'SELECT s.*, b.duration, b.end_time FROM students s JOIN batches b ON s.batch_id = b.id WHERE s.id = ?',
       [student_id]
     );
     const student = studentResult.rows[0];
@@ -190,13 +378,8 @@ router.post('/exam/start', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    // Học viên thuộc batch Practice không start exam thường được — chuyển hướng /practice
-    if (student.practice_exam_id) {
-      return res.json({ success: false, redirect: 'practice' });
-    }
-
     console.log('[startExam] student.status:', student.status);
-
+    
     if (student.status === 'submitted') {
       return res.status(400).json({ error: 'Exam already submitted' });
     }
@@ -225,9 +408,7 @@ router.post('/exam/start', async (req: Request, res: Response) => {
 
     const batchResult = await db.query('SELECT blueprint, exam_type FROM batches WHERE id = ?', [student.batch_id]);
     const batch = batchResult.rows[0];
-    const blueprint = batch?.blueprint
-      ? (typeof batch.blueprint === 'string' ? JSON.parse(batch.blueprint) : batch.blueprint)
-      : [];
+    const { blueprintMode, items: blueprintItems } = parseBlueprintCompat(batch?.blueprint);
     const examType = batch?.exam_type === 'quiz' ? 'quiz' : 'essay';
 
     // Batch quiz chỉ lấy câu trắc nghiệm; batch essay chỉ lấy câu tự luận/coding.
@@ -239,16 +420,20 @@ router.post('/exam/start', async (req: Request, res: Response) => {
     // Mỗi câu kèm type + options (để sinh thứ tự đáp án xáo cho câu quiz)
     const picked: { id: string; type: string; options: string | null }[] = [];
 
-    for (const item of blueprint) {
+    for (const item of blueprintItems) {
       for (const level of ['Easy', 'Medium', 'Hard'] as const) {
         const count = item[level.toLowerCase() as 'easy' | 'medium' | 'hard'];
         if (count > 0) {
+          const blueprintTypeSql = blueprintMode === 'type' ? 'AND LOWER(type) = LOWER(?)' : '';
+          const queryParams = blueprintMode === 'type'
+            ? [item.module, level, item.type, count]
+            : [item.module, level, count];
           const availableResult = await db.query(`
             SELECT id, type, options FROM question_bank
-            WHERE module = ? AND level = ? ${typeFilterSql}
+            WHERE LOWER(module) = LOWER(?) AND LOWER(level) = LOWER(?) ${blueprintTypeSql} ${typeFilterSql}
             ORDER BY RANDOM()
             LIMIT ?
-          `, [item.module, level, count]);
+          `, queryParams);
 
           for (const q of availableResult.rows) {
             picked.push({ id: q.id, type: q.type, options: q.options ?? null });
@@ -259,7 +444,7 @@ router.post('/exam/start', async (req: Request, res: Response) => {
 
     // Fisher–Yates: xáo thứ tự CÂU cho riêng học viên này
     for (let i = picked.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
+      const j = crypto.randomInt(i + 1);
       [picked[i], picked[j]] = [picked[j], picked[i]];
     }
 
@@ -272,7 +457,7 @@ router.post('/exam/start', async (req: Request, res: Response) => {
           const opts = JSON.parse(q.options) as { key: string }[];
           const keys = opts.map((o) => o.key);
           for (let a = keys.length - 1; a > 0; a--) {
-            const b = Math.floor(Math.random() * (a + 1));
+            const b = crypto.randomInt(a + 1);
             [keys[a], keys[b]] = [keys[b], keys[a]];
           }
           optionOrder = JSON.stringify(keys);
@@ -287,7 +472,7 @@ router.post('/exam/start', async (req: Request, res: Response) => {
     // Ghi thời điểm bắt đầu và deadline (chỉ set khi chưa có)
     const durationSeconds = (student.duration || 30) * 60;
     const now = new Date();
-    const deadline = new Date(now.getTime() + durationSeconds * 1000);
+    const deadline = computeExamDeadline(now, durationSeconds / 60, new Date(student.end_time));
     await db.query(
       "UPDATE students SET status = 'in_progress', exam_started_at = ?, exam_deadline = ?, disconnected_at = NULL WHERE id = ?",
       [now.toISOString(), deadline.toISOString(), student_id]
@@ -295,12 +480,13 @@ router.post('/exam/start', async (req: Request, res: Response) => {
 
     res.json({ success: true, questions_count: picked.length });
   } catch (error: any) {
+    if (sendExamGuardError(res, error)) return;
     res.status(500).json({ error: error.message });
   }
 });
 
 
-router.get('/exam/questions', studentAuthMiddleware, async (req: Request, res: Response) => {
+router.get('/exam/questions', studentAuthMiddleware, sessionTracker, async (req: Request, res: Response) => {
   try {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
 
@@ -309,7 +495,7 @@ router.get('/exam/questions', studentAuthMiddleware, async (req: Request, res: R
 
     // === SERVER-SIDE TIMER GUARD ===
     const studentResult = await db.query(`
-      SELECT s.status, s.exam_deadline, s.disconnected_at, b.duration, b.practice_exam_id
+      SELECT s.status, s.exam_deadline, s.disconnected_at, b.duration
       FROM students s
       JOIN batches b ON s.batch_id = b.id
       WHERE s.id = ?
@@ -320,14 +506,8 @@ router.get('/exam/questions', studentAuthMiddleware, async (req: Request, res: R
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    // Học viên thuộc batch Practice vào nhầm /exam (bookmark/cache JS cũ):
-    // báo client chuyển hướng sang /practice thay vì gán 0 câu hỏi rồi treo loading
-    if (student.practice_exam_id) {
-      return res.json({ redirect: 'practice', questions: [], time_remaining: null });
-    }
-
     if (student.status === 'submitted') {
-      return res.status(410).json({
+      return res.status(410).json({ 
         error: 'Exam already submitted',
         reason: 'submitted'
       });
@@ -337,16 +517,7 @@ router.get('/exam/questions', studentAuthMiddleware, async (req: Request, res: R
 
     // Nếu học viên mới bắt đầu truy cập bài thi lần đầu (status = pending)
     if (student.status === 'pending') {
-      const durationSeconds = (student.duration || 30) * 60;
-      const deadline = new Date(now.getTime() + durationSeconds * 1000);
-      
-      await db.query(
-        "UPDATE students SET status = 'in_progress', exam_started_at = ?, exam_deadline = ?, disconnected_at = NULL WHERE id = ?",
-        [now.toISOString(), deadline.toISOString(), parseInt(studentId)]
-      );
-      
-      student.status = 'in_progress';
-      student.exam_deadline = deadline;
+      return res.json({ questions: [], time_remaining: null });
     }
 
 
@@ -355,9 +526,7 @@ router.get('/exam/questions', studentAuthMiddleware, async (req: Request, res: R
       const deadline = new Date(student.exam_deadline);
       if (now >= deadline) {
         console.log('[getQuestions] Deadline passed, auto-submitting student:', studentId);
-        await db.query("UPDATE students SET status = 'submitted' WHERE id = ?", [parseInt(studentId)]);
-        await cache.flushAnswers();
-        await finalizeSubmission(parseInt(studentId));
+        await submitExamAtomically(parseInt(studentId), 'timeout');
         return res.status(410).json({
           error: 'Time is up. Your exam has been automatically submitted.',
           reason: 'timeout'
@@ -372,9 +541,8 @@ router.get('/exam/questions', studentAuthMiddleware, async (req: Request, res: R
       const absentSeconds = (now.getTime() - disconnectedAt.getTime()) / 1000;
       if (absentSeconds > DISCONNECT_GRACE_SECONDS) {
         console.log('[getQuestions] Student absent too long (%ds), auto-submitting:', Math.round(absentSeconds));
-        await db.query("UPDATE students SET status = 'submitted', disconnected_at = NULL WHERE id = ?", [parseInt(studentId)]);
-        await cache.flushAnswers();
-        await finalizeSubmission(parseInt(studentId));
+        await submitExamAtomically(parseInt(studentId), 'absent_too_long');
+        await db.query('UPDATE students SET disconnected_at = NULL WHERE id = ?', [parseInt(studentId)]);
         return res.status(410).json({
           error: 'You were absent for more than 2 minutes. Your exam has been automatically submitted.',
           reason: 'absent_too_long'
@@ -382,6 +550,17 @@ router.get('/exam/questions', studentAuthMiddleware, async (req: Request, res: R
       }
       // Trong grace period: xóa disconnected_at (học viên đã quay lại đúng hạn)
       await db.query('UPDATE students SET disconnected_at = NULL WHERE id = ?', [parseInt(studentId)]);
+    }
+
+    // === CONCURRENT SESSION GUARD ===
+    // Endpoint này được poll đều đặn nên là nơi tự nhiên để phát hiện phiên song song,
+    // kể cả khi client kia không gửi violation. Auto-lock khi có chồng lấn thời gian.
+    const autoLocked = await enforceConcurrentSession(parseInt(studentId), req.studentPayload!.batchId);
+    if (autoLocked) {
+      return res.status(410).json({
+        error: 'Multiple concurrent sessions detected. Your exam has been automatically submitted.',
+        reason: 'concurrent_session'
+      });
     }
 
     // Tính time_remaining từ server
@@ -397,7 +576,6 @@ router.get('/exam/questions', studentAuthMiddleware, async (req: Request, res: R
       SELECT eq.question_order, eq.answer, eq.option_order, q.id, q.type, q.level, q.module, q.question_sample, q.options
       FROM exam_questions eq
       JOIN question_bank q ON eq.question_id = q.id
-        AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
       WHERE eq.student_id = ?
       ORDER BY eq.question_order
     `, [parseInt(studentId)]);
@@ -464,17 +642,65 @@ router.post('/exam/disconnect', studentAuthMiddleware, async (req: Request, res:
   }
 });
 
-router.post('/exam/answer', studentAuthMiddleware, async (req: Request, res: Response) => {
+router.post('/exam/answer', studentAuthMiddleware, sessionTracker, async (req: Request, res: Response) => {
   try {
     // [C-4] studentId từ token đã xác thực
     const studentId = req.studentPayload!.studentId.toString();
 
-    const { question_order, answer } = req.body;
+    const questionOrder = Number(req.body?.question_order);
+    let answer = req.body?.answer;
+    if (!Number.isInteger(questionOrder) || questionOrder <= 0 || typeof answer !== 'string') {
+      return res.status(400).json({ error: 'Invalid answer payload' });
+    }
+    if (answer.length > 100_000) return res.status(413).json({ error: 'Answer is too large' });
+
+    // [SEC] Không nhận answer sau khi đã nộp hoặc quá deadline.
+    // Trước đây /answer chỉ buffer mù → sau khi bị khóa/auto-submit vẫn ghi đè được đáp án.
+    const assigned = (await db.query(`
+      SELECT q.type, q.options
+      FROM exam_questions eq JOIN question_bank q ON q.id = eq.question_id
+      WHERE eq.student_id = ? AND eq.question_order = ?
+    `, [parseInt(studentId), questionOrder])).rows[0];
+    if (!assigned) return res.status(404).json({ error: 'Question is not assigned to this student' });
+
+    if (assigned.type === 'SingleChoice' || assigned.type === 'MultipleChoice') {
+      let selected: string[];
+      try { selected = JSON.parse(answer); } catch { return res.status(400).json({ error: 'Invalid quiz answer' }); }
+      if (!Array.isArray(selected) || selected.some((key) => typeof key !== 'string')) {
+        return res.status(400).json({ error: 'Invalid quiz answer' });
+      }
+      const allowed = new Set<string>();
+      try { for (const option of JSON.parse(assigned.options || '[]')) allowed.add(option.key); } catch {}
+      selected = [...new Set(selected)];
+      if (selected.some((key) => !allowed.has(key)) || (assigned.type === 'SingleChoice' && selected.length > 1)) {
+        return res.status(400).json({ error: 'Invalid quiz option' });
+      }
+      answer = JSON.stringify(selected);
+    }
 
     // Lưu vào buffer trước
-    cache.bufferAnswer(parseInt(studentId), question_order, answer);
+    const saved = await db.query(`
+      UPDATE exam_questions
+      SET answer = ?
+      WHERE student_id = ? AND question_order = ?
+        AND EXISTS (
+          SELECT 1 FROM students s
+          WHERE s.id = exam_questions.student_id
+            AND s.status = 'in_progress'
+            AND s.exam_deadline IS NOT NULL
+            AND s.exam_deadline > CURRENT_TIMESTAMP
+        )
+    `, [answer, parseInt(studentId), questionOrder]);
+    if (saved.rowCount !== 1) {
+      const current = (await db.query('SELECT status, exam_deadline FROM students WHERE id = ?', [parseInt(studentId)])).rows[0];
+      if (current?.status === 'in_progress' && current.exam_deadline && new Date() >= new Date(current.exam_deadline)) {
+        await submitExamAtomically(parseInt(studentId), 'timeout');
+        return res.status(410).json({ error: 'Deadline passed', reason: 'timeout' });
+      }
+      return res.status(410).json({ error: 'Exam is no longer accepting answers', reason: 'submitted_or_timeout' });
+    }
 
-    res.json({ success: true, cached: true });
+    res.json({ success: true, persisted: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -497,228 +723,32 @@ router.post('/exam/submit', studentAuthMiddleware, async (req: Request, res: Res
     // [C-4] studentId từ token đã xác thực
     const studentId = req.studentPayload!.studentId.toString();
 
-    await cache.flushAnswers();
-
-    await db.query("UPDATE students SET status = 'submitted' WHERE id = ?", [parseInt(studentId)]);
-
-    await finalizeSubmission(parseInt(studentId));
-
-    res.json({ success: true, message: 'Exam submitted. Results will be available shortly.' });
+    // [SEC] Idempotent: nếu đã submitted thì trả OK ngay, không flush/queue lại
+    // (tránh re-queue chấm điểm trùng khi client gọi submit nhiều lần).
+    const result = await submitExamAtomically(parseInt(studentId), 'manual', { requireCompleteRecording: true });
+    res.json({ success: true, already: result.already, message: 'Exam submitted. Results will be available shortly.' });
   } catch (error: any) {
     console.error('Submit error:', error);
+    if (error?.code === 'RECORDING_INCOMPLETE') {
+      return res.status(409).json({ error: error.message, reason: 'recording_incomplete' });
+    }
     res.status(500).json({ error: error.message });
   }
 });
 
-// =============================================
-// PRACTICE EXAM — Bài thi practice import từ .docx, 1 bài làm duy nhất
-// Tái dùng students/violations/disconnect; bài làm lưu ở practice_submissions.
-// =============================================
-
-// GET /api/student/practice — Nội dung đề + bài làm hiện tại + time_remaining
-// Tự start (set deadline) ở lần gọi đầu; guard timeout/vắng mặt giống /exam/questions.
-router.get('/practice', studentAuthMiddleware, async (req: Request, res: Response) => {
-  try {
-    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-
-    const studentId = req.studentPayload!.studentId;
-
-    const studentResult = await db.query(`
-      SELECT s.status, s.exam_deadline, s.disconnected_at, b.duration, b.practice_exam_id
-      FROM students s
-      JOIN batches b ON s.batch_id = b.id
-      WHERE s.id = ?
-    `, [studentId]);
-    const student = studentResult.rows[0];
-
-    if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
-    }
-    if (!student.practice_exam_id) {
-      return res.status(400).json({ error: 'This batch is not a practice batch' });
-    }
-    if (student.status === 'submitted') {
-      return res.status(410).json({ error: 'Exam already submitted', reason: 'submitted' });
-    }
-
-    const now = new Date();
-
-    // Lần đầu truy cập: start bài, set deadline, tạo sẵn dòng bài làm
-    if (student.status === 'pending') {
-      const durationSeconds = (student.duration || 30) * 60;
-      const deadline = new Date(now.getTime() + durationSeconds * 1000);
-      await db.query(
-        "UPDATE students SET status = 'in_progress', exam_started_at = ?, exam_deadline = ?, disconnected_at = NULL WHERE id = ?",
-        [now.toISOString(), deadline.toISOString(), studentId]
-      );
-      student.status = 'in_progress';
-      student.exam_deadline = deadline;
-    }
-
-    // Đảm bảo luôn có dòng practice_submissions cho học viên này
-    const subResult = await db.query('SELECT * FROM practice_submissions WHERE student_id = ?', [studentId]);
-    let submission = subResult.rows[0];
-    if (!submission) {
-      await db.query(
-        'INSERT INTO practice_submissions (student_id, practice_exam_id) VALUES (?, ?)',
-        [studentId, student.practice_exam_id]
-      );
-      submission = { answer: '' };
-    }
-
-    const autoSubmitPractice = async () => {
-      await db.query("UPDATE students SET status = 'submitted', disconnected_at = NULL WHERE id = ?", [studentId]);
-      const sub = await db.query('SELECT id FROM practice_submissions WHERE student_id = ?', [studentId]);
-      if (sub.rows[0]?.id) {
-        cache.addToQueue(sub.rows[0].id, studentId, 'practice');
-      }
-    };
-
-    // Guard: hết giờ
-    if (student.exam_deadline) {
-      const deadline = new Date(student.exam_deadline);
-      if (now >= deadline) {
-        console.log('[getPractice] Deadline passed, auto-submitting student:', studentId);
-        await autoSubmitPractice();
-        return res.status(410).json({
-          error: 'Time is up. Your exam has been automatically submitted.',
-          reason: 'timeout'
-        });
-      }
-    }
-
-    // Guard: vắng mặt quá 2 phút
-    const DISCONNECT_GRACE_SECONDS = 120;
-    if (student.disconnected_at) {
-      const absentSeconds = (now.getTime() - new Date(student.disconnected_at).getTime()) / 1000;
-      if (absentSeconds > DISCONNECT_GRACE_SECONDS) {
-        console.log('[getPractice] Student absent too long (%ds), auto-submitting:', Math.round(absentSeconds));
-        await autoSubmitPractice();
-        return res.status(410).json({
-          error: 'You were absent for more than 2 minutes. Your exam has been automatically submitted.',
-          reason: 'absent_too_long'
-        });
-      }
-      await db.query('UPDATE students SET disconnected_at = NULL WHERE id = ?', [studentId]);
-    }
-
-    let time_remaining: number | null = null;
-    if (student.exam_deadline) {
-      time_remaining = Math.max(0, Math.floor((new Date(student.exam_deadline).getTime() - now.getTime()) / 1000));
-    }
-
-    const practiceResult = await db.query(
-      'SELECT id, name, content_html FROM practice_exams WHERE id = ?',
-      [student.practice_exam_id]
-    );
-    const practice = practiceResult.rows[0];
-    if (!practice) {
-      return res.status(404).json({ error: 'Practice exam not found' });
-    }
-
-    res.json({
-      practice: { id: practice.id, name: practice.name, content_html: practice.content_html },
-      answer: submission.answer || '',
-      time_remaining,
-      compiler_mode: getPracticeCompilerMode(),
-      compiler_languages: getPracticeCompilerMode() === 'lambda' ? LAMBDA_COMPILER_LANGUAGES : undefined,
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// POST /api/student/practice/answer — Lưu bài làm (client debounce 2s, ghi thẳng DB
-// vì mỗi học viên chỉ có 1 bài làm duy nhất, không cần buffer như exam nhiều câu)
-router.post('/practice/answer', studentAuthMiddleware, async (req: Request, res: Response) => {
-  try {
-    const studentId = req.studentPayload!.studentId;
-    const { answer } = req.body;
-
-    const result = await db.query(
-      'UPDATE practice_submissions SET answer = ?, updated_at = CURRENT_TIMESTAMP WHERE student_id = ?',
-      [answer ?? '', studentId]
-    );
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'No practice submission found. Load the exam first.' });
-    }
-
-    res.json({ success: true });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// POST /api/student/practice/submit — Nộp bài, đưa vào queue chấm AI
-router.post('/practice/submit', studentAuthMiddleware, async (req: Request, res: Response) => {
-  try {
-    const studentId = req.studentPayload!.studentId;
-
-    await db.query("UPDATE students SET status = 'submitted' WHERE id = ?", [studentId]);
-
-    const subResult = await db.query('SELECT id FROM practice_submissions WHERE student_id = ?', [studentId]);
-    if (subResult.rows[0]?.id) {
-      cache.addToQueue(subResult.rows[0].id, studentId, 'practice');
-    }
-
-    res.json({ success: true, message: 'Practice exam submitted. Results will be available shortly.' });
-  } catch (error: any) {
-    console.error('Practice submit error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// POST /api/student/run — Biên dịch & chạy code để học viên tự kiểm tra kết quả.
-// Giới hạn tài nguyên/concurrency nằm trong coderunner.ts (2 run đồng thời toàn
-// server, 1 run/học viên, timeout compile 10s + run 5s, env sạch không lộ secrets).
-// LƯU Ý: frontend chỉ gọi endpoint này cho cobol/java — python/c/cpp đã chạy
-// local trong trình duyệt học viên (client/src/services/localRunner.ts).
-// Đặt ENABLE_SERVER_CODE_RUN=false để tắt hẳn chạy code phía server.
-router.post('/run', studentAuthMiddleware, async (req: Request, res: Response) => {
-  try {
-    const studentId = req.studentPayload!.studentId;
-    const { language, code, stdin } = req.body;
-
-    // Lambda compiler is a Practice-only tenant feature. Normal exams cannot use
-    // this endpoint even when a valid student token exists.
-    const studentResult = await db.query(`
-      SELECT s.status, b.practice_exam_id
-      FROM students s JOIN batches b ON b.id = s.batch_id
-      WHERE s.id = ?
-    `, [studentId]);
-    const student = studentResult.rows[0];
-    if (!student || student.status !== 'in_progress' || !student.practice_exam_id) {
-      return res.status(403).json({ error: 'Code can only be run during an active exam session' });
-    }
-
-    const mode = getPracticeCompilerMode();
-    if (mode === 'lambda') {
-      const { status, body } = await runCodeWithLambda(
-        studentId,
-        String(language || ''),
-        String(code || ''),
-        stdin ? String(stdin) : '',
-      );
-      return res.status(status).json(body);
-    }
-
-    if (process.env.ENABLE_SERVER_CODE_RUN === 'false') {
-      return res.status(503).json({ error: 'Server-side code execution is currently disabled by the administrator.' });
-    }
-    const { status, body } = await runCode(studentId, String(language || ''), String(code || ''), stdin ? String(stdin) : undefined);
-    res.status(status).json(body);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.post('/violation', studentAuthMiddleware, async (req: Request, res: Response) => {
+router.post('/violation', studentAuthMiddleware, sessionTracker, async (req: Request, res: Response) => {
   try {
     // [C-4] studentId từ token đã xác thực
     const studentId = req.studentPayload!.studentId.toString();
     const batchId = req.studentPayload!.batchId;
 
-    const { type, content_preview, text_length, question_id } = req.body;
+    // [SEC] Kiểm tra phiên đồng thời trước — nếu chồng lấn thời gian, backend auto-lock ngay.
+    const autoLocked = await enforceConcurrentSession(parseInt(studentId), batchId);
+    if (autoLocked) {
+      return res.json({ violation_count: 0, total_violations: 0, locked: true, reason: 'concurrent_session' });
+    }
+
+    const { type, content_preview, text_length, question_id, metadata } = req.body;
 
     // Validate violation type — chỉ chấp nhận các loại hợp lệ.
     // suspicious_paste & focus_lost giờ là lockable (không còn log-only) —
@@ -731,22 +761,27 @@ router.post('/violation', studentAuthMiddleware, async (req: Request, res: Respo
       'cut_attempt',
       'paste_attempt',
       'devtools_open',
+      'view_source',
       'extension_panel',
       'screenshot_attempt',  // phím PrintScreen / PrtSc
       'print_attempt',       // Ctrl+P hoặc browser print dialog
       'suspicious_paste',    // Thâm nhập text lớn bất thường qua Maccy/Win+V Accessibility API
       'focus_lost',          // Mất focus cửa sổ (Split View / mở app khác trên macOS)
       'recording_stopped',   // Thí sinh tự dừng chia sẻ màn hình giữa bài (getDisplayMedia track ended)
+      'rapid_text_insertion',
+      'multiple_display_detected',
+      'concurrent_session',  // dùng đồng thời nhiều client/IP — server tự phát hiện & ghi
     ];
     if (!type || !validTypes.includes(type)) {
       return res.status(400).json({ error: 'Invalid violation type' });
     }
 
+    const forensicOnly = type === 'rapid_text_insertion' || type === 'multiple_display_detected';
     const existingResult = await db.query('SELECT * FROM violations WHERE student_id = ? AND type = ?', [parseInt(studentId), type]);
 
-    if (existingResult.rows.length === 0) {
+    if (!forensicOnly && existingResult.rows.length === 0) {
       await db.query('INSERT INTO violations (student_id, type, count) VALUES (?, ?, 1)', [parseInt(studentId), type]);
-    } else {
+    } else if (!forensicOnly) {
       await db.query('UPDATE violations SET count = count + 1 WHERE id = ?', [existingResult.rows[0].id]);
     }
 
@@ -759,9 +794,12 @@ router.post('/violation', studentAuthMiddleware, async (req: Request, res: Respo
       const preview = typeof content_preview === 'string' ? content_preview.slice(0, 500) : null;
       const textLen = Number.isFinite(text_length) ? Math.trunc(text_length) : null;
       const qId = typeof question_id === 'string' ? question_id : null;
+      const metadataJson = metadata && typeof metadata === 'object'
+        ? JSON.stringify(metadata).slice(0, 2000)
+        : null;
       await db.query(
-        'INSERT INTO violation_events (student_id, batch_id, type, text_length, content_preview, question_id) VALUES (?, ?, ?, ?, ?, ?)',
-        [parseInt(studentId), batchId, type, textLen, preview, qId]
+        'INSERT INTO violation_events (student_id, batch_id, type, text_length, content_preview, question_id, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [parseInt(studentId), batchId, type, textLen, preview, qId, metadataJson]
       );
     } catch (logErr: any) {
       console.error('[violation] forensic log insert failed (non-fatal):', logErr?.message);
@@ -775,11 +813,32 @@ router.post('/violation', studentAuthMiddleware, async (req: Request, res: Respo
 
     // recording_stopped: dừng chia sẻ màn hình = cố ý trốn giám sát → khóa NGAY lần đầu.
     // Các type khác: khóa khi 1 type đạt >= 2 lần HOẶC tổng vi phạm >= 2 (mọi type đều tính).
-    const locked = type === 'recording_stopped' || currentCount >= 2 || total >= 2;
+    const locked = !forensicOnly && (type === 'recording_stopped' || currentCount >= 2 || total >= 2);
+
+    // [SEC] Cưỡng chế nộp bài ở BACKEND khi đạt ngưỡng khóa — không phụ thuộc frontend auto-submit.
+    // Trước đây chỉ trả cờ `locked` cho client; một client bị điều khiển (automation) có thể phớt lờ
+    // response và tiếp tục làm bài. Giờ server tự set status='submitted' + chấm điểm ngay.
+    if (locked) {
+      try {
+        const statusRow = await db.query('SELECT status FROM students WHERE id = ?', [parseInt(studentId)]);
+        if (statusRow.rows[0]?.status === 'in_progress') {
+          await submitExamAtomically(
+            parseInt(studentId),
+            type === 'recording_stopped' ? 'recording_stopped' : 'violation'
+          );
+          console.log('[violation] Auto-submitted (locked) student:', studentId, 'type:', type);
+        }
+      } catch (lockErr: any) {
+        console.error('[violation] auto-submit on lock failed:', lockErr?.message);
+        throw lockErr;
+      }
+    }
+
     res.json({
       violation_count: currentCount,
       total_violations: total,
       locked,
+      forensic_only: forensicOnly,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -799,10 +858,24 @@ router.post('/exam/recording-url', studentAuthMiddleware, async (req: Request, r
 
     // Chỉ cấp URL khi batch ở mode 's3' (chốt chặn server-side, tránh mod/ai lách).
     // Mode 'local' ghi ra máy học viên, không dùng S3 → không cấp URL.
-    const batchRes = await db.query('SELECT record_mode, record_enabled FROM batches WHERE id = ?', [batchId]);
+    const batchRes = await db.query(`
+      SELECT b.record_mode, b.record_enabled, s.status, s.exam_deadline, s.submitted_at, s.recording_incomplete
+      FROM batches b JOIN students s ON s.batch_id = b.id
+      WHERE b.id = ? AND s.id = ?
+    `, [batchId, studentId]);
     const batchMode = batchRes.rows[0]?.record_mode || (batchRes.rows[0]?.record_enabled ? 's3' : 'none');
     if (batchMode !== 's3') {
       return res.status(403).json({ error: 'S3 recording not enabled for this batch' });
+    }
+    const submittedRecordingGrace = batchRes.rows[0]?.status === 'submitted'
+      && batchRes.rows[0]?.recording_incomplete
+      && batchRes.rows[0]?.submitted_at
+      && Date.now() - new Date(batchRes.rows[0].submitted_at).getTime() <= 15 * 60_000;
+    if (batchRes.rows[0]?.status !== 'in_progress' && !submittedRecordingGrace) {
+      return res.status(409).json({ error: 'Exam is not in progress' });
+    }
+    if (!submittedRecordingGrace && batchRes.rows[0]?.exam_deadline && new Date() >= new Date(batchRes.rows[0].exam_deadline)) {
+      return res.status(410).json({ error: 'Deadline passed', reason: 'timeout' });
     }
 
     const { partIndex, contentType } = req.body;
@@ -810,6 +883,13 @@ router.post('/exam/recording-url', studentAuthMiddleware, async (req: Request, r
     const idx = Number(partIndex);
     if (!Number.isInteger(idx) || idx < 0) {
       return res.status(400).json({ error: 'Invalid partIndex' });
+    }
+    const existingPart = await db.query(
+      'SELECT id FROM recording_parts WHERE student_id = ? AND part_index = ?',
+      [studentId, idx]
+    );
+    if (existingPart.rows.length > 0) {
+      return res.status(409).json({ error: 'Recording part has already been finalized' });
     }
 
     const { url, key } = await createRecordingUploadUrl({
@@ -823,6 +903,92 @@ router.post('/exam/recording-url', studentAuthMiddleware, async (req: Request, r
   } catch (error: any) {
     console.error('[recording-url] failed:', error?.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/exam/recording-complete', studentAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const studentId = req.studentPayload!.studentId;
+    const batchId = req.studentPayload!.batchId;
+    const partIndex = Number(req.body?.partIndex);
+    if (!Number.isInteger(partIndex) || partIndex < 0) {
+      return res.status(400).json({ error: 'Invalid recording part metadata' });
+    }
+    const exam = (await db.query(`
+      SELECT s.status, s.submitted_at, s.recording_incomplete, b.record_mode, b.record_enabled
+      FROM students s JOIN batches b ON b.id = s.batch_id
+      WHERE s.id = ? AND b.id = ?
+    `, [studentId, batchId])).rows[0];
+    const recordMode = exam?.record_mode || (exam?.record_enabled ? 's3' : 'none');
+    const submittedRecordingGrace = exam?.status === 'submitted' && exam?.recording_incomplete && exam?.submitted_at
+      && Date.now() - new Date(exam.submitted_at).getTime() <= 15 * 60_000;
+    if (!exam || (exam.status !== 'in_progress' && !submittedRecordingGrace)) return res.status(409).json({ error: 'Exam is not accepting recording parts' });
+    if (recordMode !== 's3') return res.status(403).json({ error: 'S3 recording is not enabled' });
+    const objectKey = `recordings/${batchId}/${studentId}/part${String(partIndex).padStart(3, '0')}.webm`;
+    const { byteSize } = await inspectRecordingObject(objectKey);
+    if (byteSize <= 0) return res.status(422).json({ error: 'Uploaded recording part is empty' });
+    await db.query(`
+      INSERT INTO recording_parts (student_id, batch_id, part_index, object_key, byte_size, uploaded_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (student_id, part_index) DO NOTHING
+    `, [studentId, batchId, partIndex, objectKey, Math.trunc(byteSize), new Date().toISOString()]);
+    res.json({ success: true, key: objectKey });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/exam/recording-finalize', studentAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const studentId = req.studentPayload!.studentId;
+    const batchId = req.studentPayload!.batchId;
+    const finalPartIndex = Number(req.body?.finalPartIndex);
+    if (!Number.isInteger(finalPartIndex) || finalPartIndex < 0 || finalPartIndex > 1000) {
+      return res.status(400).json({ error: 'Invalid finalPartIndex' });
+    }
+
+    await db.withTransaction(async (tx) => {
+      const row = (await tx.query(`
+        SELECT s.status, s.submitted_at, s.recording_incomplete,
+               s.recording_finalized_at, s.recording_final_part_index,
+               b.record_mode, b.record_enabled
+        FROM students s JOIN batches b ON b.id = s.batch_id
+        WHERE s.id = ?${USE_SQLITE ? '' : ' FOR UPDATE'}
+      `, [studentId])).rows[0];
+      const submittedRecordingGrace = row?.status === 'submitted' && row?.recording_incomplete && row?.submitted_at
+        && Date.now() - new Date(row.submitted_at).getTime() <= 15 * 60_000;
+      if (!row || (row.status !== 'in_progress' && !submittedRecordingGrace)) {
+        throw Object.assign(new Error('Exam is not accepting recording finalization'), { code: 'NOT_IN_PROGRESS' });
+      }
+      const mode = row.record_mode || (row.record_enabled ? 's3' : 'none');
+      if (mode !== 's3') throw Object.assign(new Error('S3 recording is not enabled'), { code: 'BAD_RECORD_MODE' });
+      if (row.recording_finalized_at) {
+        if (Number(row.recording_final_part_index) !== finalPartIndex) {
+          throw Object.assign(new Error('Recording was already finalized with a different manifest'), { code: 'MANIFEST_CONFLICT' });
+        }
+        return;
+      }
+
+      const parts = await tx.query(
+        'SELECT part_index FROM recording_parts WHERE student_id = ? ORDER BY part_index',
+        [studentId]
+      );
+      if (parts.rows.length !== finalPartIndex + 1 || parts.rows.some((part, index) => Number(part.part_index) !== index)) {
+        throw Object.assign(new Error('Recording parts are incomplete'), { code: 'RECORDING_INCOMPLETE' });
+      }
+      await tx.query('UPDATE recording_parts SET is_final = TRUE WHERE student_id = ? AND part_index = ?', [studentId, finalPartIndex]);
+      await tx.query(
+        'UPDATE students SET recording_finalized_at = ?, recording_final_part_index = ?, recording_incomplete = FALSE WHERE id = ?',
+        [new Date().toISOString(), finalPartIndex, studentId]
+      );
+    });
+    res.json({ success: true, finalPartIndex });
+  } catch (error: any) {
+    const status = error?.code === 'RECORDING_INCOMPLETE' ? 409
+      : error?.code === 'MANIFEST_CONFLICT' ? 409
+      : error?.code === 'NOT_IN_PROGRESS' ? 409
+      : error?.code === 'BAD_RECORD_MODE' ? 403 : 500;
+    res.status(status).json({ error: error.message, reason: error?.code?.toLowerCase() });
   }
 });
 

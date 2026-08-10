@@ -47,6 +47,7 @@ let sessionStamp = '';
 // Hàng đợi upload lỗi cần thử lại (chỉ mode 's3')
 let retryQueue: PendingPart[] = [];
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let uploadChain: Promise<void> = Promise.resolve();
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -91,7 +92,9 @@ async function uploadPart(part: PendingPart): Promise<boolean> {
       headers: { 'Content-Type': part.blob.type || 'video/webm' },
       body: part.blob,
     });
-    return putRes.ok;
+    if (!putRes.ok) return false;
+    await studentApi.completeRecordingPart(part.partIndex, part.blob.size);
+    return true;
   } catch (err) {
     console.error('[examRecorder] uploadPart failed:', err);
     return false;
@@ -113,6 +116,8 @@ function enqueueAndUpload(part: PendingPart): void {
     }
   })();
 }
+
+void enqueueAndUpload;
 
 /** Lên lịch xử lý hàng đợi retry với backoff tăng dần. */
 function scheduleRetry(): void {
@@ -171,7 +176,7 @@ async function saveLocalPart(partIdx: number, blob: Blob): Promise<void> {
 // ── Cắt phần & định tuyến theo mode ────────────────────────────────────────
 
 /** Gộp buffer hiện tại thành 1 phần và xử lý (s3 upload / local zip); reset buffer. */
-function flushPart(): void {
+async function flushPart(): Promise<void> {
   if (chunkBuffer.length === 0) return;
   const blob = new Blob(chunkBuffer, { type: 'video/webm' });
   chunkBuffer = [];
@@ -179,9 +184,17 @@ function flushPart(): void {
   partIndex += 1;
 
   if (mode === 'local') {
-    void saveLocalPart(idx, blob);
+    await saveLocalPart(idx, blob);
   } else {
-    enqueueAndUpload({ partIndex: idx, blob, attempts: 0 });
+    const pending = { partIndex: idx, blob, attempts: 0 };
+    let uploaded = false;
+    for (let attempt = 0; attempt <= MAX_RETRY && !uploaded; attempt++) {
+      uploaded = await uploadPart(pending);
+      if (!uploaded && attempt < MAX_RETRY) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_MS * Math.pow(2, Math.min(attempt, 4))));
+      }
+    }
+    if (!uploaded) throw new Error(`Recording part ${idx} failed to upload`);
   }
 }
 
@@ -247,6 +260,7 @@ export function start(opts?: { mode?: RecordMode; password?: string | null }): v
   chunkBuffer = [];
   partIndex = 0;
   retryQueue = [];
+  uploadChain = Promise.resolve();
   sessionStamp = makeStamp();
 
   let mimeType = 'video/webm;codecs=vp9';
@@ -262,7 +276,9 @@ export function start(opts?: { mode?: RecordMode; password?: string | null }): v
   active = true;
 
   // Cắt & xử lý 1 phần mỗi 5 phút
-  partTimer = setInterval(() => flushPart(), PART_INTERVAL_MS);
+  partTimer = setInterval(() => {
+    uploadChain = uploadChain.then(() => flushPart());
+  }, PART_INTERVAL_MS);
 
   // Thí sinh bấm "Stop sharing" của trình duyệt giữa bài
   recordingStoppedFired = false;
@@ -304,7 +320,9 @@ export async function stopAndSave(): Promise<void> {
       await saveLocalPart(idx, blob);
     }
   } else {
-    flushPart();
+    await uploadChain;
+    await flushPart();
+    if (partIndex > 0) await studentApi.finalizeRecording(partIndex - 1);
   }
 
   if (stream) {
