@@ -132,20 +132,23 @@ resource "aws_instance" "eaudit" {
   }
 
   user_data = templatefile("${path.module}/userdata.sh", {
-    database_url    = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.eaudit.endpoint}/${var.db_name}"
-    gemini_api_key  = var.gemini_api_key
-    session_secret  = var.session_secret
-    node_env        = var.node_env
-    app_port        = var.app_port
-    domain_name     = var.app_subdomain != "" ? "${var.app_subdomain}.${var.domain_name}" : var.domain_name
-    www_domain_name = "" # No WWW subdomain for subdomain setups
-    s3_bucket       = aws_s3_bucket.backup.id
-    aws_region      = var.aws_region
-    db_host         = aws_db_instance.eaudit.address
-    db_port         = aws_db_instance.eaudit.port
-    db_name         = var.db_name
-    db_username     = var.db_username
-    ssh_password    = var.ssh_password
+    database_url         = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.eaudit.endpoint}/${var.db_name}?sslmode=require"
+    control_database_url = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.eaudit.endpoint}/${var.control_db_name}?sslmode=require"
+    log_database_url     = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.eaudit.endpoint}/${var.log_db_name}?sslmode=require"
+    tenant_slug          = var.tenant_slug
+    gemini_api_key       = var.gemini_api_key
+    session_secret       = var.session_secret
+    node_env             = var.node_env
+    app_port             = var.app_port
+    domain_name          = var.app_subdomain != "" ? "${var.app_subdomain}.${var.domain_name}" : var.domain_name
+    www_domain_name      = "" # No WWW subdomain for subdomain setups
+    s3_bucket            = aws_s3_bucket.backup.id
+    aws_region           = var.aws_region
+    db_host              = aws_db_instance.eaudit.address
+    db_port              = aws_db_instance.eaudit.port
+    db_name              = var.db_name
+    db_username          = var.db_username
+    ssh_password         = var.ssh_password
   })
 
   depends_on = [aws_db_instance.eaudit]

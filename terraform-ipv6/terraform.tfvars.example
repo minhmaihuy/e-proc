@@ -1,31 +1,41 @@
 # =============================================================================
-# E-Audit IPv6 Environment — Variables Template
-# Copy this file to 'terraform.tfvars' and fill in your secrets
-# DO NOT commit 'terraform.tfvars' to Git!
+# E-Audit IPv6 Environment — Variables
+# DO NOT commit this file to Git! (contains secrets)
 # =============================================================================
 
 # AWS Region (Singapore for lowest latency from Vietnam)
 aws_region = "ap-southeast-1"
 
 # Domain
-domain_name   = "devfasttrack.com"
-app_subdomain = "epoc" # Final FSA-CLS URL: https://epoc.devfasttrack.com
+domain_name   = "devfatstrack.cloud"
+app_subdomain = "epoc" # Final FSA-CLS URL: https://epoc.devfatstrack.cloud
 
 # EC2
 instance_type         = "t3.micro"
 allowed_ssh_ipv6_cidr = "::/0" # Keep "::/0" for anywhere, or restrict to your home IPv6
 
-# RDS PostgreSQL (Running on Dual-Stack)
+# RDS PostgreSQL — Multitenant: 3 separate databases on same RDS instance
 db_instance_class = "db.t3.micro" # Free Tier eligible
-db_name           = "eaudit"
 db_username       = "eaudit_admin"
-db_password       = "YourStrongPassword123!" # Change this! (min 8 characters, capital + number + special)
+db_password       = "Minhmh123#!2nf"
+
+# Assessment data-plane (exam data, questions, submissions, AI queue)
+db_name = "eaudit"
+
+# Global control-plane (tenant management, admin accounts)
+control_db_name = "eaudit_control"
+
+# Per-tenant operational log-plane
+log_db_name = "eaudit_fsa_cls_logs"
+
+# Tenant slug identifier (must match TENANT_SLUG in backend)
+tenant_slug = "fsa-cls"
 
 # Google Gemini AI API Key (Get from: https://aistudio.google.com/app/apikey)
 gemini_api_key = "AIzaSy..."
 
 # Session Secret (random secure string, at least 32 characters)
-session_secret = "change-this-to-a-random-secure-string-at-least-32-chars"
+session_secret = "e005c119c9ca40a00214e378069970cad4e17ac94d887ae6afaf1409b3a74bef"
 
 # App Config
 node_env = "production"

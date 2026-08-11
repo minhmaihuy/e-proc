@@ -43,9 +43,27 @@ variable "db_instance_class" {
 }
 
 variable "db_name" {
-  description = "PostgreSQL database name"
+  description = "PostgreSQL assessment data-plane database name"
   type        = string
   default     = "eaudit"
+}
+
+variable "control_db_name" {
+  description = "PostgreSQL global control-plane database name (tenant management)"
+  type        = string
+  default     = "eaudit_control"
+}
+
+variable "log_db_name" {
+  description = "PostgreSQL per-tenant operational log-plane database name"
+  type        = string
+  default     = "eaudit_fsa_cls_logs"
+}
+
+variable "tenant_slug" {
+  description = "Tenant slug identifier for the log-plane (e.g. fsa-cls)"
+  type        = string
+  default     = "fsa-cls"
 }
 
 variable "db_username" {
@@ -64,8 +82,7 @@ variable "ssh_password" {
   description = "Password for the ubuntu user (used for EC2 Serial Console login)"
   type        = string
   sensitive   = true
-  default     = "\
-  " # Default password, change in terraform.tfvars
+  default     = "" # Change in terraform.tfvars
 }
 
 # --- App Secrets ---

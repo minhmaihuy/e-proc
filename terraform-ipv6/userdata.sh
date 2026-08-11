@@ -142,7 +142,19 @@ echo ">>> Creating .env file..."
 cat > /opt/eaudit/.env << 'ENVEOF'
 NODE_ENV=${node_env}
 PORT=${app_port}
+
+# Assessment data-plane (FSA-CLS exam data)
 DATABASE_URL=${database_url}
+
+# Global control-plane (tenant management, admin accounts)
+CONTROL_DATABASE_URL=${control_database_url}
+
+# Per-tenant operational log-plane
+LOG_DATABASE_URL=${log_database_url}
+
+# Tenant identification
+TENANT_SLUG=${tenant_slug}
+
 GEMINI_API_KEY=${gemini_api_key}
 SESSION_SECRET=${session_secret}
 USE_SQLITE=false
