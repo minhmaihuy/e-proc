@@ -187,6 +187,7 @@ This is a full-stack technical assessment platform with a React/Vite frontend an
 - **Self-service admin registration has been removed** (2026-07 security hardening): `GET /is-initialized` and `POST /setup` no longer exist. Instead:
   - The first `admin_users` row is seeded automatically in the control-plane by `seedSuperAdmin()` in `src/server/db/controlPlane.ts`, **only when the table is empty** — username/password default to `supperadmin` / `superadmin123#2nf` (role `superadmin`), overridable via the `SUPERADMIN_USERNAME` / `SUPERADMIN_PASSWORD` env vars. **Change this password immediately after first login** (`PUT /api/tenants/change-password`) — the default lives in git history.
   - Other tenant accounts are managed through `GET/POST/PUT/DELETE /api/admin/users` by that tenant's `tenant_admin` only.
+  - The first FSA-CLS `tenant_admin` is seeded by `seedFsaTenantAdmin()` in `src/server/db/controlPlane.ts`, **only when that tenant has no `tenant_admin` yet and the username is free** — defaults `adminfsa` / `adminfsa123#2nf`, overridable via `FSA_TENANT_ADMIN_USERNAME` / `FSA_TENANT_ADMIN_PASSWORD`. This is required because `superadmin` deliberately cannot read or mutate tenant assessment data and is not a tenant user manager, so a freshly provisioned server would otherwise have no account able to open `/admin/*`. **Change this password immediately after first login.**
   - Global tenant control login lives at `/tenant/login` and management lives at `/tenants`; legacy `/admin/tenants` only redirects to management. `/admin/tenant` has been removed and redirects to the tenant dashboard. Server-side ownership checks remain authoritative.
 
 #### Student authentication
@@ -570,6 +571,8 @@ Batches support two blueprint formats for question assignment:
 | `ENABLE_SERVER_CODE_RUN` | No | enabled | Set to `'false'` to disable server-side code execution (`POST /api/student/run` returns 503). Browser-local runs (python/c/cpp) are unaffected. |
 | `SUPERADMIN_USERNAME` | No | `supperadmin` | Username seeded as the first `admin_users` row (role `superadmin`) when the table is empty. See **Admin authentication**. |
 | `SUPERADMIN_PASSWORD` | No | `superadmin123#2nf` | Password for the seeded superadmin account above. Set this explicitly in production instead of relying on the hardcoded default. |
+| `FSA_TENANT_ADMIN_USERNAME` | No | `adminfsa` | Username seeded as the FSA-CLS `tenant_admin` when that tenant has no administrator yet. Superadmin cannot reach tenant assessment data, so without this account a fresh install has no way into `/admin/*`. |
+| `FSA_TENANT_ADMIN_PASSWORD` | No | `adminfsa123#2nf` | Password for the seeded tenant administrator above. The default lives in git history — change it immediately after first login. |
 | `APP_SECRETS_ENABLED` | No | `false` | Load configuration from AWS Secrets Manager. Any value other than `'true'` keeps the `.env`-only path with no AWS calls. |
 | `APP_SECRETS_ARN` | When enabled | — | ARN of the JSON secret holding configuration. Required if `APP_SECRETS_ENABLED=true`; startup fails fast when missing or malformed. |
 | `APP_SECRETS_REGION` | No | `AWS_REGION` | Region of that secret. |
