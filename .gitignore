@@ -28,3 +28,13 @@ data/tenant-terraform/
 
 # Terraform CLI binary tải về cho validator (87MB) — không commit vào repo
 data/terraform-validator/
+
+# Terraform variable files chua bi mat (jwt_secret, session_secret, db_password).
+# Giu lai file *.example de biet can khai bao nhung gi.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Private key: KHONG BAO GIO commit. Terraform sinh ra .pem khi provision.
+*.pem
+*.key
