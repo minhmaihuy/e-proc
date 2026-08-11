@@ -1,7 +1,7 @@
 
 Outputs:
 
-app_url = "https://epoc.devfatstrack.cloud"
+app_url = "https://epoc.devfasttrack.cloud"
 connectivity_guide = <<EOT
 ┌────────────────────────────────────────────────────────────────────────┐
 │ E-Audit IPv6-Only Platform Deployment Successful!                      │
