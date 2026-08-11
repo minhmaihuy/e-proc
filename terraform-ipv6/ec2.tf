@@ -152,6 +152,8 @@ resource "aws_instance" "eaudit" {
     tenant_slug          = var.tenant_slug
     gemini_api_key       = var.gemini_api_key
     session_secret       = var.session_secret
+    jwt_secret           = var.jwt_secret
+    maintenance_db       = var.database_maintenance_db
     node_env             = var.node_env
     app_port             = var.app_port
     domain_name          = var.app_subdomain != "" ? "${var.app_subdomain}.${var.domain_name}" : var.domain_name

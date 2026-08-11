@@ -100,6 +100,29 @@ variable "session_secret" {
   default     = "eaudit-session-secret-change-me-ipv6"
 }
 
+# Ký JWT của admin và học viên. KHÔNG có default: thiếu biến này thì server
+# process.exit(1) ngay lúc khởi động, nên thà Terraform hỏi ngay còn hơn để phát
+# hiện sau khi instance đã dựng xong mà app không chạy.
+# Đặt giá trị thật trong terraform.tfvars (đã gitignore), không commit vào repo.
+variable "jwt_secret" {
+  description = "Secret used to sign admin and student JWTs (>= 32 characters)"
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.jwt_secret) >= 32
+    error_message = "jwt_secret phải dài ít nhất 32 ký tự."
+  }
+}
+
+# Database dùng để kết nối khi tạo các database còn thiếu (npm run db:ensure).
+# Vai trò deploy cần quyền CONNECT và CREATEDB trên database này.
+variable "database_maintenance_db" {
+  description = "Maintenance database used by npm run db:ensure"
+  type        = string
+  default     = "postgres"
+}
+
 # --- App Config ---
 variable "node_env" {
   description = "Node.js environment"

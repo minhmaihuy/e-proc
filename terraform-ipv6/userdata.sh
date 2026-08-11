@@ -150,7 +150,11 @@ chown -R ubuntu:ubuntu /opt/eaudit
 
 # --- Create environment file ---
 echo ">>> Creating .env file..."
-cat > /opt/eaudit/.env << ENVEOF
+# Heredoc ĐƯỢC TRÍCH DẪN ('ENVEOF'): chặn bash diễn giải $ và backtick bên trong giá
+# trị bí mật (mật khẩu DB hay secret chứa '$' sẽ bị cắt cụt nếu không trích dẫn).
+# Terraform vẫn thay biến template của nó bình thường, vì nó xử lý template TRƯỚC
+# khi script chay tren may.
+cat > /opt/eaudit/.env << 'ENVEOF'
 NODE_ENV=${node_env}
 PORT=${app_port}
 
@@ -167,7 +171,14 @@ LOG_DATABASE_URL=${log_database_url}
 TENANT_SLUG=${tenant_slug}
 
 GEMINI_API_KEY=${gemini_api_key}
+
+# Ký JWT admin/học viên. Thiếu khóa này server thoát ngay lúc khởi động.
+JWT_SECRET=${jwt_secret}
 SESSION_SECRET=${session_secret}
+
+# Database dùng khi tạo các database còn thiếu (npm run db:ensure)
+DATABASE_MAINTENANCE_DB=${maintenance_db}
+
 USE_SQLITE=false
 ALLOWED_ORIGINS=https://${domain_name}
 ENVEOF
