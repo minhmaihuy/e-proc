@@ -60,6 +60,35 @@
     @apply bg-red-600 text-white hover:bg-red-700 focus:ring-red-500 shadow-sm;
   }
 
+  /* Bốn class dưới đây được 5 trang tham chiếu nhưng chưa từng có định nghĩa.
+     Hệ quả không phải "xấu một chút": .btn-* chỉ nhận phần nền của .btn, vốn là
+     `border-transparent` và không có màu nền, nên nút Archive/Delete/Ghost hiện ra
+     gần như chữ trơn — người dùng không nhận ra đó là nút. */
+
+  /* Hành động phá hủy nhưng không phải hành động chính của trang: viền đỏ, nền trắng.
+     Đủ rõ để nhận ra là nút, đủ nhẹ để không tranh chấp với .btn-primary bên cạnh. */
+  .btn-danger-outline {
+    @apply bg-white text-red-600 border-red-300 hover:bg-red-50 hover:border-red-400 focus:ring-red-500;
+  }
+
+  /* Hành động phụ, thường nằm thành cụm trong bảng. Nền trong suốt tới khi hover. */
+  .btn-ghost {
+    @apply bg-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus:ring-slate-400;
+  }
+
+  /* Cụm nút cạnh nhau. Thiếu class này các nút dính sát nhau và tràn dòng xấu trên
+     màn hình hẹp, vì .btn là inline-flex nên không tự sinh khoảng cách. */
+  .button-row {
+    @apply flex flex-wrap items-center gap-2;
+  }
+
+  /* Nhãn nhỏ phía trên tiêu đề trang, dùng để chỉ ra bình diện sở hữu
+     (TENANT LOG PLANE, GLOBAL CONTROL...). Là ngữ cảnh phụ nên phải nhỏ và nhạt hơn
+     tiêu đề, nếu không nó tranh chấp thị giác với chính tiêu đề đứng ngay dưới. */
+  .eyebrow {
+    @apply block mb-1 text-xs font-semibold uppercase tracking-widest text-slate-500;
+  }
+
   input, select, textarea {
     @apply w-full px-4 py-2 border border-slate-300 rounded-lg text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-slate-900;
   }
@@ -139,6 +168,342 @@
   .exam-timer.warning {
     @apply bg-red-50 text-red-600 border-red-200;
   }
+
+  /* ==========================================================================
+     Lớp thiết kế cho các trang quản trị
+     --------------------------------------------------------------------------
+     52 class dưới đây được TSX tham chiếu nhưng chưa từng có định nghĩa. Kiểm
+     chứng bằng cách dựng thẻ mang từng class trong trình duyệt rồi so kiểu tính
+     toán với một thẻ trắng: giống hệt nhau, tức là không có một khai báo nào.
+
+     Hệ quả không phải "hơi xấu". UserManagement, TenantManagement, SecretsPanel
+     và StudentPractice dựng gần như toàn bộ bố cục trên bộ từ vựng này, nên
+     chúng đổ về dòng chảy mặc định: lưới thành chồng dọc, thẻ mất nền và viền,
+     badge trạng thái thành chữ trơn, modal mất lớp phủ và trôi theo trang.
+
+     Đặt trong @layer components để utility Tailwind viết tại chỗ vẫn ghi đè
+     được, giống mọi class có sẵn phía trên.
+     ========================================================================== */
+
+  /* --- Khung trang --- */
+  .admin-shell {
+    @apply max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8;
+  }
+
+  .admin-topbar {
+    @apply flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 pb-4 border-b border-slate-200 gap-4;
+  }
+
+  .admin-topbar h1 {
+    @apply text-2xl font-bold text-slate-900 tracking-tight;
+  }
+
+  .admin-topbar p {
+    @apply mt-1 text-sm text-slate-500;
+  }
+
+  .topbar-actions {
+    @apply flex flex-wrap items-center gap-2;
+  }
+
+  /* --- Thông báo --- */
+  .notice {
+    @apply mb-6 rounded-xl border p-4 text-sm font-medium border-slate-200 bg-slate-50 text-slate-700;
+  }
+
+  .notice-error {
+    @apply border-red-200 bg-red-50 text-red-700;
+  }
+
+  .notice-success {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-700;
+  }
+
+  /* --- Thẻ và tiêu đề mục --- */
+  .panel-section,
+  .tenant-config-card,
+  .provision-card {
+    @apply bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6;
+  }
+
+  .section-heading {
+    @apply flex flex-wrap justify-between items-start gap-3 mb-5 pb-3 border-b border-slate-100;
+  }
+
+  .section-heading h2 {
+    @apply text-lg font-semibold text-slate-900;
+  }
+
+  .section-heading h3 {
+    @apply text-base font-semibold text-slate-900;
+  }
+
+  .section-heading small {
+    @apply text-xs text-slate-500;
+  }
+
+  /* --- Biểu mẫu ---
+     .field bọc <label><span>Nhãn</span><input/></label> nên span phải là block,
+     nếu không nhãn và ô nhập nằm cùng dòng và dính vào nhau. */
+  .form-grid {
+    @apply grid grid-cols-1 md:grid-cols-2 gap-4;
+  }
+
+  .field {
+    @apply flex flex-col gap-1.5;
+  }
+
+  .field > span {
+    @apply block text-sm font-medium text-slate-700;
+  }
+
+  .field-wide {
+    @apply md:col-span-2;
+  }
+
+  .checkbox-field {
+    @apply flex flex-row items-center gap-2 text-sm text-slate-700;
+  }
+
+  /* Selector này cần thiết: quy tắc `input` chung phía trên đặt w-full, khiến ô
+     tick giãn hết chiều ngang cột và trông như một thanh xám. */
+  .checkbox-field input[type="checkbox"] {
+    @apply w-4 h-4 shrink-0;
+  }
+
+  .form-footer {
+    @apply flex flex-wrap justify-between items-center gap-3 mt-5 pt-4 border-t border-slate-100;
+  }
+
+  .form-footer p {
+    @apply text-xs text-slate-500 m-0;
+  }
+
+  /* --- Trạng thái --- */
+  .status-badge {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide ring-1 ring-inset bg-slate-100 text-slate-700 ring-slate-300;
+  }
+
+  .status-dot {
+    @apply inline-block w-2.5 h-2.5 rounded-full shrink-0 bg-slate-400;
+  }
+
+  .status-row {
+    @apply flex flex-wrap items-center gap-2;
+  }
+
+  .count-pill {
+    @apply inline-flex items-center justify-center min-w-[1.75rem] rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 tabular-nums;
+  }
+
+  /* Bảng màu trạng thái dùng chung cho tenant (status-*), hạ tầng (provision-*)
+     và Terraform job (job-*). Ba nhóm tiền tố khác nhau nhưng cùng ngữ nghĩa
+     chờ / đang chạy / xong / hỏng, nên gom một chỗ để không lệch màu giữa các
+     bảng đặt cạnh nhau. */
+  .status-approved,
+  .status-active,
+  .provision-active,
+  .job-succeeded {
+    @apply bg-emerald-100 text-emerald-800 ring-emerald-300;
+  }
+
+  .status-pending,
+  .provision-queued,
+  .job-queued {
+    @apply bg-amber-100 text-amber-800 ring-amber-300;
+  }
+
+  .provision-running,
+  .job-running {
+    @apply bg-blue-100 text-blue-800 ring-blue-300;
+  }
+
+  .status-suspended,
+  .status-rejected,
+  .provision-failed,
+  .job-failed {
+    @apply bg-red-100 text-red-800 ring-red-300;
+  }
+
+  .provision-not_started {
+    @apply bg-slate-100 text-slate-600 ring-slate-300;
+  }
+
+  /* Cùng tên trạng thái nhưng dùng cho chấm tròn: chấm không có chữ nên phải tô
+     nền đặc, dùng lại lớp nhạt ở trên sẽ gần như vô hình. */
+  .status-dot.status-approved,
+  .status-dot.status-active {
+    @apply bg-emerald-500;
+  }
+
+  .status-dot.status-pending {
+    @apply bg-amber-500;
+  }
+
+  .status-dot.status-suspended,
+  .status-dot.status-rejected {
+    @apply bg-red-500;
+  }
+
+  .approval-banner {
+    @apply flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 mb-6;
+  }
+
+  .provision-actions {
+    @apply flex flex-wrap items-center gap-2 mt-4;
+  }
+
+  /* --- Trang quản lý tenant --- */
+  .tenant-layout {
+    @apply grid grid-cols-1 lg:grid-cols-[20rem_1fr] gap-6 items-start;
+  }
+
+  .tenant-list {
+    @apply flex flex-col gap-1 bg-white rounded-xl border border-slate-200 shadow-sm p-2 max-h-[32rem] overflow-y-auto;
+  }
+
+  .tenant-list-item {
+    @apply flex items-center gap-3 w-full text-left px-3 py-2.5 rounded-lg border border-transparent transition-colors cursor-pointer bg-transparent hover:bg-slate-50;
+  }
+
+  .tenant-list-item.selected {
+    @apply bg-blue-50 border-blue-200 ring-1 ring-blue-200;
+  }
+
+  .tenant-list-copy {
+    @apply min-w-0 flex-1;
+  }
+
+  .tenant-list-copy strong {
+    @apply block truncate text-sm font-semibold text-slate-900;
+  }
+
+  .tenant-list-copy small {
+    @apply block truncate text-xs text-slate-500;
+  }
+
+  .tenant-avatar {
+    @apply flex items-center justify-center w-9 h-9 shrink-0 rounded-full bg-slate-100 text-sm font-bold text-slate-600 uppercase;
+  }
+
+  .tenant-title-row {
+    @apply flex flex-wrap items-center gap-3 mb-4;
+  }
+
+  .tenant-workspace {
+    @apply min-w-0;
+  }
+
+  /* --- Lưới số liệu và tài nguyên --- */
+  .metric-grid {
+    @apply grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6;
+  }
+
+  .resource-grid {
+    @apply grid grid-cols-1 sm:grid-cols-2 gap-4;
+  }
+
+  .metric-card {
+    @apply bg-white rounded-xl border border-slate-200 shadow-sm p-5;
+  }
+
+  .metric-card strong {
+    @apply block text-2xl font-bold text-slate-900 tabular-nums;
+  }
+
+  .metric-card span {
+    @apply block text-xs font-semibold uppercase tracking-wide text-slate-500;
+  }
+
+  .metric-success {
+    @apply border-emerald-200 bg-emerald-50;
+  }
+
+  .metric-success strong {
+    @apply text-emerald-700;
+  }
+
+  .metric-warn {
+    @apply border-amber-200 bg-amber-50;
+  }
+
+  .metric-warn strong {
+    @apply text-amber-700;
+  }
+
+  /* --- Trạng thái rỗng --- */
+  .empty-state {
+    @apply flex flex-col items-center justify-center gap-2 py-12 px-6 text-center text-slate-500;
+  }
+
+  .empty-icon {
+    @apply flex items-center justify-center w-12 h-12 rounded-full bg-slate-100 text-slate-400 mb-1;
+  }
+
+  /* --- Nút biểu tượng --- */
+  .icon-button {
+    @apply inline-flex items-center justify-center w-9 h-9 rounded-lg border border-slate-300 bg-white text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  /* --- Modal ---
+     Thiếu .modal-backdrop thì hộp thoại không có lớp phủ và không được định vị,
+     nên nó trôi theo dòng chảy trang: nội dung phía sau vẫn bấm được và hộp
+     thoại có thể nằm ngoài vùng nhìn thấy. */
+  .modal-backdrop {
+    @apply fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4;
+  }
+
+  .modal-card {
+    @apply bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6;
+  }
+
+  /* --- Nhật ký Terraform --- */
+  .terraform-log {
+    @apply bg-slate-950 text-slate-100 rounded-lg p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words max-h-96 overflow-y-auto;
+  }
+
+  /* --- Bố cục trang luyện tập --- */
+  .practice-layout {
+    @apply grid grid-cols-1 lg:grid-cols-2 gap-4 items-start;
+  }
+
+  .practice-content-panel {
+    @apply bg-white rounded-xl border border-slate-200 shadow-sm p-6 max-h-[75vh] overflow-y-auto;
+  }
+
+  .practice-editor-panel {
+    @apply flex flex-col gap-3 min-w-0;
+  }
+
+  .run-output-panel {
+    @apply rounded-lg border border-slate-200 overflow-hidden bg-white;
+  }
+
+  .run-output-header {
+    @apply flex items-center justify-between gap-2 bg-slate-100 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600;
+  }
+
+  .run-output-body {
+    @apply bg-slate-950 text-slate-100 p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words max-h-64 overflow-y-auto;
+  }
+
+  /* --- Tiện ích nhỏ --- */
+  .hide-scrollbar {
+    scrollbar-width: none;
+  }
+
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .fade-in {
+    animation: eaudit-fade-in 0.2s ease-out;
+  }
+}
+
+@keyframes eaudit-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
 }
 
 /* Question content - HTML rendered với DOMPurify sanitization (chống XSS) */

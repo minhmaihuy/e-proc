@@ -12,6 +12,29 @@ function errorMessage(error: unknown): string {
   return typeof response?.data?.error === 'string' ? response.data.error : 'Unable to load tenant issue logs.';
 }
 
+// Mức độ phải phân biệt được bằng nhiều thứ hơn là màu: nền, chữ và viền cùng đổi, vì
+// một bảng log dài mà chỉ khác sắc độ đỏ thì người phân biệt màu kém không đọc được thứ
+// tự ưu tiên.
+const SEVERITY_STYLES: Record<string, string> = {
+  critical: 'bg-red-100 text-red-800 ring-red-300',
+  error: 'bg-orange-100 text-orange-800 ring-orange-300',
+  warning: 'bg-amber-100 text-amber-800 ring-amber-300',
+};
+
+const STATUS_STYLES: Record<string, string> = {
+  open: 'bg-blue-100 text-blue-800 ring-blue-300',
+  resolved: 'bg-emerald-100 text-emerald-800 ring-emerald-300',
+  archived: 'bg-slate-100 text-slate-600 ring-slate-300',
+};
+
+function Pill({ label, tone }: { label: string; tone: string }) {
+  return (
+    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide ring-1 ring-inset ${tone}`}>
+      {label}
+    </span>
+  );
+}
+
 function IssueLogs() {
   const { tenantName, tenantSlug, isTenantAdmin, logout } = useAuth();
   const [issues, setIssues] = useState<TenantIssue[]>([]);
@@ -61,7 +84,7 @@ function IssueLogs() {
         <div>
           <span className="eyebrow">TENANT LOG PLANE</span>
           <h1>Issue Logs</h1>
-          <p style={{ margin: 0, color: 'var(--text-light)' }}>
+          <p className="mt-1 text-sm text-slate-500">
             Operational failures for {tenantName || tenantSlug} ({tenantSlug}). Candidate violations remain in assessment results.
           </p>
         </div>
@@ -70,9 +93,9 @@ function IssueLogs() {
 
       <AdminNav />
 
-      <div className="card" style={{ marginBottom: 20 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'end' }}>
-          <div className="form-group" style={{ margin: 0 }}>
+      <div className="card">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="form-group mb-0 min-w-[10rem]">
             <label htmlFor="issue-status">Status</label>
             <select id="issue-status" value={status} onChange={(event) => setStatus(event.target.value as IssueStatusFilter)}>
               <option value="">All</option>
@@ -81,7 +104,7 @@ function IssueLogs() {
               <option value="archived">Archived</option>
             </select>
           </div>
-          <div className="form-group" style={{ margin: 0 }}>
+          <div className="form-group mb-0 min-w-[10rem]">
             <label htmlFor="issue-severity">Severity</label>
             <select id="issue-severity" value={severity} onChange={(event) => setSeverity(event.target.value as IssueSeverityFilter)}>
               <option value="">All</option>
@@ -90,18 +113,34 @@ function IssueLogs() {
               <option value="critical">Critical</option>
             </select>
           </div>
-          <button className="btn btn-secondary" onClick={() => void loadIssues()} disabled={loading}>Refresh</button>
+          <button className="btn btn-secondary" onClick={() => void loadIssues()} disabled={loading}>
+            {loading ? 'Refreshing…' : 'Refresh'}
+          </button>
+          <span className="ml-auto text-sm text-slate-500" aria-live="polite">
+            {loading ? 'Loading…' : `${issues.length} issue${issues.length === 1 ? '' : 's'}`}
+          </span>
         </div>
       </div>
 
-      {error && <div className="card" style={{ color: 'var(--danger)', marginBottom: 20 }}>{error}</div>}
-      <div className="card" style={{ marginBottom: 20 }}>
+      {error && (
+        <div role="alert" className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-medium text-red-700">
+          {error}
+        </div>
+      )}
+
+      <div
+        className={`mb-6 rounded-xl border p-4 text-sm ${
+          isTenantAdmin
+            ? 'border-blue-200 bg-blue-50 text-blue-800'
+            : 'border-slate-200 bg-slate-50 text-slate-600'
+        }`}
+      >
         {isTenantAdmin
           ? 'Tenant administrator mode: you can resolve, reopen, archive, and restore issues for this tenant.'
           : 'Read-only mode: only this tenant administrator can manage issue lifecycle.'}
       </div>
 
-      <div className="card" style={{ overflowX: 'auto' }}>
+      <div className="card overflow-x-auto">
         <table>
           <thead>
             <tr>
@@ -117,39 +156,47 @@ function IssueLogs() {
           <tbody>
             {issues.map((issue) => (
               <tr key={issue.id}>
-                <td style={{ whiteSpace: 'nowrap' }}>{new Date(issue.created_at).toLocaleString()}</td>
-                <td><strong>{issue.severity.toUpperCase()}</strong></td>
-                <td>
-                  <div><code>{issue.code}</code></div>
-                  <div style={{ maxWidth: 420, overflowWrap: 'anywhere' }}>{issue.message}</div>
-                  <small style={{ color: 'var(--text-light)' }}>Request ID: {issue.request_id || 'n/a'}</small>
+                <td className="whitespace-nowrap align-top text-slate-600">{new Date(issue.created_at).toLocaleString()}</td>
+                <td className="align-top">
+                  <Pill label={issue.severity} tone={SEVERITY_STYLES[issue.severity] || STATUS_STYLES.archived} />
                 </td>
-                <td>
-                  <code>{issue.http_method || '-'} {issue.request_path || '-'}</code>
-                  <div>{issue.http_status || '-'}</div>
+                <td className="align-top">
+                  <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-blue-700">{issue.code}</code>
+                  <div className="mt-1 max-w-md break-words text-slate-800">{issue.message}</div>
+                  <small className="text-slate-500">Request ID: {issue.request_id || 'n/a'}</small>
                 </td>
-                <td>{issue.actor_type}{issue.actor_id ? ` #${issue.actor_id}` : ''}</td>
-                <td>{issue.status}</td>
-                <td>
-                  {!isTenantAdmin ? <span>Read only</span> : (
+                <td className="align-top">
+                  <code className="block break-all font-mono text-xs text-slate-700">
+                    {issue.http_method || '-'} {issue.request_path || '-'}
+                  </code>
+                  <div className="mt-1 text-slate-500">{issue.http_status || '-'}</div>
+                </td>
+                <td className="align-top whitespace-nowrap text-slate-600">
+                  {issue.actor_type}{issue.actor_id ? ` #${issue.actor_id}` : ''}
+                </td>
+                <td className="align-top">
+                  <Pill label={issue.status} tone={STATUS_STYLES[issue.status] || STATUS_STYLES.archived} />
+                </td>
+                <td className="align-top">
+                  {!isTenantAdmin ? <span className="text-sm text-slate-400">Read only</span> : (
                     <div className="button-row">
                       {issue.status === 'open' && (
-                        <button className="btn btn-primary" style={{ fontSize: 12 }} disabled={mutatingId === issue.id} onClick={() => void updateIssueStatus(issue.id, 'resolved')}>Resolve</button>
+                        <button className="btn btn-primary text-xs" disabled={mutatingId === issue.id} onClick={() => void updateIssueStatus(issue.id, 'resolved')}>Resolve</button>
                       )}
                       {issue.status === 'resolved' && (
-                        <button className="btn btn-secondary" style={{ fontSize: 12 }} disabled={mutatingId === issue.id} onClick={() => void updateIssueStatus(issue.id, 'open')}>Reopen</button>
+                        <button className="btn btn-secondary text-xs" disabled={mutatingId === issue.id} onClick={() => void updateIssueStatus(issue.id, 'open')}>Reopen</button>
                       )}
                       {issue.status !== 'archived' && (
-                        <button className="btn btn-danger-outline" style={{ fontSize: 12 }} disabled={mutatingId === issue.id} onClick={() => void updateIssueStatus(issue.id, 'archived')}>Archive</button>
+                        <button className="btn btn-danger-outline text-xs" disabled={mutatingId === issue.id} onClick={() => void updateIssueStatus(issue.id, 'archived')}>Archive</button>
                       )}
                       {issue.status === 'archived' && (
-                        <button className="btn btn-secondary" style={{ fontSize: 12 }} disabled={mutatingId === issue.id} onClick={() => void updateIssueStatus(issue.id, 'open')}>Restore</button>
+                        <button className="btn btn-secondary text-xs" disabled={mutatingId === issue.id} onClick={() => void updateIssueStatus(issue.id, 'open')}>Restore</button>
                       )}
-                      {mutatingId === issue.id && <span>Updating...</span>}
+                      {mutatingId === issue.id && <span className="text-xs text-slate-500">Updating…</span>}
                     </div>
                   )}
                   {issue.last_managed_at && (
-                    <small style={{ display: 'block', color: 'var(--text-light)', marginTop: 6 }}>
+                    <small className="mt-1.5 block text-slate-500">
                       Managed by #{issue.last_managed_by || '?'} · {new Date(issue.last_managed_at).toLocaleString()}
                     </small>
                   )}
@@ -157,9 +204,15 @@ function IssueLogs() {
               </tr>
             ))}
             {!loading && issues.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-light)' }}>No issues match these filters.</td></tr>
+              <tr>
+                <td colSpan={7} className="py-10 text-center text-slate-500">
+                  No issues match these filters.
+                </td>
+              </tr>
             )}
-            {loading && <tr><td colSpan={7} style={{ textAlign: 'center' }}>Loading...</td></tr>}
+            {loading && issues.length === 0 && (
+              <tr><td colSpan={7} className="py-10 text-center text-slate-500">Loading…</td></tr>
+            )}
           </tbody>
         </table>
       </div>
