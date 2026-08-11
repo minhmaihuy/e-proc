@@ -60,7 +60,7 @@ git pull --ff-only origin main
 # --- Rebuild Server ---
 echo ""
 echo ">>> Rebuilding server..."
-npm ci --include=dev
+npm ci --include=dev --include=optional
 npm run deps:verify
 npm run build:server
 
@@ -77,7 +77,8 @@ npm run db:migrate
 echo ""
 echo ">>> Rebuilding client..."
 cd client
-npm ci --include=dev
+npm ci --include=dev --include=optional
+npm run deps:verify
 npm run build
 cd ..
 

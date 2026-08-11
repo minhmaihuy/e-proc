@@ -52,6 +52,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `hoangsonbusiness/main` is a **long-lived fork on an older lineage**, not a topic branch. Merging it has twice silently reverted work that was already on `main` — the conflict resolution took the fork's whole file, and nobody noticed until the bug resurfaced in production.
 
+Tailwind v4 also requires a platform-native Oxide package. Keep `@tailwindcss/oxide-linux-x64-gnu` explicit in client optional dependencies, install with `--include=optional` in deploy/setup, and run `client`'s `deps:verify` before Vite. A stale cross-platform install can otherwise pass locally and fail while loading `vite.config.ts` on Linux.
+
 **Merge `ed8b5aa` alone deleted nine things.** All are restored now; the list is here so a future merge is recognised for what it is rather than re-debugged from scratch:
 
 | Bị mất | Hậu quả |
