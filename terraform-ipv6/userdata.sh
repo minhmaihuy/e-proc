@@ -20,6 +20,13 @@ if [ -n "${ssh_password}" ]; then
     echo "ubuntu:${ssh_password}" | chpasswd || true
 fi
 
+# --- Hostname phải có trong /etc/hosts ---
+# Thiếu dòng này thì MỌI lệnh sudo in "unable to resolve host <hostname>" trước khi
+# chạy. Vô hại về chức năng nhưng lẫn vào log deploy và rất dễ bị đọc nhầm là lỗi DNS —
+# nhất là trên máy này, nơi DNS thật sự có can thiệp (NAT64/DNS64 ở STEP 1).
+HOSTNAME_SELF=$(hostname)
+grep -q "$HOSTNAME_SELF" /etc/hosts || echo "127.0.1.1 $HOSTNAME_SELF" >> /etc/hosts
+
 # =============================================================================
 # STEP 1: Configure NAT64/DNS64 (CRITICAL — Must be FIRST!)
 # =============================================================================
@@ -293,19 +300,40 @@ cat > /opt/eaudit/deploy.sh << 'DEPLOYEOF'
 #!/bin/bash
 set -euo pipefail
 echo "=== Deploying E-Audit: $(date) ==="
-cd /opt/eaudit/app
+
+APP_DIR=/opt/eaudit/app
+APP_USER=ubuntu
+
+# git PHẢI chạy bằng chủ sở hữu repo, kể cả khi wrapper được gọi bằng sudo.
+#
+# Trước đây các lệnh git chạy dưới quyền người gọi. Gọi `sudo /opt/eaudit/deploy.sh`
+# khiến git chạy dưới root và ghi .git/FETCH_HEAD, .git/index, .git/refs/*, objects/*
+# thành sở hữu của root. Ngay sau đó deploy/scripts/deploy.sh hạ quyền xuống ubuntu
+# đúng như thiết kế, và lần pull kế tiếp chết với:
+#     error: cannot open '.git/FETCH_HEAD': Permission denied
+# Repo hỏng quyền vĩnh viễn cho tới khi chown lại, dù deploy đầu tiên trông như thành
+# công. Chạy không sudo cũng không thoát: bước cài .env cần root.
+run_as_app_user() {
+    if [ "$(id -un)" = "$APP_USER" ]; then
+        bash -lc "$1"
+    else
+        su - "$APP_USER" -c "$1"
+    fi
+}
 
 # Dọn file build cũ để git pull không vướng. KHÔNG xóa lockfile: deploy/scripts/deploy.sh
 # chạy `npm ci`, mà lệnh đó bắt buộc phải có package-lock.json và sẽ dừng ngay với
 # "can only install with an existing package-lock.json". Lockfile là file được track nên
 # `git checkout -- .` bên dưới đã đưa nó về đúng trạng thái của repo rồi.
-git checkout -- . || true
-rm -rf dist client/dist
+run_as_app_user "cd $APP_DIR && git checkout -- . || true"
+run_as_app_user "cd $APP_DIR && rm -rf dist client/dist"
 
 echo ">>> Pulling latest code..."
-git pull origin main
+run_as_app_user "cd $APP_DIR && git pull origin main"
 
+# Script trong repo tự xử lý cả hai trường hợp root và ubuntu, nên gọi thẳng.
 echo ">>> Executing repository deploy script..."
+cd "$APP_DIR"
 bash deploy/scripts/deploy.sh
 DEPLOYEOF
 chmod +x /opt/eaudit/deploy.sh
