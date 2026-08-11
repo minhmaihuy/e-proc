@@ -119,17 +119,31 @@ resource "aws_instance" "eaudit" {
   associate_public_ip_address = false
 
   root_block_device {
-    volume_size           = 8
+    # 8 GiB không đủ: hai cây node_modules (root + client, kèm Monaco/Pyodide) cộng
+    # thư mục build đã lấp gần hết đĩa. Thực tế trên máy đang chạy chỉ còn ~222 MB
+    # trống, khiến `npm ci` chết giữa chừng và để lại node_modules hỏng.
+    volume_size           = 16
     volume_type           = "gp3"
     delete_on_termination = true
     encrypted             = true
   }
 
   metadata_options {
-    http_endpoint        = "enabled"
-    http_protocol_ipv6   = "enabled"  # Enables IMDSv2 over IPv6!
-    http_tokens          = "required" # Enforce IMDSv2
+    http_endpoint      = "enabled"
+    http_protocol_ipv6 = "enabled"  # Enables IMDSv2 over IPv6!
+    http_tokens        = "required" # Enforce IMDSv2
   }
+
+  # cloud-init CHỈ chạy user-data ở lần boot đầu tiên của một instance. Mặc định của
+  # aws_instance là user_data_replace_on_change = false, nghĩa là sửa userdata.sh rồi
+  # `terraform apply` chỉ cập nhật thuộc tính trong state — máy đang chạy không bao giờ
+  # chạy lại script, và người sửa tưởng "userdata không hoạt động".
+  #
+  # ⚠ Đặt true khiến mọi thay đổi userdata.sh THAY THẾ instance (terminate + tạo mới).
+  # Dữ liệu trên đĩa của máy cũ mất; database nằm ở RDS nên không ảnh hưởng. Nếu chỉ
+  # muốn chạy lại script trên máy hiện có mà không thay máy, xem README: chạy tay
+  # /var/lib/cloud/instance/scripts/part-001 thay vì apply.
+  user_data_replace_on_change = true
 
   user_data = templatefile("${path.module}/userdata.sh", {
     database_url         = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.eaudit.endpoint}/${var.db_name}?sslmode=require"
