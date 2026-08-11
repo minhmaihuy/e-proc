@@ -10,8 +10,8 @@
 aws_region = "ap-southeast-1"
 
 # Domain
-domain_name   = "devfatstrack.cloud"
-app_subdomain = "epoc" # Final FSA-CLS URL: https://epoc.devfatstrack.cloud
+domain_name   = "devfasttrack.cloud"
+app_subdomain = "epoc" # Final FSA-CLS URL: https://epoc.devfasttrack.cloud
 
 # EC2
 instance_type         = "t3.micro"
