@@ -92,11 +92,24 @@ resource "aws_db_instance" "eaudit" {
   deletion_protection = false
   skip_final_snapshot = true
 
+  # Đổi mật khẩu phải có hiệu lực ngay, không chờ maintenance_window (sun 04:00).
+  # Nếu chờ, `apply` báo thành công nhưng RDS vẫn giữ mật khẩu cũ tới Chủ nhật —
+  # trong khi .env trên EC2 đã mang mật khẩu mới, nên bootstrap chết bằng 28P01
+  # suốt cả tuần mà nhìn như lỗi ngẫu nhiên.
+  apply_immediately = true
+
   tags = {
     Name = "eaudit-postgresql"
   }
 
-  lifecycle {
-    ignore_changes = [password]
-  }
+  # KHÔNG đặt `ignore_changes = [password]` ở đây.
+  #
+  # ec2.tf nhét var.db_password thẳng vào .env qua user_data và KHÔNG chịu ảnh hưởng
+  # của lifecycle block này. Bỏ qua thay đổi mật khẩu ở phía RDS tạo ra bất đối xứng:
+  # đổi db_password trong terraform.tfvars thì .env nhận giá trị mới còn RDS giữ giá
+  # trị cũ, và db:ensure chết với SQLSTATE 28P01 (invalid_password). Triệu chứng khó
+  # lần vì cả hai phía đều "đúng theo cấu hình của mình".
+  #
+  # Đã xảy ra thật: fingerprint mật khẩu trong .env trùng khớp terraform.tfvars, chứng
+  # minh EC2 không sai — bên lệch là RDS, đúng chỗ lifecycle này che đi.
 }
