@@ -139,7 +139,8 @@ chown ubuntu:ubuntu /opt/eaudit
 
 # --- Create environment file ---
 echo ">>> Creating .env file..."
-cat > /opt/eaudit/.env << 'ENVEOF'
+mkdir -p /opt/eaudit
+cat > /opt/eaudit/.env << ENVEOF
 NODE_ENV=${node_env}
 PORT=${app_port}
 
@@ -158,6 +159,7 @@ TENANT_SLUG=${tenant_slug}
 GEMINI_API_KEY=${gemini_api_key}
 SESSION_SECRET=${session_secret}
 USE_SQLITE=false
+ALLOWED_ORIGINS=https://${domain_name}
 ENVEOF
 chown ubuntu:ubuntu /opt/eaudit/.env
 chmod 600 /opt/eaudit/.env

@@ -17,6 +17,35 @@ set -euo pipefail
 
 APP_DIR="/opt/eaudit/app"
 CANONICAL_ENV="/opt/eaudit/.env"
+REPO_URL="https://github.com/minhmaihuy/e-proc.git"
+
+# =============================================================================
+# BOOTSTRAP: Clone repo if /opt/eaudit/app does not exist yet
+# =============================================================================
+if [ ! -d "$APP_DIR" ]; then
+  echo ">>> /opt/eaudit/app not found — bootstrapping first-time setup..."
+
+  # Ensure base directory exists with correct ownership
+  mkdir -p /opt/eaudit
+  DEPLOY_USER="${SUDO_USER:-ubuntu}"
+  chown "$DEPLOY_USER":"$DEPLOY_USER" /opt/eaudit
+
+  echo ">>> Cloning repository from $REPO_URL ..."
+  sudo -u "$DEPLOY_USER" git clone "$REPO_URL" "$APP_DIR" || {
+    echo "ERROR: git clone failed. Check network connectivity and repo URL."
+    exit 1
+  }
+
+  # Sync canonical .env into app directory
+  if [ -f "$CANONICAL_ENV" ]; then
+    install -m 600 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$CANONICAL_ENV" "$APP_DIR/.env"
+    echo ">>> Copied $CANONICAL_ENV → $APP_DIR/.env"
+  else
+    echo "WARNING: $CANONICAL_ENV not found — create it before starting the app!"
+  fi
+
+  echo ">>> Bootstrap clone complete. Continuing with build..."
+fi
 
 if [ "$(id -u)" -eq 0 ]; then
   APP_USER="${SUDO_USER:-$(stat -c '%U' "$APP_DIR")}"
