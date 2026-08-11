@@ -145,10 +145,13 @@ resource "aws_instance" "eaudit" {
   # /var/lib/cloud/instance/scripts/part-001 thay vì apply.
   user_data_replace_on_change = true
 
-  user_data = templatefile("${path.module}/userdata.sh", {
-    database_url         = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.eaudit.endpoint}/${var.db_name}?sslmode=require"
-    control_database_url = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.eaudit.endpoint}/${var.control_db_name}?sslmode=require"
-    log_database_url     = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.eaudit.endpoint}/${var.log_db_name}?sslmode=require"
+  # AWS gioi han user_data o 16384 byte. Script bootstrap da vuot nguong (comment
+  # tieng Viet la UTF-8 nhieu byte). base64gzip nen lai truoc khi gui; cloud-init tu
+  # nhan dien va giai nen, nen khong can doi gi trong script.
+  user_data_base64 = base64gzip(templatefile("${path.module}/userdata.sh", {
+    database_url         = "postgresql://${var.db_username}:${urlencode(var.db_password)}@${aws_db_instance.eaudit.endpoint}/${var.db_name}?sslmode=require"
+    control_database_url = "postgresql://${var.db_username}:${urlencode(var.db_password)}@${aws_db_instance.eaudit.endpoint}/${var.control_db_name}?sslmode=require"
+    log_database_url     = "postgresql://${var.db_username}:${urlencode(var.db_password)}@${aws_db_instance.eaudit.endpoint}/${var.log_db_name}?sslmode=require"
     tenant_slug          = var.tenant_slug
     gemini_api_key       = var.gemini_api_key
     session_secret       = var.session_secret
@@ -165,7 +168,7 @@ resource "aws_instance" "eaudit" {
     db_name              = var.db_name
     db_username          = var.db_username
     ssh_password         = var.ssh_password
-  })
+  }))
 
   depends_on = [aws_db_instance.eaudit]
 
