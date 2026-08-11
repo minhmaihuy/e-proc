@@ -8,6 +8,7 @@ function TenantLogin() {
 
   return (
     <RoleLoginForm
+      theme="control"
       brandLabel="E-PROC CONTROL PLANE"
       heroTitle="One control plane for every customer environment."
       heroDescription="Approve tenants and coordinate isolated Terraform infrastructure without entering tenant assessment data."
