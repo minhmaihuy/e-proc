@@ -9,8 +9,10 @@ exec > /var/log/userdata.log 2>&1
 echo "=== E-Audit IPv6 UserData Start: $(date) ==="
 
 # --- Set Password for ubuntu User (for Serial Console Access) ---
-echo ">>> Setting password for ubuntu user..."
-echo "ubuntu:${ssh_password}" | chpasswd
+if [ -n "${ssh_password}" ]; then
+    echo ">>> Setting password for ubuntu user..."
+    echo "ubuntu:${ssh_password}" | chpasswd || true
+fi
 
 # =============================================================================
 # STEP 1: Configure NAT64/DNS64 (CRITICAL — Must be FIRST!)
@@ -64,9 +66,9 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get upgrade -y
 
-# --- Install Node.js 18 LTS ---
-echo ">>> Installing Node.js 18..."
-curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+# --- Install Node.js 22 LTS (required by Tailwind Oxide + project manifests) ---
+echo ">>> Installing Node.js 22..."
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 echo "Node.js version: $(node --version)"
 echo "NPM version: $(npm --version)"
@@ -132,14 +134,14 @@ if [ ! -f /swapfile ]; then
     echo "    Swap enabled: 1GB"
 fi
 
-# --- Create app directory ---
-echo ">>> Setting up app directory..."
+# --- Create app directories ---
+echo ">>> Setting up app directories..."
 mkdir -p /opt/eaudit
-chown ubuntu:ubuntu /opt/eaudit
+mkdir -p /opt/eaudit/app
+chown -R ubuntu:ubuntu /opt/eaudit
 
 # --- Create environment file ---
 echo ">>> Creating .env file..."
-mkdir -p /opt/eaudit
 cat > /opt/eaudit/.env << ENVEOF
 NODE_ENV=${node_env}
 PORT=${app_port}
@@ -163,6 +165,7 @@ ALLOWED_ORIGINS=https://${domain_name}
 ENVEOF
 chown ubuntu:ubuntu /opt/eaudit/.env
 chmod 600 /opt/eaudit/.env
+echo ">>> .env created successfully"
 
 # =============================================================================
 # STEP 4: Configure Nginx
@@ -284,18 +287,24 @@ chown ubuntu:ubuntu /opt/eaudit/deploy.sh
 # =============================================================================
 echo ">>> AUTO-DEPLOYING APPLICATION..."
 
-# Clone the repository
-echo ">>> Cloning repository..."
-cd /opt/eaudit
-su - ubuntu -c "cd /opt/eaudit && git clone https://github.com/minhmaihuy/e-proc.git app" || {
-    echo "ERROR: Failed to clone repository. Will retry once after 10 seconds..."
-    sleep 10
-    su - ubuntu -c "cd /opt/eaudit && git clone https://github.com/minhmaihuy/e-proc.git app"
+# Clone the repository into /opt/eaudit/app
+echo ">>> Cloning repository into /opt/eaudit/app ..."
+# Remove placeholder dir created above so git clone can write into it
+rm -rf /opt/eaudit/app
+su - ubuntu -c "git clone https://github.com/minhmaihuy/e-proc.git /opt/eaudit/app" || {
+    echo "ERROR: Failed to clone repository. Retrying after 15 seconds..."
+    sleep 15
+    rm -rf /opt/eaudit/app
+    su - ubuntu -c "git clone https://github.com/minhmaihuy/e-proc.git /opt/eaudit/app"
 }
+echo ">>> Repository cloned to /opt/eaudit/app"
 
 # Copy .env to app directory
+echo ">>> Copying .env into app..."
 cp /opt/eaudit/.env /opt/eaudit/app/.env
 chown ubuntu:ubuntu /opt/eaudit/app/.env
+chmod 600 /opt/eaudit/app/.env
+echo ">>> .env synced to /opt/eaudit/app/.env"
 
 # Install server dependencies & build
 echo ">>> Installing server dependencies..."
