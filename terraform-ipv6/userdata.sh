@@ -6,6 +6,12 @@
 set -euo pipefail
 
 exec > /var/log/userdata.log 2>&1
+
+# Với `set -e`, một lệnh lỗi làm script dừng ngay và KHÔNG in gì thêm — log trông như
+# bị cắt cụt giữa chừng, không rõ chết ở đâu. Trap dưới đây ghi lại dòng và lệnh gây
+# lỗi, đồng thời để lại /var/log/userdata.failed để kiểm tra nhanh bằng một lệnh test.
+trap 'code=$?; echo "!!! USERDATA FAILED: dòng $LINENO, lệnh: $BASH_COMMAND (exit $code)"; echo "dòng $LINENO: $BASH_COMMAND (exit $code)" > /var/log/userdata.failed; echo "=== Kết thúc trong lỗi: $(date) ==="' ERR
+
 echo "=== E-Audit IPv6 UserData Start: $(date) ==="
 
 # --- Set Password for ubuntu User (for Serial Console Access) ---
@@ -33,8 +39,10 @@ nameserver 2a01:4f8:c2c:123f::1
 nameserver 2a00:1098:2c::1
 DNSEOF
 
-# Lock the file so nothing can overwrite it
-chattr +i /etc/resolv.conf
+# Lock the file so nothing can overwrite it.
+# `|| true`: một số filesystem không hỗ trợ thuộc tính immutable, và dưới `set -e`
+# thất bại ở đây sẽ giết cả script dù DNS đã ghi xong và hoàn toàn dùng được.
+chattr +i /etc/resolv.conf || true
 
 echo ">>> DNS64 configured and locked"
 sleep 3
@@ -142,7 +150,11 @@ chown -R ubuntu:ubuntu /opt/eaudit
 
 # --- Create environment file ---
 echo ">>> Creating .env file..."
-cat > /opt/eaudit/.env << ENVEOF
+# Heredoc ĐƯỢC TRÍCH DẪN ('ENVEOF'): chặn bash diễn giải $ và backtick bên trong giá
+# trị bí mật (mật khẩu DB hay secret chứa '$' sẽ bị cắt cụt nếu không trích dẫn).
+# Terraform vẫn thay biến template của nó bình thường, vì nó xử lý template TRƯỚC
+# khi script chay tren may.
+cat > /opt/eaudit/.env << 'ENVEOF'
 NODE_ENV=${node_env}
 PORT=${app_port}
 
@@ -159,7 +171,14 @@ LOG_DATABASE_URL=${log_database_url}
 TENANT_SLUG=${tenant_slug}
 
 GEMINI_API_KEY=${gemini_api_key}
+
+# Ký JWT admin/học viên. Thiếu khóa này server thoát ngay lúc khởi động.
+JWT_SECRET=${jwt_secret}
 SESSION_SECRET=${session_secret}
+
+# Database dùng khi tạo các database còn thiếu (npm run db:ensure)
+DATABASE_MAINTENANCE_DB=${maintenance_db}
+
 USE_SQLITE=false
 ALLOWED_ORIGINS=https://${domain_name}
 ENVEOF
@@ -307,16 +326,40 @@ chmod 600 /opt/eaudit/app/.env
 echo ">>> .env synced to /opt/eaudit/app/.env"
 
 # Install server dependencies & build
+# Dùng `npm ci` chứ không phải `npm install`: cài đúng theo lockfile và phát hiện
+# dependency bị gỡ khỏi package.json — `npm install` có thể để lại node_modules lệch.
 echo ">>> Installing server dependencies..."
 cd /opt/eaudit/app
-su - ubuntu -c "cd /opt/eaudit/app && npm install"
+su - ubuntu -c "cd /opt/eaudit/app && npm ci --include=dev"
+
+# Chặn sớm: thiếu base64-js/mammoth thì phải dừng TRƯỚC khi đụng tới database,
+# thay vì để app chết lúc chạy với lỗi khó lần.
+echo ">>> Verifying runtime dependencies..."
+su - ubuntu -c "cd /opt/eaudit/app && npm run deps:verify"
 
 echo ">>> Building server..."
 su - ubuntu -c "cd /opt/eaudit/app && npm run build:server"
 
+# ---------------------------------------------------------------------------
+# Tạo và migrate BA database plane.
+#
+# RDS chỉ tạo sẵn một database (var.db_name). Nhưng .env khai báo ba plane tách
+# biệt — assessment, control, log — và ở production server sẽ DỪNG nếu thiếu
+# CONTROL_DATABASE_URL hoặc LOG_DATABASE_URL. Không có bước này thì PM2 khởi động
+# rồi app crash ngay, biểu hiện đúng như "deploy xong nhưng web không vào được".
+#
+# db:ensure chỉ TẠO database còn thiếu (cần quyền CREATEDB), db:migrate dựng lược đồ
+# theo thứ tự assessment → control → log. Cả hai đều idempotent.
+# ---------------------------------------------------------------------------
+echo ">>> Ensuring the three PostgreSQL databases exist..."
+su - ubuntu -c "cd /opt/eaudit/app && npm run db:ensure"
+
+echo ">>> Migrating database schemas..."
+su - ubuntu -c "cd /opt/eaudit/app && npm run db:migrate"
+
 # Install client dependencies & build
 echo ">>> Installing client dependencies..."
-su - ubuntu -c "cd /opt/eaudit/app/client && npm install"
+su - ubuntu -c "cd /opt/eaudit/app/client && npm ci --include=dev"
 
 echo ">>> Building client..."
 su - ubuntu -c "cd /opt/eaudit/app/client && npm run build"
@@ -330,9 +373,8 @@ su - ubuntu -c "pm2 save"
 echo ">>> Waiting for app to start..."
 sleep 5
 
-# Initialize database tables
-echo ">>> Initializing database tables..."
-curl -s -X POST http://localhost:${app_port}/api/init-tables || echo "WARNING: init-tables call failed (may need manual init)"
+# Lược đồ database đã được dựng ở bước db:migrate phía trên.
+# KHÔNG gọi /api/init-tables: endpoint đó đã bị gỡ khỏi ứng dụng.
 
 # =============================================================================
 # STEP 7: PM2 Startup & Cron Jobs

@@ -35,7 +35,17 @@ tenant_slug = "fsa-cls"
 gemini_api_key = "AIzaSy..."
 
 # Session Secret (random secure string, at least 32 characters)
-session_secret = "e005c119c9ca40a00214e378069970cad4e17ac94d887ae6afaf1409b3a74bef"
+# File nay DUOC TRACK trong git — chi de placeholder, dat gia tri that o
+# terraform.tfvars (da gitignore). Sinh bang: openssl rand -hex 32
+session_secret = "REPLACE_WITH_RANDOM_64_HEX_CHARS"
+
+# Ky JWT admin/hoc vien. BAT BUOC, khong co default: thieu thi server thoat ngay
+# luc khoi dong. Sinh bang: openssl rand -hex 32
+jwt_secret = "REPLACE_WITH_RANDOM_64_HEX_CHARS"
+
+# Database dung khi tao cac database con thieu (npm run db:ensure).
+# Vai tro deploy can quyen CONNECT va CREATEDB tren database nay.
+database_maintenance_db = "postgres"
 
 # App Config
 node_env = "production"
