@@ -148,10 +148,21 @@ resource "aws_instance" "eaudit" {
   # AWS gioi han user_data o 16384 byte. Script bootstrap da vuot nguong (comment
   # tieng Viet la UTF-8 nhieu byte). base64gzip nen lai truoc khi gui; cloud-init tu
   # nhan dien va giai nen, nen khong can doi gi trong script.
+  # sslmode=no-verify, KHÔNG phải require. `pg` bản mới coi `require` là bí danh của
+  # `verify-full`, và tham số SSL lấy từ chuỗi kết nối GHI ĐÈ tùy chọn `ssl` truyền
+  # trong code — nên `ssl: { rejectUnauthorized: false }` ở databaseBootstrap.ts và ba
+  # pool của ứng dụng đều bị vô hiệu. Node khi đó đòi xác thực CA của RDS, vốn không
+  # nằm trong kho tin cậy mặc định, và ném SELF_SIGNED_CERT_IN_CHAIN. Triệu chứng rất
+  # dễ đọc nhầm: db:ensure báo "Check connectivity and CREATEDB privilege" trong khi
+  # psql cùng URL vẫn kết nối bình thường.
+  #
+  # `no-verify` vẫn MÃ HÓA kết nối (thỏa rds.force_ssl), chỉ bỏ bước xác minh chuỗi
+  # chứng chỉ. Muốn xác minh thật thì phải nạp bundle CA của RDS rồi chuyển cả ba pool
+  # sang verify-full cùng lúc — đổi riêng URL sẽ hỏng lại y như vậy.
   user_data_base64 = base64gzip(templatefile("${path.module}/userdata.sh", {
-    database_url         = "postgresql://${var.db_username}:${urlencode(var.db_password)}@${aws_db_instance.eaudit.endpoint}/${var.db_name}?sslmode=require"
-    control_database_url = "postgresql://${var.db_username}:${urlencode(var.db_password)}@${aws_db_instance.eaudit.endpoint}/${var.control_db_name}?sslmode=require"
-    log_database_url     = "postgresql://${var.db_username}:${urlencode(var.db_password)}@${aws_db_instance.eaudit.endpoint}/${var.log_db_name}?sslmode=require"
+    database_url         = "postgresql://${var.db_username}:${urlencode(var.db_password)}@${aws_db_instance.eaudit.endpoint}/${var.db_name}?sslmode=no-verify"
+    control_database_url = "postgresql://${var.db_username}:${urlencode(var.db_password)}@${aws_db_instance.eaudit.endpoint}/${var.control_db_name}?sslmode=no-verify"
+    log_database_url     = "postgresql://${var.db_username}:${urlencode(var.db_password)}@${aws_db_instance.eaudit.endpoint}/${var.log_db_name}?sslmode=no-verify"
     tenant_slug          = var.tenant_slug
     gemini_api_key       = var.gemini_api_key
     session_secret       = var.session_secret
