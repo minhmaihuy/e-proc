@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Hai file hướng dẫn phải đồng bộ.** `CLAUDE.md` (cho Claude Code) và `AGENTS.md` (cho Codex) dùng chung một thân nội dung: mọi thứ từ `## Commands` tới cuối file phải **giống hệt nhau từng byte**. Chỉ phần tiêu đề và mục Maintenance contract này được phép khác. Sửa kiến thức dự án ở một file thì phải chép sang file kia trong **cùng một thay đổi** — đừng để lần sau mới làm.
 - Kiểm tra bằng máy, đừng tin trí nhớ: `npm run docs:check` (hoặc `npm run test:tenant`) sẽ báo lỗi và chỉ ra dòng đầu tiên bị lệch. Chạy nó trước khi bàn giao bất kỳ thay đổi nào có đụng tới hai file này.
+- **Trước khi merge nhánh `hoangsonbusiness`, đọc mục "Merging the `hoangsonbusiness` fork".** Nhánh đó có lineage cũ hơn; hai lần merge trước đã âm thầm xóa mất công việc đã có trên `main` (9 hạng mục, gồm cả bug mất dữ liệu và build frontend chết). Mục đó có danh sách file rủi ro và cổng kiểm tra bắt buộc.
 - Read `rule.md` before changing tenant domains, role ownership, database planes, operational logs, Terraform, or deployment configuration. Add newly discovered regression risks to that file in the same change.
 - This rule documents behavior observed in source at `main` commit `752448f` (2026-08-08). If code and this file differ, verify the code path and update this rule in the same change.
 - The reusable Codex skill is `D:\Codex-Skills\e-proc-platform`. Keep its `references/features.md`, `references/api-map.md`, architecture, and verification guidance synchronized with material feature, role, schema, infrastructure, or deployment changes.
@@ -46,6 +47,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Maintenance harness
 - Run the project wrapper with the applicable design spec: `python scripts/run-code-harness.py --target <changeset-folder> --rules specs/fullstack-harness.rules.json --spec specs/<feature>-design.md --report <report-folder>`.
 - `--spec` must identify the requirements used by every pending `llm_judge`; do not run the final maintenance gate against an undocumented feature change.
+
+## Merging the `hoangsonbusiness` fork (read before every such merge)
+
+`hoangsonbusiness/main` is a **long-lived fork on an older lineage**, not a topic branch. Merging it has twice silently reverted work that was already on `main` — the conflict resolution took the fork's whole file, and nobody noticed until the bug resurfaced in production.
+
+**Merge `ed8b5aa` alone deleted nine things.** All are restored now; the list is here so a future merge is recognised for what it is rather than re-debugged from scratch:
+
+| Bị mất | Hậu quả |
+|---|---|
+| Khóa kép `(id, question_group)` + toàn bộ tính năng bộ đề | Import bộ đề thứ hai **xóa trắng** 100 câu của bộ thứ nhất |
+| `question_plain` | Prompt chấm AI nhận HTML thô, model đọc lẫn `<p>`/`<strong>` |
+| Blueprint chọn theo cặp (module, bộ đề) | Đề thi trộn câu từ mọi bộ trùng tên module |
+| Bản vá `INSERT ... RETURNING` cho SQLite | Học viên được tạo nhưng **không gán câu hỏi nào** |
+| `FileCache.dataDir` khởi tạo ở class field | `npm run dev` crash ngay khi khởi động |
+| Toàn bộ tính năng Practice (bảng + route) | `/admin/practice` và `/practice` gọi endpoint không tồn tại |
+| `JSCPP`, `monaco-editor` trong `client/package.json` | `npm ci` sạch → **build frontend chết**, deploy fail |
+| Vitest + Testing Library + script `test` | `npm test` của client biến mất trong im lặng |
+| SSL cho kết nối `db:ensure` | Deploy chết ở bước tạo database (SQLSTATE 28000) |
+
+### Nguyên tắc khi resolve
+
+- **Không bao giờ lấy nguyên bản của fork cho file dùng chung.** `main` là nguồn đúng cho phần đã có; chỉ ghép thêm tính năng mà fork có còn main chưa có.
+- File rủi ro cao, phải đọc kỹ từng hunk: `src/server/db/postgres.ts`, `src/server/routes/admin.ts`, `src/server/routes/student.ts`, `src/server/cache.ts`, `client/package.json`, `client/src/pages/BatchManagement.tsx`, `client/src/services/api.ts`.
+- Sau khi resolve, grep nhanh các bất biến trước khi chạy test: `ON CONFLICT (id, question_group)`, `question_plain`, `practice_exams`, `upper.includes('RETURNING')`, `JSCPP`.
+
+### Cổng kiểm tra bắt buộc — chạy SAU khi merge, TRƯỚC khi push
+
+```bash
+npm run test:tenant          # bắt khóa kép, RETURNING, practice, recording policy, docs lệch
+npx tsc --noEmit             # backend
+cd client && npx tsc --noEmit && npm test
+```
+
+Và **quan trọng nhất**, thứ mà chỉ cài sạch mới lộ ra:
+
+```bash
+cd client && rm -rf node_modules && npm ci && npm run build
+```
+
+Dependency bị gỡ khỏi `package.json` vẫn build xanh khi `node_modules` cũ còn sót gói đó. Chỉ `npm ci` mới phát hiện — mà đó đúng là việc `deploy/scripts/deploy.sh` làm trên server, nên bỏ qua bước này nghĩa là để deploy chết thay mình.
 
 ## Repository structure
 
