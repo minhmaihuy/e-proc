@@ -3,10 +3,13 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "npm run deps:verify && npx vite build",
-    "deps:verify": "node scripts/verify-build-dependencies.mjs",
+    "deps:verify": "node ../scripts/verify-node-version.mjs && node scripts/verify-build-dependencies.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"

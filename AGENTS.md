@@ -40,6 +40,9 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 ### Full build
 - Build both frontend and backend: `npm run build`
 
+### Runtime
+- Node.js 22 or newer is required by both root and client manifests. Run `node scripts/verify-node-version.mjs` before dependency installation on deployment hosts; Tailwind Oxide 4.3.3 may be silently omitted as an incompatible optional dependency under Node.js 18.
+
 ### Type-check only (no emit)
 - Backend: `npx tsc --noEmit` (from project root)
 - Frontend: `npx tsc --noEmit` (from `client/`)
@@ -52,7 +55,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 `hoangsonbusiness/main` is a **long-lived fork on an older lineage**, not a topic branch. Merging it has twice silently reverted work that was already on `main` — the conflict resolution took the fork's whole file, and nobody noticed until the bug resurfaced in production.
 
-Tailwind v4 also requires a platform-native Oxide package. Keep `@tailwindcss/oxide-linux-x64-gnu` explicit in client optional dependencies, install with `--include=optional` in deploy/setup, and run `client`'s `deps:verify` before Vite. A stale cross-platform install can otherwise pass locally and fail while loading `vite.config.ts` on Linux.
+Tailwind v4/Oxide requires Node.js 20+ and a platform-native package; the supported application runtime is Node.js 22+. Keep both manifests/lockfiles at Node.js 22+, install Node.js 22 in both EC2 bootstrap paths, keep `@tailwindcss/oxide-linux-x64-gnu` explicit in client optional dependencies, install with `--include=optional` in deploy/setup, and run the runtime gate before install plus `client`'s `deps:verify` before Vite. Under Node.js 18, npm may silently omit the incompatible optional binding; a stale cross-platform install can also pass locally and fail while loading `vite.config.ts` on Linux.
 
 **Merge `ed8b5aa` alone deleted nine things.** All are restored now; the list is here so a future merge is recognised for what it is rather than re-debugged from scratch:
 
@@ -338,7 +341,7 @@ When troubleshooting "why doesn't my change show up," first confirm **which of t
 
 ### EC2 + nginx + pm2 deployment (`deploy/scripts/deploy.sh`)
 - Production at `epoc.devfasttrack.com` (at the time of writing) runs on a self-hosted EC2 instance — accessed via the AWS EC2 console (EC2 Instance Connect / Session Manager), not a persistent SSH key setup.
-- Deploy flow: `deploy/scripts/deploy.sh`, run from `/opt/eaudit/app` on the instance. A root-run deploy first installs canonical `/opt/eaudit/.env` into the app directory with mode `600`, then drops to the PM2 owner. It refuses tracked local changes, fast-forwards `main`, runs deterministic root install plus `npm run deps:verify`, builds the backend, runs `npm run db:ensure`, migrates assessment/control/log through `npm run db:migrate`, builds the frontend, and only then replaces PM2 with `dist/server/server.js`. It fails on dependency, migration, or origin-health checks and prints bounded diagnostics. It does **not** touch `public/`, and does **not** invoke Vercel in any way.
+- Deploy flow: `deploy/scripts/deploy.sh`, run from `/opt/eaudit/app` on the instance. A root-run deploy first installs canonical `/opt/eaudit/.env` into the app directory with mode `600`, then drops to the PM2 owner. It refuses tracked local changes, fast-forwards `main`, rejects Node.js older than 22 before dependency installation, runs deterministic root install plus `npm run deps:verify`, builds the backend, runs `npm run db:ensure`, migrates assessment/control/log through `npm run db:migrate`, builds the frontend, and only then replaces PM2 with `dist/server/server.js`. It fails on runtime, dependency, migration, or origin-health checks and prints bounded diagnostics. It does **not** touch `public/`, and does **not** invoke Vercel in any way.
 - nginx config: `deploy/nginx/eaudit.conf`. `/api/*` reverse-proxies to `http://127.0.0.1:3001` (the pm2-managed Node process); everything else is served as static files from `/opt/eaudit/app/client/dist` with SPA fallback (`try_files $uri $uri/ /index.html`).
 - DB is Postgres via RDS (all three URLs are set in canonical `/opt/eaudit/.env`, not committed to the repo) — so `USE_SQLITE` is `false` on this deployment; the SQLite code paths only run in local dev. One RDS instance may host the planes, but `DATABASE_URL`, `CONTROL_DATABASE_URL`, and `LOG_DATABASE_URL` must use distinct database names. Bootstrap creates only absent databases; deploy migrates all three schemas explicitly, and normal startup repeats idempotent initialization as a safety check.
 - **Pushing to `origin/main` does not deploy anything by itself on this path.** There is no CI/CD webhook wired up as of this writing — someone must manually re-run `deploy/scripts/deploy.sh` on the EC2 instance after a push for the change to go live. If a fix "isn't showing up," the first thing to check is whether `deploy.sh` was actually re-run after the relevant commit landed on `main` — e.g. `cd /opt/eaudit/app && git log -1 --oneline` on the instance, compared against the latest commit that should be live.
