@@ -71,6 +71,7 @@ fi
 echo ""
 echo ">>> Installing server dependencies..."
 cd "$APP_DIR"
+node scripts/verify-node-version.mjs
 npm ci --production=false --include=optional
 npm run deps:verify
 

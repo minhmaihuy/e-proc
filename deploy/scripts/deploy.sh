@@ -57,6 +57,9 @@ echo ""
 echo ">>> Pulling latest code..."
 git pull --ff-only origin main
 
+# Stop before npm can silently omit Node-incompatible optional native packages.
+node scripts/verify-node-version.mjs
+
 # --- Rebuild Server ---
 echo ""
 echo ">>> Rebuilding server..."
