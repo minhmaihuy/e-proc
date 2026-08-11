@@ -71,7 +71,7 @@ fi
 echo ""
 echo ">>> Installing server dependencies..."
 cd "$APP_DIR"
-npm ci --production=false
+npm ci --production=false --include=optional
 npm run deps:verify
 
 echo ""
@@ -90,7 +90,8 @@ npm run db:migrate
 echo ""
 echo ">>> Installing client dependencies..."
 cd "$APP_DIR/client"
-npm ci --production=false
+npm ci --production=false --include=optional
+npm run deps:verify
 
 echo ""
 echo ">>> Building client..."
