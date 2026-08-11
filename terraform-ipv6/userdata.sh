@@ -262,15 +262,22 @@ set -euo pipefail
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_FILE="/tmp/eaudit_backup_$TIMESTAMP.sql.gz"
 S3_BUCKET="${s3_bucket}"
-DB_HOST="${db_host}"
-DB_PORT="${db_port}"
-DB_NAME="${db_name}"
-DB_USER="${db_username}"
 
 echo "[Backup] Starting: $TIMESTAMP"
 
-export PGPASSWORD=$(grep DATABASE_URL /opt/eaudit/.env | sed 's/.*:\/\/[^:]*:\([^@]*\)@.*/\1/')
-pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" --no-owner --no-privileges | gzip > "$BACKUP_FILE"
+# Dùng thẳng URL thay vì tách host/user/db rồi dựng PGPASSWORD. Cách cũ hỏng theo hai
+# đường độc lập:
+#   1. `grep DATABASE_URL` khớp cả CONTROL_DATABASE_URL, LOG_DATABASE_URL và
+#      DATABASE_MAINTENANCE_DB — sed nhận nhiều dòng và sinh mật khẩu rác. Neo `^` để
+#      chỉ lấy đúng một dòng.
+#   2. Mật khẩu trong URL đã được urlencode (ký tự '#' thành '%23'), nên gán thẳng vào
+#      PGPASSWORD là sai nguyên bản. Truyền cả URL cho pg_dump thì libpq tự giải mã.
+#
+# sslmode: node-postgres hiểu 'no-verify', libpq thì KHÔNG (chỉ nhận disable/allow/
+# prefer/require/verify-ca/verify-full). Đổi sang 'require' — với libpq nghĩa là mã hóa
+# nhưng không xác minh CA, đúng bằng ý nghĩa 'no-verify' phía Node.
+PGURL=$(grep '^DATABASE_URL=' /opt/eaudit/.env | head -1 | cut -d= -f2- | sed 's/sslmode=no-verify/sslmode=require/')
+pg_dump "$PGURL" --no-owner --no-privileges | gzip > "$BACKUP_FILE"
 
 aws s3 cp "$BACKUP_FILE" "s3://$S3_BUCKET/backups/$TIMESTAMP.sql.gz" --region ${aws_region}
 rm -f "$BACKUP_FILE"
@@ -288,9 +295,12 @@ set -euo pipefail
 echo "=== Deploying E-Audit: $(date) ==="
 cd /opt/eaudit/app
 
-# Clean conflicting local files to ensure clean git pull
+# Dọn file build cũ để git pull không vướng. KHÔNG xóa lockfile: deploy/scripts/deploy.sh
+# chạy `npm ci`, mà lệnh đó bắt buộc phải có package-lock.json và sẽ dừng ngay với
+# "can only install with an existing package-lock.json". Lockfile là file được track nên
+# `git checkout -- .` bên dưới đã đưa nó về đúng trạng thái của repo rồi.
 git checkout -- . || true
-rm -rf dist client/dist package-lock.json client/package-lock.json
+rm -rf dist client/dist
 
 echo ">>> Pulling latest code..."
 git pull origin main
