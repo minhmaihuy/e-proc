@@ -7,4 +7,7 @@ terraform.tfvars
 terraform.tfvars.json
 
 # Local Private Key (SSH)
-eaudit-key-ipv6.pem
+# Truoc day chi liet ke "eaudit-key-ipv6.pem", nhung Terraform ghi ra
+# "eaudit-key.pem" (xem local_file.private_key trong ec2.tf) — sai ten nen khoa
+# rieng da lot vao git. Dung wildcard de khong lap lai loi nay.
+*.pem

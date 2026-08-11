@@ -1,6 +1,9 @@
 # =============================================================================
-# E-Audit IPv6 Environment — Variables
-# DO NOT commit this file to Git! (contains secrets)
+# E-Audit IPv6 Environment — Variables (FILE MAU)
+#
+# File nay DUOC commit va chi chua PLACEHOLDER. Copy sang terraform.tfvars roi dien
+# gia tri that vao do — terraform.tfvars da nam trong .gitignore nen khong bi push.
+#   cp terraform.tfvars.example terraform.tfvars
 # =============================================================================
 
 # AWS Region (Singapore for lowest latency from Vietnam)
@@ -17,7 +20,9 @@ allowed_ssh_ipv6_cidr = "::/0" # Keep "::/0" for anywhere, or restrict to your h
 # RDS PostgreSQL — Multitenant: 3 separate databases on same RDS instance
 db_instance_class = "db.t3.micro" # Free Tier eligible
 db_username       = "eaudit_admin"
-db_password       = "Minhmh123#!2nf"
+# Mat khau chua ky tu dac biet van dung duoc: ec2.tf boc urlencode() truoc khi
+# ghep vao connection URL (dau '#' neu khong ma hoa se lam hong ca ba DATABASE_URL).
+db_password       = "REPLACE_WITH_STRONG_DB_PASSWORD"
 
 # Assessment data-plane (exam data, questions, submissions, AI queue)
 db_name = "eaudit"
