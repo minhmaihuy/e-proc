@@ -36,6 +36,12 @@ const QUESTION_TYPES = ['Coding', 'Conceptual', 'Fill-in', 'Debug'] as const;
 type QuestionType = typeof QUESTION_TYPES[number];
 
 interface BlueprintItem {
+  /**
+   * Khóa React ổn định, CHỈ tồn tại phía client. Các bảng blueprint xóa dòng theo
+   * index, nên nếu key cũng là index thì sau khi xóa dòng giữa React sẽ gán state DOM
+   * của dòng bị xóa cho dòng kế tiếp. Bị strip trước khi gửi lên server.
+   */
+  rowId?: string;
   module: string;
   /** Bộ đề: thiếu trường này thì đề sẽ trộn câu từ mọi bộ có cùng tên module. */
   question_group?: string;
@@ -45,6 +51,7 @@ interface BlueprintItem {
 }
 
 interface BlueprintItemByType {
+  rowId?: string;
   module: string;
   question_group?: string;
   type: QuestionType;
@@ -81,6 +88,10 @@ interface ModuleTypeStats {
  * cùng tên module có thể tồn tại ở nhiều bộ và số câu có sẵn khác nhau. Nên mã hóa
  * cặp đó thành một khóa duy nhất cho dropdown.
  */
+/** Id ổn định cho một dòng blueprint (chỉ dùng phía client, xem BlueprintItem.rowId). */
+let rowIdCounter = 0;
+const newRowId = () => `row_${Date.now().toString(36)}_${rowIdCounter++}`;
+
 const comboKey = (module: string, group: string) => `${module}|||${group || ''}`;
 const decodeComboKey = (key: string) => {
   const i = key.indexOf('|||');
@@ -197,7 +208,8 @@ function BatchManagement() {
    */
   const buildBlueprintPayload = (mode: BlueprintMode, moduleItems: BlueprintItem[], typeItems: BlueprintItemByType[]) => ({
     blueprintMode: mode,
-    items: mode === 'type' ? typeItems : moduleItems,
+    // rowId chỉ phục vụ React; đừng để nó rơi vào blueprint lưu trong database.
+    items: (mode === 'type' ? typeItems : moduleItems).map(({ rowId, ...item }) => item),
   });
 
   // ─── Effects ────────────────────────────────────────────────────────────────
@@ -224,7 +236,7 @@ function BatchManagement() {
     if (modules.length > 0 && formData.blueprint.length === 0) {
       setFormData(prev => ({
         ...prev,
-        blueprint: [{ module: moduleGroups[0]?.module || modules[0], question_group: moduleGroups[0]?.question_group || '', easy: 0, medium: 0, hard: 0 }]
+        blueprint: [{ rowId: newRowId(), module: moduleGroups[0]?.module || modules[0], question_group: moduleGroups[0]?.question_group || '', easy: 0, medium: 0, hard: 0 }]
       }));
     }
   }, [modules]);
@@ -301,7 +313,7 @@ function BatchManagement() {
     console.log('[BatchManagement] addBlueprintRow, modules:', modules);
     setFormData(prev => ({
       ...prev,
-      blueprint: [...prev.blueprint, { module: moduleGroups[0]?.module || modules[0] || '', question_group: moduleGroups[0]?.question_group || '', easy: 0, medium: 0, hard: 0 }]
+      blueprint: [...prev.blueprint, { rowId: newRowId(), module: moduleGroups[0]?.module || modules[0] || '', question_group: moduleGroups[0]?.question_group || '', easy: 0, medium: 0, hard: 0 }]
     }));
   };
 
@@ -341,7 +353,7 @@ function BatchManagement() {
     if (!nextAvailableModuleType) return;
     setFormData(prev => ({
       ...prev,
-      blueprintByType: [...prev.blueprintByType, { module: nextAvailableModuleType.module, question_group: nextAvailableModuleType.question_group, type: nextAvailableModuleType.type, easy: 0, medium: 0, hard: 0 }]
+      blueprintByType: [...prev.blueprintByType, { rowId: newRowId(), module: nextAvailableModuleType.module, question_group: nextAvailableModuleType.question_group, type: nextAvailableModuleType.type, easy: 0, medium: 0, hard: 0 }]
     }));
   };
 
@@ -416,8 +428,9 @@ function BatchManagement() {
       items.map(item => item.question_group !== undefined && item.question_group !== ''
         ? item
         : { ...item, question_group: moduleGroups.find(mg => mg.module === item.module)?.question_group ?? '' });
-    moduleItems = withGroup(moduleItems);
-    typeItems = withGroup(typeItems);
+    // Dòng nạp từ DB chưa có rowId — gán ngay để key ổn định suốt phiên chỉnh sửa.
+    moduleItems = withGroup(moduleItems).map(item => ({ ...item, rowId: item.rowId ?? newRowId() }));
+    typeItems = withGroup(typeItems).map(item => ({ ...item, rowId: item.rowId ?? newRowId() }));
 
     setEditBlueprintMode(detectedMode);
     setEditingBatch({
@@ -962,7 +975,7 @@ function BatchManagement() {
                     {formData.blueprint.map((item, index) => {
                       const stats = getStatsForModuleGroup(item.module, item.question_group || '');
                       return (
-                        <tr key={index}>
+                        <tr key={item.rowId ?? index}>
                           <td>
                             <select
                               name={`module_${index}`}
@@ -1035,7 +1048,7 @@ function BatchManagement() {
                         .filter((_, i) => i !== index)
                         .map(i => `${i.module}||${i.type}`);
                       return (
-                        <tr key={index}>
+                        <tr key={item.rowId ?? index}>
                           <td style={{ minWidth: 140 }}>
                             <select
                               style={{ width: '100%', padding: '8px' }}
@@ -1501,7 +1514,7 @@ function BatchManagement() {
                           {(editingBatch.blueprint || []).map((item: any, index: number) => {
                             const stats = getStatsForModuleGroup(item.module, item.question_group || '');
                             return (
-                              <tr key={index} className="hover:bg-blue-50/30 transition-colors">
+                              <tr key={item.rowId ?? index} className="hover:bg-blue-50/30 transition-colors">
                                 <td className="px-4 py-3 align-top min-w-[200px]">
                                   <select
                                     value={comboKey(item.module, item.question_group || '')}
@@ -1588,7 +1601,7 @@ function BatchManagement() {
                               .filter((_, i) => i !== index)
                               .map(i => `${i.module}||${i.type}`);
                             return (
-                              <tr key={index} className="hover:bg-blue-50/30 transition-colors">
+                              <tr key={item.rowId ?? index} className="hover:bg-blue-50/30 transition-colors">
                                 <td className="px-4 py-3 align-top min-w-[140px]">
                                   <select
                                     value={comboKey(item.module, item.question_group || '')}
@@ -1695,7 +1708,7 @@ function BatchManagement() {
                   <button
                     onClick={() => setEditingBatch({
                       ...editingBatch,
-                      blueprint: [...(editingBatch.blueprint || []), { module: moduleGroups[0]?.module || modules[0], question_group: moduleGroups[0]?.question_group || '', easy: 0, medium: 0, hard: 0 }]
+                      blueprint: [...(editingBatch.blueprint || []), { rowId: newRowId(), module: moduleGroups[0]?.module || modules[0], question_group: moduleGroups[0]?.question_group || '', easy: 0, medium: 0, hard: 0 }]
                     })}
                     className="inline-flex items-center gap-2 px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg font-bold hover:bg-slate-50 transition-colors"
                   >
