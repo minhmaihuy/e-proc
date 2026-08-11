@@ -6,19 +6,19 @@
 
 ## Trạng thái hiện tại
 
-| Item | Status |
-|------|--------|
-| Terraform | ❌ Chưa cài |
-| AWS CLI | ❌ Chưa cài |
-| SSH Key | ❌ Chưa có |
-| Git Remote | ✅ `https://github.com/minhmaihuy/e-proc.git` |
-| Terraform files | ✅ 11 files sẵn sàng |
+| Item            | Status                                         |
+| --------------- | ---------------------------------------------- |
+| Terraform       | ❌ Chưa cài                                  |
+| AWS CLI         | ❌ Chưa cài                                  |
+| SSH Key         | ❌ Chưa có                                   |
+| Git Remote      | ✅`https://github.com/minhmaihuy/e-proc.git` |
+| Terraform files | ✅ 11 files sẵn sàng                         |
 
 ---
 
 ## PHASE 1: Cài Terraform (2 phút)
 
-Mở **VSCode Terminal** (`` Ctrl+` ``), chạy:
+Mở **VSCode Terminal** (``Ctrl+` ``), chạy:
 
 ```powershell
 # Cài Terraform qua winget
@@ -29,6 +29,7 @@ terraform --version
 ```
 
 **Kết quả mong đợi:**
+
 ```
 Terraform v1.x.x
 ```
@@ -50,6 +51,7 @@ aws --version
 ```
 
 **Kết quả mong đợi:**
+
 ```
 aws-cli/2.x.x Python/3.x.x Windows/10 ...
 ```
@@ -63,14 +65,16 @@ aws-cli/2.x.x Python/3.x.x Windows/10 ...
 1. Vào **AWS Console**: https://console.aws.amazon.com
 2. Tìm **IAM** → **Users** → **Create user**
 3. Điền:
+
    - User name: `terraform-deploy`
    - ✅ Check **"Provide user access to the AWS Management Console"** (optional)
 4. **Set permissions**:
+
    - Chọn **"Attach policies directly"**
    - Tìm và check: **`AdministratorAccess`**
-   
+
    > ⚠️ Cho mục đích deploy ban đầu. Sau khi deploy xong, nên giảm quyền xuống.
-   
+   >
 5. Click **Create user**
 
 ### 3.2 — Tạo Access Key
@@ -92,6 +96,7 @@ aws configure
 ```
 
 Nhập lần lượt:
+
 ```
 AWS Access Key ID [None]: <PASTE_ACCESS_KEY_ID>
 AWS Secret Access Key [None]: <PASTE_SECRET_ACCESS_KEY>
@@ -100,11 +105,13 @@ Default output format [None]: json
 ```
 
 **Kiểm tra:**
+
 ```powershell
 aws sts get-caller-identity
 ```
 
 **Kết quả mong đợi:**
+
 ```json
 {
     "UserId": "<AWS_USER_ID>",
@@ -120,7 +127,7 @@ aws sts get-caller-identity
 > [!NOTE]
 > **Không cần cài đặt `ssh-keygen` hoặc tạo SSH Key thủ công!**
 > Terraform đã được cấu hình để tự động sinh khóa bảo mật RSA 4096-bit trong bộ nhớ, tự upload khóa công khai lên AWS, và tải xuống khóa riêng tư của bạn dưới dạng file **`eaudit-key.pem`** nằm ngay trong thư mục `terraform/`.
-> 
+>
 > Bạn hoàn toàn có thể bỏ qua bước này và chuyển sang Phase 5.
 
 ---
@@ -182,6 +189,7 @@ terraform init
 ```
 
 **Kết quả mong đợi:**
+
 ```
 Initializing the backend...
 Initializing provider plugins...
@@ -198,11 +206,13 @@ terraform plan
 ```
 
 **Kết quả mong đợi:**
+
 ```
 Plan: 16 to add, 0 to change, 0 to destroy.
 ```
 
 Kiểm tra danh sách resources sẽ tạo:
+
 - ✅ `aws_instance.eaudit` (EC2)
 - ✅ `aws_db_instance.eaudit` (RDS)
 - ✅ `aws_s3_bucket.backup` (S3)
@@ -219,6 +229,7 @@ terraform apply
 ```
 
 Terraform sẽ hiển thị plan và hỏi:
+
 ```
 Do you want to perform these actions?
   Enter a value: yes
@@ -229,6 +240,7 @@ Do you want to perform these actions?
 ⏱️ **Đợi 10-15 phút** (RDS mất ~5-10 phút để tạo)
 
 **Kết quả mong đợi:**
+
 ```
 Apply complete! Resources: 16 added, 0 changed, 0 destroyed.
 
@@ -279,12 +291,14 @@ ssh -i eaudit-key.pem ubuntu@<EC2_PUBLIC_IP>
 ```
 
 Lần đầu SSH sẽ hỏi:
+
 ```
 Are you sure you want to continue connecting? yes
 ```
 
 > [!TIP]
 > Nếu lỗi `Permission denied`, kiểm tra:
+>
 > ```powershell
 > # Trên Windows, đôi khi cần sửa quyền SSH key
 > icacls "$env:USERPROFILE\.ssh\id_rsa" /inheritance:r /grant:r "$($env:USERNAME):R"
@@ -300,6 +314,7 @@ tail -5 /var/log/userdata.log
 **Kết quả mong đợi:** Dòng cuối chứa `UserData Complete`
 
 Nếu chưa xong, đợi và check lại:
+
 ```bash
 tail -f /var/log/userdata.log
 # Ctrl+C để thoát khi thấy "Complete"
@@ -366,6 +381,7 @@ pm2 status
 ```
 
 **Kết quả mong đợi:**
+
 ```
 ┌─────┬─────────┬──────┬───────┬──────────┬──────┐
 │ id  │ name    │ mode │ ↺     │ status   │ cpu  │
@@ -392,6 +408,7 @@ curl -s http://localhost:3001/api/health
 
 > [!IMPORTANT]
 > Nếu `init-tables` lỗi, kiểm tra logs:
+>
 > ```bash
 > pm2 logs eaudit --lines 50
 > ```
@@ -401,6 +418,7 @@ curl -s http://localhost:3001/api/health
 ## PHASE 8: Setup SSL Certificate (2 phút)
 
 > ⚠️ DNS phải đã propagate trước khi chạy bước này. Kiểm tra:
+>
 > ```bash
 > nslookup epoc.devfasttrack.com
 > # Phải trả về IP = EC2 Elastic IP
@@ -416,6 +434,7 @@ sudo certbot --nginx \
 ```
 
 **Kết quả mong đợi:**
+
 ```
 Congratulations! You have successfully enabled HTTPS...
 ```
@@ -425,6 +444,7 @@ Congratulations! You have successfully enabled HTTPS...
 ## ✅ HOÀN TẤT! Kiểm tra lần cuối
 
 ### Trên EC2:
+
 ```bash
 curl -s http://localhost:3001/api/health
 curl -s http://localhost:3001/api/test-db
@@ -432,6 +452,7 @@ pm2 status
 ```
 
 ### Trên trình duyệt (máy local):
+
 ```
 🌐 https://epoc.devfasttrack.com            → Trang student login
 🌐 https://epoc.devfasttrack.com/admin      → Trang admin login
@@ -439,6 +460,7 @@ pm2 status
 ```
 
 ### Login Admin:
+
 ```
 Username: admin
 Password: admin123
@@ -449,6 +471,7 @@ Password: admin123
 ## 📋 Lệnh hữu ích hàng ngày
 
 ### Trên máy local (VSCode Terminal):
+
 ```powershell
 # Xem tất cả outputs
 cd d:\Workspaces\e-proc\terraform
@@ -465,6 +488,7 @@ terraform destroy
 ```
 
 ### Trên EC2 (sau khi SSH):
+
 ```bash
 # Xem app logs
 pm2 logs eaudit --lines 50
@@ -487,6 +511,7 @@ crontab -l
 ## 🔥 Troubleshooting
 
 ### Lỗi `terraform init` — Provider not found
+
 ```powershell
 # Xóa cache và thử lại
 Remove-Item -Recurse -Force .terraform
@@ -495,6 +520,7 @@ terraform init
 ```
 
 ### Lỗi `terraform apply` — Credentials
+
 ```powershell
 # Kiểm tra AWS credentials
 aws sts get-caller-identity
@@ -502,18 +528,21 @@ aws sts get-caller-identity
 ```
 
 ### Lỗi SSH — Permission denied
+
 ```powershell
 # Windows: sửa quyền file SSH key
 icacls "$env:USERPROFILE\.ssh\id_rsa" /inheritance:r /grant:r "$($env:USERNAME):R"
 ```
 
 ### Lỗi SSH — Connection timeout
+
 ```powershell
 # Kiểm tra Security Group cho phép SSH port 22
 # Hoặc EC2 chưa boot xong, đợi 2-3 phút
 ```
 
 ### Lỗi RDS — Connection refused (trên EC2)
+
 ```bash
 # Kiểm tra RDS endpoint đúng chưa
 cat /opt/eaudit/.env | grep DATABASE_URL
@@ -523,6 +552,7 @@ psql "$(grep DATABASE_URL /opt/eaudit/.env | cut -d= -f2-)"
 ```
 
 ### Lỗi Certbot — DNS chưa propagate
+
 ```bash
 # Kiểm tra DNS
 nslookup epoc.devfasttrack.com
@@ -533,6 +563,7 @@ dig epoc.devfasttrack.com
 ```
 
 ### App crash / restart liên tục
+
 ```bash
 pm2 logs eaudit --lines 100
 # Xem lỗi cụ thể → sửa → pm2 restart eaudit
