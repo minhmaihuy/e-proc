@@ -168,6 +168,14 @@ resource "aws_instance" "eaudit" {
     session_secret       = var.session_secret
     jwt_secret           = var.jwt_secret
     maintenance_db       = var.database_maintenance_db
+
+    # Tài khoản seed: truyền vào để lần khởi tạo đầu tiên dùng ngay mật khẩu thật,
+    # thay vì có một khoảng thời gian máy chạy bằng mặc định nằm trong lịch sử git.
+    superadmin_username       = var.superadmin_username
+    superadmin_password       = var.superadmin_password
+    fsa_tenant_admin_username = var.fsa_tenant_admin_username
+    fsa_tenant_admin_password = var.fsa_tenant_admin_password
+
     node_env             = var.node_env
     app_port             = var.app_port
     domain_name          = var.app_subdomain != "" ? "${var.app_subdomain}.${var.domain_name}" : var.domain_name

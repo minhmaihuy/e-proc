@@ -48,6 +48,16 @@ session_secret = "REPLACE_WITH_RANDOM_64_HEX_CHARS"
 # luc khoi dong. Sinh bang: openssl rand -hex 32
 jwt_secret = "REPLACE_WITH_RANDOM_64_HEX_CHARS"
 
+# Tai khoan seed cho lan khoi tao control-plane DAU TIEN.
+# Khong khai thi ung dung roi ve mac dinh nam san trong source va trong lich su git.
+# Hai mat khau la BAT BUOC (khong co default, toi thieu 12 ky tu).
+# Chi co tac dung voi database MOI: tren database da co tai khoan, ham seed co y khong
+# ghi de, nen doi o day roi apply lai KHONG doi duoc mat khau dang dung.
+superadmin_username       = "supperadmin"
+superadmin_password       = "REPLACE_WITH_A_STRONG_PASSWORD"
+fsa_tenant_admin_username = "adminfsa"
+fsa_tenant_admin_password = "REPLACE_WITH_A_STRONG_PASSWORD"
+
 # Database dung khi tao cac database con thieu (npm run db:ensure).
 # Vai tro deploy can quyen CONNECT va CREATEDB tren database nay.
 database_maintenance_db = "postgres"

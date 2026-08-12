@@ -115,6 +115,54 @@ variable "jwt_secret" {
   }
 }
 
+# --- Tài khoản seed ---
+#
+# Hai tài khoản này được seed ở lần khởi tạo control-plane ĐẦU TIÊN (bảng admin_users
+# rỗng / tenant chưa có tenant_admin nào). Không khai ở đây thì ứng dụng rơi về giá trị
+# mặc định nằm sẵn trong source và trong lịch sử git — ai clone repo cũng đọc được.
+#
+# Mật khẩu KHÔNG có default, giống jwt_secret: thà Terraform hỏi ngay còn hơn dựng xong
+# một máy chạy production bằng mật khẩu công khai. Đặt giá trị thật trong
+# terraform.tfvars (đã gitignore).
+#
+# ⚠ Chỉ có tác dụng với database MỚI. Trên database đã có sẵn tài khoản, hàm seed cố ý
+# không ghi đè, nên đổi biến ở đây rồi apply lại KHÔNG đổi được mật khẩu đang dùng —
+# phải đổi qua API/giao diện đổi mật khẩu.
+
+variable "superadmin_username" {
+  description = "Username of the seeded global superadmin (first admin_users row)"
+  type        = string
+  default     = "supperadmin"
+}
+
+variable "superadmin_password" {
+  description = "Password for the seeded global superadmin (>= 12 characters)"
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.superadmin_password) >= 12
+    error_message = "superadmin_password phải dài ít nhất 12 ký tự."
+  }
+}
+
+variable "fsa_tenant_admin_username" {
+  description = "Username of the seeded FSA-CLS tenant administrator"
+  type        = string
+  default     = "adminfsa"
+}
+
+variable "fsa_tenant_admin_password" {
+  description = "Password for the seeded FSA-CLS tenant administrator (>= 12 characters)"
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.fsa_tenant_admin_password) >= 12
+    error_message = "fsa_tenant_admin_password phải dài ít nhất 12 ký tự."
+  }
+}
+
 # Database dùng để kết nối khi tạo các database còn thiếu (npm run db:ensure).
 # Vai trò deploy cần quyền CONNECT và CREATEDB trên database này.
 variable "database_maintenance_db" {

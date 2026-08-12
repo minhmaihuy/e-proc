@@ -186,6 +186,15 @@ SESSION_SECRET=${session_secret}
 # Database dùng khi tạo các database còn thiếu (npm run db:ensure)
 DATABASE_MAINTENANCE_DB=${maintenance_db}
 
+# Tài khoản seed cho lần khởi tạo control-plane ĐẦU TIÊN.
+# Thiếu bốn khóa này thì ứng dụng rơi về mặc định nằm sẵn trong source (và trong lịch
+# sử git), nghĩa là máy production chạy một quãng bằng mật khẩu ai cũng đọc được.
+# Trên database đã có tài khoản, hàm seed cố ý không ghi đè — xem controlPlane.ts.
+SUPERADMIN_USERNAME=${superadmin_username}
+SUPERADMIN_PASSWORD=${superadmin_password}
+FSA_TENANT_ADMIN_USERNAME=${fsa_tenant_admin_username}
+FSA_TENANT_ADMIN_PASSWORD=${fsa_tenant_admin_password}
+
 USE_SQLITE=false
 ALLOWED_ORIGINS=https://${domain_name}
 ENVEOF
