@@ -148,6 +148,7 @@ function BatchManagement() {
   const [inviteResult, setInviteResult] = useState<{ success: number; emails: { email: string; code: string }[] } | null>(null);
   const [feasibilityErrors, setFeasibilityErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [emailAction, setEmailAction] = useState('');
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -583,6 +584,21 @@ function BatchManagement() {
       URL.revokeObjectURL(url);
     } catch (error) {
       console.error(error);
+    }
+  };
+
+  const queueBatchEmail = async (batchId: number, template: 'exam_invitation' | 'exam_reminder' | 'exam_result') => {
+    const label = template === 'exam_invitation' ? 'invitations' : template === 'exam_reminder' ? 'reminders' : 'result notices';
+    if (!window.confirm(`Queue ${label} for every student in this batch?`)) return;
+    const actionKey = `${batchId}:${template}`;
+    setEmailAction(actionKey);
+    try {
+      const response = await adminApi.queueBatchEmail(batchId, template, crypto.randomUUID());
+      window.alert(`Queued ${response.data.queued} email(s); skipped ${response.data.skipped}.`);
+    } catch (error: any) {
+      window.alert(error.response?.data?.error || 'Unable to queue email. Ask the superadmin to check tenant email configuration.');
+    } finally {
+      setEmailAction('');
     }
   };
 
@@ -1200,6 +1216,13 @@ function BatchManagement() {
                   </svg>
                   Export to Excel
                 </button>
+                <button
+                  onClick={() => void queueBatchEmail(selectedBatchId, 'exam_invitation')}
+                  disabled={!!emailAction}
+                  className="mt-4 ml-3 inline-flex items-center gap-2 px-4 py-2 bg-blue-100 text-blue-700 rounded-lg font-bold hover:bg-blue-200 transition-colors disabled:opacity-50"
+                >
+                  {emailAction === `${selectedBatchId}:exam_invitation` ? 'Queuing...' : 'Queue invitation emails'}
+                </button>
               </div>
             )}
           </div>
@@ -1265,6 +1288,24 @@ function BatchManagement() {
                             className="inline-flex items-center px-3 py-1.5 bg-emerald-100 text-emerald-700 hover:bg-emerald-200 rounded-md text-xs font-bold transition-colors"
                           >
                             Invite
+                          </button>
+                        )}
+                        {editable && (
+                          <button
+                            onClick={() => void queueBatchEmail(batch.id, 'exam_reminder')}
+                            disabled={!!emailAction}
+                            className="inline-flex items-center px-3 py-1.5 bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 rounded-md text-xs font-bold transition-colors disabled:opacity-50"
+                          >
+                            {emailAction === `${batch.id}:exam_reminder` ? 'Queuing...' : 'Email reminder'}
+                          </button>
+                        )}
+                        {editable && (
+                          <button
+                            onClick={() => void queueBatchEmail(batch.id, 'exam_result')}
+                            disabled={!!emailAction}
+                            className="inline-flex items-center px-3 py-1.5 bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 rounded-md text-xs font-bold transition-colors disabled:opacity-50"
+                          >
+                            {emailAction === `${batch.id}:exam_result` ? 'Queuing...' : 'Email results'}
                           </button>
                         )}
                         <Link to={`/admin/batches/${batch.id}/students`} className="inline-flex items-center px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-md text-xs font-bold transition-colors">

@@ -84,6 +84,11 @@ resource "aws_iam_role_policy" "s3_backup" {
           aws_s3_bucket.backup.arn,
           "${aws_s3_bucket.backup.arn}/*"
         ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ses:SendEmail"]
+        Resource = "*"
       }
     ]
   })
@@ -176,17 +181,17 @@ resource "aws_instance" "eaudit" {
     fsa_tenant_admin_username = var.fsa_tenant_admin_username
     fsa_tenant_admin_password = var.fsa_tenant_admin_password
 
-    node_env             = var.node_env
-    app_port             = var.app_port
-    domain_name          = var.app_subdomain != "" ? "${var.app_subdomain}.${var.domain_name}" : var.domain_name
-    www_domain_name      = "" # No WWW subdomain for subdomain setups
-    s3_bucket            = aws_s3_bucket.backup.id
-    aws_region           = var.aws_region
-    db_host              = aws_db_instance.eaudit.address
-    db_port              = aws_db_instance.eaudit.port
-    db_name              = var.db_name
-    db_username          = var.db_username
-    ssh_password         = var.ssh_password
+    node_env        = var.node_env
+    app_port        = var.app_port
+    domain_name     = var.app_subdomain != "" ? "${var.app_subdomain}.${var.domain_name}" : var.domain_name
+    www_domain_name = "" # No WWW subdomain for subdomain setups
+    s3_bucket       = aws_s3_bucket.backup.id
+    aws_region      = var.aws_region
+    db_host         = aws_db_instance.eaudit.address
+    db_port         = aws_db_instance.eaudit.port
+    db_name         = var.db_name
+    db_username     = var.db_username
+    ssh_password    = var.ssh_password
   }))
 
   depends_on = [aws_db_instance.eaudit]

@@ -31,6 +31,13 @@ interface TenantInput {
   instanceType: string;
   rootVolumeSize: number;
   backupRetentionDays: number;
+  emailEnabled: boolean;
+  emailFromName: string | null;
+  emailDailyLimit: number;
+  quotaExamsPerMonth: number | null;
+  quotaAiGradingsPerMonth: number | null;
+  quotaRecordingGb: number | null;
+  quotaEmailsPerMonth: number | null;
   compilerEnabled: boolean;
   compilerMemoryMb: number;
   compilerTimeoutSeconds: number;
@@ -56,6 +63,13 @@ function normalizeTenantInput(body: unknown, existing?: Partial<TenantRow>): Ten
   const input = body && typeof body === 'object' ? body as Record<string, unknown> : {};
   const slug = String(input.slug ?? existing?.slug ?? '').trim().toLowerCase();
   const configuredDomain = String(input.domain_name ?? input.domainName ?? existing?.domain_name ?? '').trim().toLowerCase();
+  const nullableNumber = (snake: string, camel: string): number | null => {
+    const value = Object.prototype.hasOwnProperty.call(input, snake) ? input[snake]
+      : Object.prototype.hasOwnProperty.call(input, camel) ? input[camel]
+        : existing?.[snake];
+    return value === '' || value == null ? null : Number(value);
+  };
+  const booleanValue = (value: unknown): boolean => value === true || value === 1 || value === '1' || value === 'true';
   return {
     name: String(input.name ?? existing?.name ?? '').trim(),
     slug,
@@ -66,7 +80,14 @@ function normalizeTenantInput(body: unknown, existing?: Partial<TenantRow>): Ten
     backupRetentionDays: Number(
       input.backup_retention_days ?? input.backupRetentionDays ?? existing?.backup_retention_days ?? 14,
     ),
-    compilerEnabled: Boolean(input.compiler_enabled ?? input.compilerEnabled ?? existing?.compiler_enabled ?? false),
+    emailEnabled: booleanValue(input.email_enabled ?? input.emailEnabled ?? existing?.email_enabled ?? false),
+    emailFromName: String(input.email_from_name ?? input.emailFromName ?? existing?.email_from_name ?? '').trim() || null,
+    emailDailyLimit: Number(input.email_daily_limit ?? input.emailDailyLimit ?? existing?.email_daily_limit ?? 200),
+    quotaExamsPerMonth: nullableNumber('quota_exams_per_month', 'quotaExamsPerMonth'),
+    quotaAiGradingsPerMonth: nullableNumber('quota_ai_gradings_per_month', 'quotaAiGradingsPerMonth'),
+    quotaRecordingGb: nullableNumber('quota_recording_gb', 'quotaRecordingGb'),
+    quotaEmailsPerMonth: nullableNumber('quota_emails_per_month', 'quotaEmailsPerMonth'),
+    compilerEnabled: booleanValue(input.compiler_enabled ?? input.compilerEnabled ?? existing?.compiler_enabled ?? false),
     compilerMemoryMb: Number(input.compiler_memory_mb ?? input.compilerMemoryMb ?? existing?.compiler_memory_mb ?? 512),
     compilerTimeoutSeconds: Number(input.compiler_timeout_seconds ?? input.compilerTimeoutSeconds ?? existing?.compiler_timeout_seconds ?? 15),
     compilerConcurrency: Number(input.compiler_concurrency ?? input.compilerConcurrency ?? existing?.compiler_concurrency ?? 2),
@@ -90,6 +111,16 @@ function validateTenantInput(input: TenantInput, requireSecret: boolean): string
   if (!INSTANCE_TYPES.has(input.instanceType)) return 'Unsupported EC2 instance type.';
   if (!Number.isInteger(input.rootVolumeSize) || input.rootVolumeSize < 8 || input.rootVolumeSize > 100) return 'Root volume must be 8-100 GiB.';
   if (!isBackupRetentionDays(input.backupRetentionDays)) return 'Backup retention must be 1-35 days.';
+  if (input.emailFromName && input.emailFromName.length > 160) return 'Email sender name must be at most 160 characters.';
+  if (!Number.isInteger(input.emailDailyLimit) || input.emailDailyLimit < 1 || input.emailDailyLimit > 50000) return 'Email daily limit must be 1-50000.';
+  for (const [label, value] of [
+    ['Exam quota', input.quotaExamsPerMonth],
+    ['AI grading quota', input.quotaAiGradingsPerMonth],
+    ['Email quota', input.quotaEmailsPerMonth],
+  ] as const) {
+    if (value != null && (!Number.isInteger(value) || value < 1)) return `${label} must be a positive integer or unlimited.`;
+  }
+  if (input.quotaRecordingGb != null && (!Number.isFinite(input.quotaRecordingGb) || input.quotaRecordingGb <= 0)) return 'Recording quota must be positive or unlimited.';
   if (!Number.isInteger(input.compilerMemoryMb) || input.compilerMemoryMb < 256 || input.compilerMemoryMb > 3008) return 'Compiler memory must be 256-3008 MB.';
   if (!Number.isInteger(input.compilerTimeoutSeconds) || input.compilerTimeoutSeconds < 10 || input.compilerTimeoutSeconds > 30) return 'Compiler timeout must be 10-30 seconds.';
   if (!Number.isInteger(input.compilerConcurrency) || input.compilerConcurrency < 1 || input.compilerConcurrency > 20) return 'Compiler concurrency must be 1-20.';
@@ -127,9 +158,14 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const result = await db.query(`
       SELECT t.*,
-        (SELECT COUNT(*) FROM admin_users u WHERE u.tenant_id = t.id AND u.role = 'tenant_admin') AS admin_count
+        (SELECT COUNT(*) FROM admin_users u WHERE u.tenant_id = t.id AND u.role = 'tenant_admin') AS admin_count,
+        COALESCE((SELECT exams_started FROM tenant_usage x WHERE x.tenant_id = t.id AND x.period_month = ?), 0) AS usage_exams_started,
+        COALESCE((SELECT ai_gradings FROM tenant_usage x WHERE x.tenant_id = t.id AND x.period_month = ?), 0) AS usage_ai_gradings,
+        COALESCE((SELECT recording_minutes FROM tenant_usage x WHERE x.tenant_id = t.id AND x.period_month = ?), 0) AS usage_recording_minutes,
+        COALESCE((SELECT emails_sent FROM tenant_usage x WHERE x.tenant_id = t.id AND x.period_month = ?), 0) AS usage_emails_sent,
+        COALESCE((SELECT code_runs FROM tenant_usage x WHERE x.tenant_id = t.id AND x.period_month = ?), 0) AS usage_code_runs
       FROM tenants t ORDER BY t.created_at DESC
-    `);
+    `, Array(5).fill(new Date().toISOString().slice(0, 7)));
     return res.json(result.rows.map((row) => publicTenant(row as TenantRow, true)));
   } catch (error) {
     console.error('[Tenants] List failed:', error);
@@ -203,11 +239,15 @@ router.post('/', requireSuperAdmin, async (req: Request, res: Response) => {
     const created = await db.query(
       `INSERT INTO tenants
        (slug, name, contact_email, aws_region, instance_type, root_volume_size, compiler_enabled,
-        backup_retention_days, compiler_memory_mb, compiler_timeout_seconds, compiler_concurrency, domain_name,
+        backup_retention_days, email_enabled, email_from_name, email_daily_limit,
+        quota_exams_per_month, quota_ai_gradings_per_month, quota_recording_gb, quota_emails_per_month,
+        compiler_memory_mb, compiler_timeout_seconds, compiler_concurrency, domain_name,
         route53_zone_id, secret_arn, allowed_record_modes, repository_url, repository_ref, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [input.slug, input.name, input.contactEmail, input.awsRegion, input.instanceType,
-        input.rootVolumeSize, input.compilerEnabled, input.backupRetentionDays, input.compilerMemoryMb, input.compilerTimeoutSeconds,
+        input.rootVolumeSize, input.compilerEnabled, input.backupRetentionDays, input.emailEnabled, input.emailFromName,
+        input.emailDailyLimit, input.quotaExamsPerMonth, input.quotaAiGradingsPerMonth, input.quotaRecordingGb,
+        input.quotaEmailsPerMonth, input.compilerMemoryMb, input.compilerTimeoutSeconds,
         input.compilerConcurrency, input.domainName, input.route53ZoneId, input.secretArn,
         input.allowedRecordModes, input.repositoryUrl, input.repositoryRef, req.adminUser!.id],
     );
@@ -251,13 +291,17 @@ router.put('/:id', async (req: Request, res: Response) => {
     await db.query(
       `UPDATE tenants SET name = ?, contact_email = ?, aws_region = ?, instance_type = ?,
        root_volume_size = ?, backup_retention_days = ?, compiler_enabled = ?, compiler_memory_mb = ?, compiler_timeout_seconds = ?,
+       email_enabled = ?, email_from_name = ?, email_daily_limit = ?, quota_exams_per_month = ?,
+       quota_ai_gradings_per_month = ?, quota_recording_gb = ?, quota_emails_per_month = ?,
        compiler_concurrency = ?, domain_name = ?, route53_zone_id = ?, secret_arn = ?,
        allowed_record_modes = ?, repository_url = ?, repository_ref = ?,
        status = 'pending', provision_status = 'not_started',
        approved_by = NULL, approved_at = NULL, last_error = NULL, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [input.name, input.contactEmail, input.awsRegion, input.instanceType, input.rootVolumeSize, input.backupRetentionDays,
-        input.compilerEnabled, input.compilerMemoryMb, input.compilerTimeoutSeconds, input.compilerConcurrency,
+        input.compilerEnabled, input.compilerMemoryMb, input.compilerTimeoutSeconds, input.emailEnabled, input.emailFromName,
+        input.emailDailyLimit, input.quotaExamsPerMonth, input.quotaAiGradingsPerMonth, input.quotaRecordingGb,
+        input.quotaEmailsPerMonth, input.compilerConcurrency,
         input.domainName, input.route53ZoneId, input.secretArn, input.allowedRecordModes,
         input.repositoryUrl, input.repositoryRef, tenantId],
     );

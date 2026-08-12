@@ -453,6 +453,7 @@ function StudentPractice() {
       } else if (canRunLocally(language)) {
         const result = await runLocally(language, answer);
         setRunResult(result);
+        await studentApi.recordLocalCodeRun(crypto.randomUUID());
       } else if (SERVER_RUN_LANGUAGES.includes(language)) {
         const res = await studentApi.runCode(language, answer);
         setRunResult(res.data);

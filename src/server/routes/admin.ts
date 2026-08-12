@@ -8,12 +8,14 @@ import mammoth from 'mammoth';
 import { normalizeUnicode, stripHtml, sanitizeFilename, buildContentDisposition } from '../../utils/string.js';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
-import { authMiddleware, requireTenantUserManager } from '../middleware/auth.js';
+import { authMiddleware, requireTenantDataAdmin, requireTenantUserManager } from '../middleware/auth.js';
 import { canManageTenantUser } from '../tenantContext.js';
 import crypto from 'crypto';
 import { parseBlueprintCompat } from '../services/blueprint.js';
 import { resolveBatchRecordMode } from '../services/recordingPolicy.js';
 import { createRecordingViewUrl, isS3Configured } from '../services/s3.js';
+import { isEmailTemplate } from '../services/emailPolicy.js';
+import { enqueueEmail, isEmailProviderConfigured, isEmailRecipient } from '../services/emailDelivery.js';
 
 dotenv.config();
 
@@ -1030,6 +1032,47 @@ router.post('/batches', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('[CreateBatch] Error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/batches/:id/emails', requireTenantDataAdmin, async (req: Request, res: Response) => {
+  try {
+    if (!req.adminUser?.emailEnabled) return res.status(403).json({ error: 'Email delivery is disabled for this tenant.' });
+    if (!isEmailProviderConfigured()) return res.status(503).json({ error: 'Email delivery is not configured.' });
+    const batchId = Number(req.params.id);
+    const template = req.body?.template;
+    const campaignId = String(req.body?.campaign_id || '').trim();
+    if (!Number.isInteger(batchId) || !isEmailTemplate(template) || template === 'identity_rejected') {
+      return res.status(400).json({ error: 'Invalid batch email request.' });
+    }
+    if (!/^[A-Za-z0-9_.-]{3,80}$/.test(campaignId)) return res.status(400).json({ error: 'A stable campaign_id is required.' });
+    const batch = (await db.query('SELECT id, name, start_time, created_by FROM batches WHERE id = ?', [batchId])).rows[0];
+    if (!batch) return res.status(404).json({ error: 'Batch not found.' });
+    if (req.adminUser.role === 'admin' && Number(batch.created_by) !== req.adminUser.id) {
+      return res.status(403).json({ error: 'You can email only candidates in batches you created.' });
+    }
+    const requestedIds = Array.isArray(req.body?.student_ids)
+      ? req.body.student_ids.map(Number).filter((id: number) => Number.isInteger(id) && id > 0)
+      : [];
+    if (requestedIds.length > 500) return res.status(400).json({ error: 'At most 500 students may be selected per request.' });
+    const students = await db.query(
+      `SELECT id, name, email, access_code FROM students WHERE batch_id = ?${requestedIds.length ? ` AND id IN (${requestedIds.map(() => '?').join(', ')})` : ''}`,
+      [batchId, ...requestedIds],
+    );
+    let queued = 0;
+    for (const student of students.rows) {
+      if (!isEmailRecipient(student.email)) continue;
+      if (await enqueueEmail(
+        `campaign:${campaignId}:${template}:student:${student.id}`,
+        template,
+        student.email,
+        { studentName: student.name, batchName: batch.name, accessCode: student.access_code, examStart: batch.start_time },
+      )) queued++;
+    }
+    return res.status(202).json({ queued, skipped: students.rows.length - queued });
+  } catch (error) {
+    console.error('[Email] Batch enqueue failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return res.status(500).json({ error: 'Failed to queue batch email.' });
   }
 });
 

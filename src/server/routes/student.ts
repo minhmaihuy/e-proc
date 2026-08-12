@@ -11,6 +11,9 @@ import rateLimit from 'express-rate-limit';
 import { sessionTracker, detectConcurrentSession } from '../middleware/sessionTracker.js';
 import { getExamContext, assertCanStart, computeExamDeadline, sendExamGuardError, ExamGuardError } from '../services/examGuard.js';
 import { parseBlueprintCompat } from '../services/blueprint.js';
+import { runCode } from '../coderunner.js';
+import { getPracticeCompilerMode, runCodeWithLambda } from '../services/lambdaCompiler.js';
+import { enqueueUsageEvent } from '../services/usageOutbox.js';
 
 dotenv.config();
 
@@ -365,6 +368,8 @@ router.post('/exam/start', studentAuthMiddleware, async (req: Request, res: Resp
     
     const student_id = req.studentPayload!.studentId;
     const startedExam = await startExamAtomically(student_id);
+    const startedAt = (await db.query('SELECT exam_started_at FROM students WHERE id = ?', [student_id])).rows[0]?.exam_started_at;
+    await enqueueUsageEvent(`exam-start:${student_id}`, 'exams_started', 1, new Date(startedAt));
     return res.json(startedExam);
 
     /* Legacy implementation retained temporarily below for source compatibility; unreachable after atomic start. */
@@ -954,7 +959,7 @@ router.post('/exam/recording-finalize', studentAuthMiddleware, async (req: Reque
     await db.withTransaction(async (tx) => {
       const row = (await tx.query(`
         SELECT s.status, s.submitted_at, s.recording_incomplete,
-               s.recording_finalized_at, s.recording_final_part_index,
+               s.exam_started_at, s.recording_finalized_at, s.recording_final_part_index,
                b.record_mode, b.record_enabled
         FROM students s JOIN batches b ON b.id = s.batch_id
         WHERE s.id = ?${USE_SQLITE ? '' : ' FOR UPDATE'}
@@ -970,6 +975,12 @@ router.post('/exam/recording-finalize', studentAuthMiddleware, async (req: Reque
         if (Number(row.recording_final_part_index) !== finalPartIndex) {
           throw Object.assign(new Error('Recording was already finalized with a different manifest'), { code: 'MANIFEST_CONFLICT' });
         }
+        const minutes = Math.max(1, (new Date(row.recording_finalized_at).getTime() - new Date(row.exam_started_at).getTime()) / 60_000);
+        await tx.query(
+          `INSERT INTO usage_outbox (event_key, metric, amount, occurred_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT (event_key) DO NOTHING`,
+          [`recording:${studentId}`, 'recording_minutes', minutes, new Date(row.recording_finalized_at).toISOString()],
+        );
         return;
       }
 
@@ -981,9 +992,16 @@ router.post('/exam/recording-finalize', studentAuthMiddleware, async (req: Reque
         throw Object.assign(new Error('Recording parts are incomplete'), { code: 'RECORDING_INCOMPLETE' });
       }
       await tx.query('UPDATE recording_parts SET is_final = TRUE WHERE student_id = ? AND part_index = ?', [studentId, finalPartIndex]);
+      const finalizedAt = new Date();
       await tx.query(
         'UPDATE students SET recording_finalized_at = ?, recording_final_part_index = ?, recording_incomplete = FALSE WHERE id = ?',
-        [new Date().toISOString(), finalPartIndex, studentId]
+        [finalizedAt.toISOString(), finalPartIndex, studentId]
+      );
+      const minutes = Math.max(1, (finalizedAt.getTime() - new Date(row.exam_started_at).getTime()) / 60_000);
+      await tx.query(
+        `INSERT INTO usage_outbox (event_key, metric, amount, occurred_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (event_key) DO NOTHING`,
+        [`recording:${studentId}`, 'recording_minutes', minutes, finalizedAt.toISOString()],
       );
     });
     res.json({ success: true, finalPartIndex });
@@ -1004,6 +1022,58 @@ router.post('/exam/recording-finalize', studentAuthMiddleware, async (req: Reque
 
 // GET /api/student/practice — Nội dung đề + bài làm hiện tại + time_remaining
 // Tự start (set deadline) ở lần gọi đầu; guard timeout/vắng mặt giống /exam/questions.
+// Compiler requests are measured after an accepted run and never quota-blocked.
+router.post('/run', studentAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    if (process.env.ENABLE_SERVER_CODE_RUN?.trim().toLowerCase() === 'false') {
+      return res.status(503).json({ error: 'Server code execution is disabled.' });
+    }
+    const studentId = req.studentPayload!.studentId;
+    const eventId = String(req.body?.event_id || '').trim();
+    if (!/^[A-Za-z0-9_.-]{8,80}$/.test(eventId)) {
+      return res.status(400).json({ error: 'A stable event_id is required.' });
+    }
+    const practice = (await db.query(`
+      SELECT s.status FROM students s JOIN batches b ON b.id = s.batch_id
+      WHERE s.id = ? AND b.practice_exam_id IS NOT NULL
+    `, [studentId])).rows[0];
+    if (!practice || practice.status !== 'in_progress') {
+      return res.status(409).json({ error: 'Practice exam is not in progress.' });
+    }
+    const language = String(req.body?.language || '').trim().toLowerCase();
+    const code = String(req.body?.code || '');
+    const stdin = String(req.body?.stdin || '');
+    const result = getPracticeCompilerMode() === 'lambda'
+      ? await runCodeWithLambda(studentId, language, code, stdin)
+      : await runCode(studentId, language, code, stdin);
+    if (result.status === 200) {
+      await enqueueUsageEvent(`code-run:${studentId}:${eventId}`, 'code_runs');
+    }
+    return res.status(result.status).json(result.body);
+  } catch (error) {
+    console.error('[CodeRun] Request failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return res.status(500).json({ error: 'Unable to run code.' });
+  }
+});
+
+router.post('/usage/code-run', studentAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const studentId = req.studentPayload!.studentId;
+    const eventId = String(req.body?.event_id || '').trim();
+    if (!/^[A-Za-z0-9_.-]{8,80}$/.test(eventId)) return res.status(400).json({ error: 'A stable event_id is required.' });
+    const practice = (await db.query(`
+      SELECT s.status FROM students s JOIN batches b ON b.id = s.batch_id
+      WHERE s.id = ? AND b.practice_exam_id IS NOT NULL
+    `, [studentId])).rows[0];
+    if (!practice || practice.status !== 'in_progress') return res.status(409).json({ error: 'Practice exam is not in progress.' });
+    await enqueueUsageEvent(`code-run:${studentId}:${eventId}`, 'code_runs');
+    return res.status(202).json({ accepted: true });
+  } catch (error) {
+    console.error('[Usage] Local code-run enqueue failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return res.status(500).json({ error: 'Unable to record code run.' });
+  }
+});
+
 router.get('/practice', studentAuthMiddleware, async (req: Request, res: Response) => {
   try {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -1011,7 +1081,7 @@ router.get('/practice', studentAuthMiddleware, async (req: Request, res: Respons
     const studentId = req.studentPayload!.studentId;
 
     const studentResult = await db.query(`
-      SELECT s.status, s.exam_deadline, s.disconnected_at, b.duration, b.practice_exam_id
+      SELECT s.status, s.exam_started_at, s.exam_deadline, s.disconnected_at, b.duration, b.practice_exam_id
       FROM students s
       JOIN batches b ON s.batch_id = b.id
       WHERE s.id = ?
@@ -1039,8 +1109,10 @@ router.get('/practice', studentAuthMiddleware, async (req: Request, res: Respons
         [now.toISOString(), deadline.toISOString(), studentId]
       );
       student.status = 'in_progress';
+      student.exam_started_at = now;
       student.exam_deadline = deadline;
     }
+    await enqueueUsageEvent(`exam-start:${studentId}`, 'exams_started', 1, new Date(student.exam_started_at));
 
     // Đảm bảo luôn có dòng practice_submissions cho học viên này
     const subResult = await db.query('SELECT * FROM practice_submissions WHERE student_id = ?', [studentId]);

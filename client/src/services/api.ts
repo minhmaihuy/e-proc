@@ -78,6 +78,18 @@ export interface Tenant {
   last_backup_size_bytes?: number | null;
   last_restore_test_at?: string | null;
   last_restore_test_status?: 'passed' | 'failed' | null;
+  email_enabled: boolean | number;
+  email_from_name?: string | null;
+  email_daily_limit: number;
+  quota_exams_per_month?: number | null;
+  quota_ai_gradings_per_month?: number | null;
+  quota_recording_gb?: number | null;
+  quota_emails_per_month?: number | null;
+  usage_exams_started?: number;
+  usage_ai_gradings?: number;
+  usage_recording_minutes?: number;
+  usage_emails_sent?: number;
+  usage_code_runs?: number;
   /** Chế độ ghi màn hình tenant được phép dùng, vd "none,local,s3". */
   allowed_record_modes?: string;
   compiler_enabled: boolean | number;
@@ -143,6 +155,13 @@ export interface TenantConfiguration {
   instance_type: string;
   root_volume_size: number;
   backup_retention_days: number;
+  email_enabled: boolean;
+  email_from_name?: string;
+  email_daily_limit: number;
+  quota_exams_per_month: number | null;
+  quota_ai_gradings_per_month: number | null;
+  quota_recording_gb: number | null;
+  quota_emails_per_month: number | null;
   allowed_record_modes?: string;
   compiler_enabled: boolean;
   compiler_memory_mb: number;
@@ -326,6 +345,9 @@ export const adminApi = {
   // --- Student endpoints ---
   importStudents: (batchId: number, emails: string[]) =>
     api.post(`/admin/batches/${batchId}/students/import`, { emails }),
+
+  queueBatchEmail: (batchId: number, template: 'exam_invitation' | 'exam_reminder' | 'exam_result', campaignId: string) =>
+    api.post(`/admin/batches/${batchId}/emails`, { template, campaign_id: campaignId }),
   
   getStudents: (batchId: number) =>
     api.get(`/admin/batches/${batchId}/students`),
@@ -423,7 +445,10 @@ export const studentApi = {
 
   // --- Run code (học viên tự kiểm tra tính đúng đắn) ---
   runCode: (language: string, code: string, stdin?: string) =>
-    api.post('/student/run', { language, code, stdin }),
+    api.post('/student/run', { language, code, stdin, event_id: crypto.randomUUID() }),
+
+  recordLocalCodeRun: (eventId: string) =>
+    api.post('/student/usage/code-run', { event_id: eventId }),
 
   // --- Practice exam (bài thi practice import từ .docx) ---
   getPractice: () =>

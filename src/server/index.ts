@@ -12,6 +12,7 @@ import tenantAuthRoutes from './routes/tenantAuth.js';
 import issueRoutes from './routes/issues.js';
 import secretRoutes from './routes/secrets.js';
 import studentRoutes from './routes/student.js';
+import emailEventRoutes from './routes/emailEvents.js';
 import { cache } from './cache.js';
 import rateLimit from 'express-rate-limit';
 import { authMiddleware, requireTenantDataAdmin } from './middleware/auth.js';
@@ -99,6 +100,8 @@ app.use((req, res, next) => {
   }
   next();
 });
+// SES/SNS must keep its own 256 KB raw-body boundary; mount before the global 10 MB JSON parser.
+app.use('/api/email/events/sns', rateLimit({ windowMs: 60_000, max: 100 }), emailEventRoutes);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 

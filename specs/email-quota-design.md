@@ -53,6 +53,15 @@ khoảng trống sản phẩm, vừa là nút thắt vận hành khi số kỳ t
 - Giá trị hạn mức mặc định cho từng gói cước.
 - Có tính `code_runs` vào hạn mức không, hay chỉ theo dõi.
 
+## Implementation scope (2026-08-12)
+
+- Implement idempotent measurement for `exams_started`, `ai_gradings`, `recording_minutes`,
+  `emails_sent`, and `code_runs`, with nullable limits and current-month usage visible to superadmin.
+- Implement asynchronous AWS SES delivery, tenant email disabled by default, the daily safety limit,
+  all four templates, and bounce/complaint suppression from a signature- and topic-verified SNS webhook.
+- Do not enforce quota in any live flow yet. The three open product decisions above remain deferred;
+  configured quota values are measurement/display inputs only in this implementation.
+
 ## Verification
 
 - `npm run test:tenant` xanh, gồm `quotaPolicy.test.ts` thuần: `NULL` là không giới hạn;
