@@ -2,13 +2,14 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
 import db from '../db/postgres.js';
+// Tài khoản quản trị sống ở control-plane, không phải data-plane khảo thí.
+import controlDb from '../db/controlPlane.js';
 import mammoth from 'mammoth';
 import { normalizeUnicode, stripHtml, sanitizeFilename, buildContentDisposition } from '../../utils/string.js';
 import dotenv from 'dotenv';
-import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import rateLimit from 'express-rate-limit';
 import { authMiddleware, requireTenantUserManager } from '../middleware/auth.js';
+import { canManageTenantUser } from '../tenantContext.js';
 import crypto from 'crypto';
 import { parseBlueprintCompat } from '../services/blueprint.js';
 import { resolveBatchRecordMode } from '../services/recordingPolicy.js';
@@ -23,228 +24,219 @@ console.log('[Admin] USE_SQLITE:', USE_SQLITE, 'NODE_ENV:', process.env.NODE_ENV
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Rate limit riêng cho login: 10 request/phút
-const loginRateLimit = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  message: { error: 'Too many login attempts. Please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-// [C-5] Rate limit cho setup: 5 lần/giờ — chỉ dùng một lần trong vòng đời app
-const setupRateLimit = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 giờ
-  max: 5,
-  message: { error: 'Too many setup attempts. Please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-// =============================================
-// AUTH ROUTES (không require JWT)
-// =============================================
-
-// GET /api/admin/is-initialized — Kiểm tra xem admin đã được tạo chưa
-router.get('/is-initialized', async (req: Request, res: Response) => {
-  try {
-    const existing = await db.query('SELECT COUNT(*) as count FROM admin_users');
-    const count = Number(existing.rows[0]?.count ?? existing.rows[0]?.COUNT ?? 0);
-    return res.json({ initialized: count > 0 });
-  } catch (err: any) {
-    console.error('[Auth] is-initialized error:', err);
-    return res.status(500).json({ error: 'Failed to check initialization status' });
-  }
-});
-
-// POST /api/admin/setup — Tạo admin lần đầu (chỉ hoạt động khi bảng trống)
-router.post('/setup', setupRateLimit, async (req: Request, res: Response) => {
-
-  try {
-    const { username, password } = req.body;
-
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
-    }
-    if (password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
-    }
-
-    // Kiểm tra xem đã có admin chưa
-    const existing = await db.query('SELECT COUNT(*) as count FROM admin_users');
-    const count = Number(existing.rows[0]?.count ?? existing.rows[0]?.COUNT ?? 0);
-    if (count > 0) {
-      return res.status(403).json({ error: 'Admin already initialized. Use change-password to update credentials.' });
-    }
-
-    const passwordHash = await bcrypt.hash(password, 10);
-    await db.query(
-      'INSERT INTO admin_users (username, password_hash) VALUES (?, ?)',
-      [username.trim(), passwordHash]
-    );
-
-    console.log('[Auth] Admin user created:', username);
-    return res.status(201).json({ success: true, message: 'Admin account created successfully' });
-  } catch (err: any) {
-    console.error('[Auth] Setup error:', err);
-    return res.status(500).json({ error: 'Failed to create admin account' });
-  }
-});
-
-// POST /api/admin/login — Đăng nhập, nhận JWT
-router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
-  try {
-    const { username, password } = req.body;
-
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
-    }
-
-    const result = await db.query(
-      'SELECT * FROM admin_users WHERE username = ?',
-      [username.trim()]
-    );
-
-    const user = result.rows[0];
-    if (!user) {
-      // Trả về cùng message để tránh user enumeration
-      return res.status(401).json({ error: 'Invalid username or password' });
-    }
-
-    const isValid = await bcrypt.compare(password, user.password_hash);
-    if (!isValid) {
-      return res.status(401).json({ error: 'Invalid username or password' });
-    }
-
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-      return res.status(500).json({ error: 'Server configuration error' });
-    }
-
-    const expiresIn = '24h';
-    const role = user.role || 'admin';
-    const token = jwt.sign(
-      { id: user.id, username: user.username, role },
-      secret,
-      { expiresIn }
-    );
-
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-    console.log('[Auth] Login success:', username, 'role:', role);
-    return res.json({ token, expiresAt, role, userId: user.id });
-  } catch (err: any) {
-    console.error('[Auth] Login error:', err);
-    return res.status(500).json({ error: 'Login failed' });
-  }
-});
-
-// POST /api/admin/logout — Client xóa token (stateless)
-router.post('/logout', (req: Request, res: Response) => {
-  return res.json({ success: true });
-});
-
 // =============================================
 // PROTECTED ROUTES — Require JWT từ đây trở xuống
 // =============================================
 router.use(authMiddleware);
 
-// ── Quản lý user (chỉ admin) ─────────────────────────────────────────────
+// ── Quản lý người dùng trong tenant ─────────────────────────────
+//
+// Phải dùng controlDb, KHÔNG dùng db (data-plane). Tài khoản sống ở control-plane;
+// bản sao trong data-plane chỉ còn để rollback và không ai đọc nữa. Trước đây cả
+// bốn route này đều ghi nhầm sang data-plane, nên:
+//   - danh sách luôn rỗng dù tenant có tài khoản thật,
+//   - tài khoản tạo ra không đăng nhập được,
+//   - và nguy hiểm nhất: xoá báo thành công nhưng tài khoản thật vẫn đăng nhập được.
+//
+// Vai trò hợp lệ trong một tenant: `tenant_admin` (quản lý người dùng) và `admin`
+// (giáo viên / cộng tác viên). `superadmin` là toàn cục và không bao giờ được tạo
+// hay sửa từ đây.
 
-// GET /api/admin/users — liệt kê user (chỉ admin)
-router.get('/users', requireTenantUserManager, async (_req: Request, res: Response) => {
+const TENANT_ROLES = ['tenant_admin', 'admin'] as const;
+type TenantRole = typeof TENANT_ROLES[number];
+
+function isTenantRole(value: unknown): value is TenantRole {
+  return typeof value === 'string' && (TENANT_ROLES as readonly string[]).includes(value);
+}
+
+const USERNAME_PATTERN = /^[A-Za-z0-9_.@-]{3,100}$/;
+
+function passwordProblem(password: unknown): string | null {
+  if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
+    return 'Password must contain 8-128 characters.';
+  }
+  return null;
+}
+
+/** Đếm số tenant_admin còn lại, trừ một id. Dùng để không xóa/hạ cấp người cuối cùng. */
+async function otherTenantAdminCount(tenantId: number, excludeId: number): Promise<number> {
+  const result = await controlDb.query(
+    "SELECT COUNT(*) AS count FROM admin_users WHERE role = 'tenant_admin' AND tenant_id = ? AND id <> ?",
+    [tenantId, excludeId],
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+/** Nạp mục tiêu và kiểm tra người gọi có quyền quản lý nó không. */
+async function loadManageableUser(req: Request, targetId: number) {
+  const actor = req.adminUser!;
+  const result = await controlDb.query(
+    'SELECT id, username, role, tenant_id FROM admin_users WHERE id = ?',
+    [targetId],
+  );
+  const target = result.rows[0];
+  if (!target) return { error: { status: 404, message: 'User not found' } } as const;
+
+  // canManageTenantUser chốt ba điều: người gọi là tenant_admin, cùng tenant với mục
+  // tiêu, và mục tiêu không phải superadmin.
+  if (!canManageTenantUser(
+    { role: actor.role, tenantId: actor.tenantId },
+    { role: String(target.role), tenantId: target.tenant_id === null ? null : Number(target.tenant_id) },
+  )) {
+    return { error: { status: 403, message: 'Forbidden: account belongs to another tenant' } } as const;
+  }
+  return { target } as const;
+}
+
+// GET /api/admin/users — liệt kê người dùng CỦA TENANT HIỆN TẠI
+router.get('/users', requireTenantUserManager, async (req: Request, res: Response) => {
   try {
-    const result = await db.query(
-      'SELECT id, username, role, created_at FROM admin_users ORDER BY id ASC'
+    const result = await controlDb.query(
+      `SELECT id, username, role, tenant_id, created_at
+         FROM admin_users
+        WHERE tenant_id = ? AND role <> 'superadmin'
+        ORDER BY id ASC`,
+      [req.adminUser!.tenantId],
     );
     return res.json(result.rows);
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    console.error('[Users] list error:', err);
+    return res.status(500).json({ error: 'Unable to load tenant users.' });
   }
 });
 
-// POST /api/admin/users — tạo user với role 'admin' hoặc 'mod' (chỉ admin)
+// POST /api/admin/users — tạo người dùng trong tenant hiện tại
 router.post('/users', requireTenantUserManager, async (req: Request, res: Response) => {
   try {
     const { username, password, role } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
+    const trimmed = typeof username === 'string' ? username.trim() : '';
+
+    if (!USERNAME_PATTERN.test(trimmed)) {
+      return res.status(400).json({ error: 'Username must contain 3-100 letters, numbers, dots, dashes, @ or underscores.' });
     }
-    if (role !== 'admin' && role !== 'mod') {
-      return res.status(400).json({ error: 'Role must be "admin" or "mod"' });
-    }
-    if (String(password).length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    const badPassword = passwordProblem(password);
+    if (badPassword) return res.status(400).json({ error: badPassword });
+
+    // Validate cũ nhận 'admin' hoặc 'mod' — mô hình vai trò đã bỏ từ lâu. Hệ quả: tạo
+    // tenant_admin luôn bị 400, còn 'mod' lại được chấp nhận và sinh ra tài khoản chết
+    // vì không guard nào nhận ra vai trò đó.
+    if (!isTenantRole(role)) {
+      return res.status(400).json({ error: 'Role must be "tenant_admin" or "admin".' });
     }
 
-    const existing = await db.query('SELECT id FROM admin_users WHERE username = ?', [username.trim()]);
+    const existing = await controlDb.query(
+      'SELECT id FROM admin_users WHERE LOWER(username) = LOWER(?)',
+      [trimmed],
+    );
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: 'Username already exists' });
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
-    await db.query(
-      'INSERT INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)',
-      [username.trim(), passwordHash, role]
+    // tenant_id lấy từ JWT của người gọi, KHÔNG lấy từ body: nếu tin body thì một
+    // tenant_admin có thể tự tạo tài khoản sang tenant khác.
+    const passwordHash = await bcrypt.hash(password, 12);
+    await controlDb.query(
+      'INSERT INTO admin_users (username, password_hash, role, tenant_id) VALUES (?, ?, ?, ?)',
+      [trimmed, passwordHash, role, req.adminUser!.tenantId],
     );
-    console.log('[Auth] User created:', username, 'role:', role);
+    console.log('[Users] created', trimmed, 'role', role, 'tenant', req.adminUser!.tenantId);
     return res.status(201).json({ success: true });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    console.error('[Users] create error:', err);
+    return res.status(500).json({ error: 'Unable to create account.' });
   }
 });
 
-// DELETE /api/admin/users/:id — xóa user (chỉ admin; không cho tự xóa chính mình)
+// PUT /api/admin/users/:id — đổi vai trò hoặc đặt lại mật khẩu
+// Route này trước đây KHÔNG TỎN TẠI dù client vẫn gọi — mọi thao tác đổi vai trò
+// và đặt lại mật khẩu trên giao diện đều nhận 404.
+router.put('/users/:id', requireTenantUserManager, async (req: Request, res: Response) => {
+  try {
+    const targetId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(targetId)) return res.status(400).json({ error: 'Invalid user id' });
+
+    const { role, password } = req.body;
+    if (role === undefined && password === undefined) {
+      return res.status(400).json({ error: 'Nothing to update' });
+    }
+
+    const loaded = await loadManageableUser(req, targetId);
+    if ('error' in loaded) return res.status(loaded.error.status).json({ error: loaded.error.message });
+    const { target } = loaded;
+    const actor = req.adminUser!;
+
+    if (role !== undefined) {
+      if (!isTenantRole(role)) {
+        return res.status(400).json({ error: 'Role must be "tenant_admin" or "admin".' });
+      }
+      // Tự hạ cấp chính mình là cách nhanh nhất để khoá cả tenant ra ngoài.
+      if (target.id === actor.id) {
+        return res.status(400).json({ error: 'Cannot change your own role' });
+      }
+      if (
+        target.role === 'tenant_admin'
+        && role !== 'tenant_admin'
+        && (await otherTenantAdminCount(Number(target.tenant_id), targetId)) === 0
+      ) {
+        return res.status(400).json({ error: 'Cannot demote the last tenant administrator' });
+      }
+      await controlDb.query(
+        'UPDATE admin_users SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [role, targetId],
+      );
+    }
+
+    if (password !== undefined) {
+      const badPassword = passwordProblem(password);
+      if (badPassword) return res.status(400).json({ error: badPassword });
+      // Đổi mật khẩu của chính mình phải qua /change-password, vì chỗ đó bắt nhập
+      // mật khẩu hiện tại. Đi đường này là bỏ qua bước xác minh đó.
+      if (target.id === actor.id) {
+        return res.status(400).json({ error: 'Use change-password for your own account' });
+      }
+      const passwordHash = await bcrypt.hash(password, 12);
+      await controlDb.query(
+        'UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [passwordHash, targetId],
+      );
+    }
+
+    console.log('[Users] updated', targetId, 'by', actor.id);
+    return res.json({ success: true });
+  } catch (err: any) {
+    console.error('[Users] update error:', err);
+    return res.status(500).json({ error: 'Unable to update account.' });
+  }
+});
+
+// DELETE /api/admin/users/:id
 router.delete('/users/:id', requireTenantUserManager, async (req: Request, res: Response) => {
   try {
-    const targetId = parseInt(req.params.id);
+    const targetId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(targetId)) return res.status(400).json({ error: 'Invalid user id' });
     if (req.adminUser?.id === targetId) {
       return res.status(400).json({ error: 'Cannot delete your own account' });
     }
-    await db.query('DELETE FROM admin_users WHERE id = ?', [targetId]);
+
+    const loaded = await loadManageableUser(req, targetId);
+    if ('error' in loaded) return res.status(loaded.error.status).json({ error: loaded.error.message });
+    const { target } = loaded;
+
+    // Xoá tenant_admin cuối cùng là khoá tenant ra ngoài vĩnh viễn: superadmin cố tình
+    // không quản lý được người dùng của tenant nên không ai dựng lại được.
+    if (
+      target.role === 'tenant_admin'
+      && (await otherTenantAdminCount(Number(target.tenant_id), targetId)) === 0
+    ) {
+      return res.status(400).json({ error: 'Cannot delete the last tenant administrator' });
+    }
+
+    await controlDb.query('DELETE FROM admin_users WHERE id = ?', [targetId]);
+    console.log('[Users] deleted', targetId, 'by', req.adminUser?.id);
     return res.json({ success: true });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// PUT /api/admin/change-password — Đổi password (require JWT)
-router.put('/change-password', async (req: Request, res: Response) => {
-  try {
-    const { currentPassword, newPassword } = req.body;
-    const adminUser = req.adminUser;
-
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'currentPassword and newPassword are required' });
-    }
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'New password must be at least 8 characters' });
-    }
-
-    const result = await db.query(
-      'SELECT * FROM admin_users WHERE id = ?',
-      [adminUser!.id]
-    );
-    const user = result.rows[0];
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const isValid = await bcrypt.compare(currentPassword, user.password_hash);
-    if (!isValid) {
-      return res.status(401).json({ error: 'Current password is incorrect' });
-    }
-
-    const newHash = await bcrypt.hash(newPassword, 10);
-    await db.query(
-      'UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [newHash, adminUser!.id]
-    );
-
-    console.log('[Auth] Password changed for user:', adminUser!.username);
-    return res.json({ success: true, message: 'Password changed successfully' });
-  } catch (err: any) {
-    console.error('[Auth] Change password error:', err);
-    return res.status(500).json({ error: 'Failed to change password' });
+    console.error('[Users] delete error:', err);
+    return res.status(500).json({ error: 'Unable to delete account.' });
   }
 });
 
@@ -809,8 +801,9 @@ router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'No question IDs provided' });
     }
 
-    // Kiểm tra quyền: mod chỉ được xóa question của mình
-    if (req.adminUser?.role !== 'admin') {
+    // Giáo viên/cộng tác viên (`admin`) chỉ xóa được câu hỏi do mình tải lên;
+    // `tenant_admin` quản lý toàn tenant nên không bị ràng buộc này.
+    if (req.adminUser?.role === 'admin') {
       const userId = req.adminUser?.id;
       if (USE_SQLITE) {
         const placeholders = ids.map(() => '?').join(', ');
@@ -864,8 +857,9 @@ router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
 router.delete('/questions/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    // Kiểm tra quyền: mod chỉ được xóa question của mình
-    if (req.adminUser?.role !== 'admin') {
+    // Giáo viên/cộng tác viên (`admin`) chỉ xóa được câu hỏi do mình tải lên;
+    // `tenant_admin` quản lý toàn tenant nên không bị ràng buộc này.
+    if (req.adminUser?.role === 'admin') {
       const own = await db.query('SELECT uploaded_by FROM question_bank WHERE id = ?', [id]);
       if (!own.rows[0] || own.rows[0].uploaded_by !== req.adminUser?.id) {
         return res.status(403).json({ error: 'Forbidden: You can only delete questions you uploaded' });
@@ -1086,8 +1080,9 @@ router.put('/batches/:id', async (req: Request, res: Response) => {
     const isPractice = practice_exam_id !== undefined && practice_exam_id !== null && practice_exam_id !== '';
     const practiceExamId = isPractice ? parseInt(practice_exam_id) : null;
 
-    // Kiểm tra quyền: mod chỉ được sửa batch của mình
-    if (req.adminUser?.role !== 'admin') {
+    // Giáo viên/cộng tác viên (`admin`) chỉ sửa được đợt thi do mình tạo;
+    // `tenant_admin` quản lý toàn tenant nên không bị ràng buộc này.
+    if (req.adminUser?.role === 'admin') {
       const own = await db.query('SELECT created_by FROM batches WHERE id = ?', [parseInt(id)]);
       if (!own.rows[0] || own.rows[0].created_by !== req.adminUser?.id) {
         return res.status(403).json({ error: 'Forbidden: You can only edit batches you created' });
@@ -1137,8 +1132,9 @@ router.delete('/batches/:id', async (req: Request, res: Response) => {
     const { id } = req.params;
     const batchId = parseInt(id);
 
-    // Kiểm tra quyền: mod chỉ được xóa batch của mình
-    if (req.adminUser?.role !== 'admin') {
+    // Giáo viên/cộng tác viên (`admin`) chỉ xóa được đợt thi do mình tạo;
+    // `tenant_admin` quản lý toàn tenant nên không bị ràng buộc này.
+    if (req.adminUser?.role === 'admin') {
       const own = await db.query('SELECT created_by FROM batches WHERE id = ?', [batchId]);
       if (!own.rows[0] || own.rows[0].created_by !== req.adminUser?.id) {
         return res.status(403).json({ error: 'Forbidden: You can only delete batches you created' });
