@@ -53,6 +53,12 @@ Không có script khôi phục. Không có giám sát khi backup thất bại.
 - Số ngày lưu mặc định cho gói cơ bản so với gói doanh nghiệp (đề xuất 7 / 35).
 - Có bật `multi_az` không. Tăng gấp đôi chi phí RDS nhưng là điều kiện để cam kết SLA.
 
+## Implementation scope (2026-08-12)
+
+- Giữ mặc định chung 14 ngày như requirement; chưa tự gán 7/35 theo gói khi chưa có
+  quyết định giá. Superadmin có thể đặt 1–35 ngày cho từng tenant.
+- Giữ `multi_az = false`; việc bật Multi-AZ được defer vì đây là quyết định chi phí/SLA.
+
 ## Verification
 
 - `terraform validate` và `terraform plan` cho thấy RDS được sửa **tại chỗ**, không thay thế.

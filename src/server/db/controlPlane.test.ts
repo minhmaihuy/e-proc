@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'path';
+import fs from 'fs';
+import os from 'os';
+import Database from 'better-sqlite3';
 import {
   DEFAULT_FSA_TENANT_ADMIN_PASSWORD,
   DEFAULT_FSA_TENANT_ADMIN_USERNAME,
@@ -8,6 +11,9 @@ import {
   resolveControlPlaneConnection,
   resolveFsaClsLifecycle,
   resolveTenantAdminSeed,
+  initControlPlaneDatabase,
+  closeControlPlaneDatabase,
+  query,
 } from './controlPlane.js';
 import { assertDataPlaneTenantBinding } from './postgres.js';
 
@@ -146,4 +152,41 @@ test('biến môi trường rỗng rơi về giá trị mặc định', () => {
   );
   assert.equal(decision.username, DEFAULT_FSA_TENANT_ADMIN_USERNAME);
   assert.equal(decision.password, DEFAULT_FSA_TENANT_ADMIN_PASSWORD);
+});
+
+test('migration backup backfill schema cũ rồi chạy lại không hạ retention hoặc làm mất tenant', async () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'eproc-control-backup-'));
+  const previousPath = process.env.CONTROL_SQLITE_PATH;
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.CONTROL_SQLITE_PATH = path.join(tempDirectory, 'control.db');
+  process.env.NODE_ENV = 'test';
+  try {
+    await initControlPlaneDatabase();
+    const countBefore = Number((await query('SELECT COUNT(*) AS count FROM tenants')).rows[0].count);
+    await closeControlPlaneDatabase();
+
+    const legacy = new Database(process.env.CONTROL_SQLITE_PATH);
+    legacy.exec('ALTER TABLE tenants DROP COLUMN backup_retention_days');
+    legacy.close();
+
+    await initControlPlaneDatabase();
+    const backfilled = await query("SELECT backup_retention_days FROM tenants WHERE slug = 'fsa-cls'");
+    assert.equal(Number(backfilled.rows[0].backup_retention_days), 14, 'schema cũ phải được backfill an toàn');
+    assert.equal(Number((await query('SELECT COUNT(*) AS count FROM tenants')).rows[0].count), countBefore);
+    await query("UPDATE tenants SET backup_retention_days = 30 WHERE slug = 'fsa-cls'");
+    await closeControlPlaneDatabase();
+
+    await initControlPlaneDatabase();
+    const after = await query("SELECT backup_retention_days FROM tenants WHERE slug = 'fsa-cls'");
+    const countAfter = Number((await query('SELECT COUNT(*) AS count FROM tenants')).rows[0].count);
+    assert.equal(Number(after.rows[0].backup_retention_days), 30, 'migration không được hạ retention đã cấu hình');
+    assert.equal(countAfter, countBefore, 'khởi tạo lần hai không được làm mất tenant');
+  } finally {
+    await closeControlPlaneDatabase();
+    if (previousPath === undefined) delete process.env.CONTROL_SQLITE_PATH;
+    else process.env.CONTROL_SQLITE_PATH = previousPath;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    fs.rmSync(tempDirectory, { recursive: true, force: true });
+  }
 });

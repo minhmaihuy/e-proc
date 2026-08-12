@@ -143,6 +143,16 @@ variable "root_volume_size" {
   }
 }
 
+variable "backup_retention_days" {
+  description = "Always-on tenant database dump retention in days."
+  type        = number
+  default     = 14
+  validation {
+    condition     = var.backup_retention_days >= 1 && var.backup_retention_days <= 35
+    error_message = "backup_retention_days must be between 1 and 35."
+  }
+}
+
 variable "compiler_enabled" {
   description = "Create an isolated Lambda code runner for Practice exams."
   type        = bool

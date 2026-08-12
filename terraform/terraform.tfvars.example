@@ -17,6 +17,7 @@ allowed_ssh_cidr    = "0.0.0.0/0" # TODO: Restrict to your IP, e.g. "1.2.3.4/32"
 
 # RDS PostgreSQL
 db_instance_class = "db.t3.micro" # Free Tier eligible
+backup_retention_days = 14
 db_name           = "eaudit"
 db_username       = "eaudit_admin"
 db_password       = "YourStrongPassword123!" # Min 8 chars, change this!

@@ -74,12 +74,11 @@ resource "aws_db_instance" "eaudit" {
   publicly_accessible    = false
   port                   = 5432
 
-  # Backup (Disabled RDS-managed backups to satisfy Free Tier account limits. 
-  # We already have an automated backup script daily to S3)
-  backup_retention_period = 0
+  # Always-on point-in-time recovery. Changing retention is an in-place RDS update.
+  backup_retention_period = var.backup_retention_days
 
   # Maintenance
-  maintenance_window      = "sun:04:00-sun:05:00"
+  maintenance_window         = "sun:04:00-sun:05:00"
   auto_minor_version_upgrade = true
 
   # Performance Insights (Free Tier: 7 days retention)
@@ -93,8 +92,9 @@ resource "aws_db_instance" "eaudit" {
   multi_az = false
 
   # Deletion
-  deletion_protection = false
-  skip_final_snapshot = true
+  deletion_protection       = true
+  skip_final_snapshot       = false
+  final_snapshot_identifier = "eaudit-db-final-${random_id.bucket_suffix_v2.hex}"
 
   tags = {
     Name = "eaudit-postgresql"
