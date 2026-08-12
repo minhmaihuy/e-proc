@@ -51,6 +51,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Run the project wrapper with the applicable design spec: `python scripts/run-code-harness.py --target <changeset-folder> --rules specs/fullstack-harness.rules.json --spec specs/<feature>-design.md --report <report-folder>`.
 - `--spec` must identify the requirements used by every pending `llm_judge`; do not run the final maintenance gate against an undocumented feature change.
 
+## Git workflow (bắt buộc cho mọi thay đổi)
+
+**Không commit thẳng lên `main`.** Mọi thay đổi phải đi qua nhánh riêng rồi merge:
+
+```bash
+git checkout -b codex/<mô-tả-ngắn>     # TRƯỚC khi sửa file đầu tiên
+git commit
+git push -u origin codex/<mô-tả-ngắn>
+git checkout main && git merge --no-ff codex/<mô-tả-ngắn> && git push origin main
+```
+
+Lý do không phải hình thức. Đây là repo đang phục vụ production thật
+(`epoc.devfasttrack.cloud`), và đã có tiền lệ một merge âm thầm xóa mất công việc đã
+có: merge `ed8b5aa` xóa 9 hạng mục, gồm cả bug mất dữ liệu và build frontend chết
+(xem mục kế tiếp). `--no-ff` giữ lại ranh giới của từng thay đổi trong lịch sử, nên
+revert được một thay đổi mà không đụng tới những thay đổi khác. Commit thẳng lên
+`main` hoặc `merge --squash` đều làm mất ranh giới đó.
+
+Tạo nhánh **trước** khi sửa file đầu tiên, không phải sau khi đã sửa xong. Nếu lỡ
+commit thẳng lên `main` và đã push thì nói thẳng ra; đừng dựng một merge commit giả
+để trông giống quy trình, vì viết lại lịch sử `main` đã public cần force-push nên
+phải hỏi người dùng trước.
+
 ## Merging the `hoangsonbusiness` fork (read before every such merge)
 
 `hoangsonbusiness/main` is a **long-lived fork on an older lineage**, not a topic branch. Merging it has twice silently reverted work that was already on `main` — the conflict resolution took the fork's whole file, and nobody noticed until the bug resurfaced in production.
