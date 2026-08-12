@@ -556,6 +556,13 @@ Batches support two blueprint formats for question assignment:
 - The EC2 role needs `secretsmanager:GetSecretValue` on that exact ARN. `ListSecrets` is intentionally not granted (`terraform/tenant-instance/main.tf`), so `aws secretsmanager list-secrets` from the instance is expected to fail.
 
 
+### Backup and restore protection (2026-08-12)
+- Backup is always on. `tenants.backup_retention_days` lives in the control-plane, defaults/backfills to 14, and accepts 1–35; `multi_az` remains off until the cost/SLA decision is explicit.
+- Both legacy RDS modules keep `backup_retention_period > 0`, `deletion_protection = true`, `skip_final_snapshot = false`, and a stable final snapshot identifier. The supported tenant module creates a private encrypted S3 backup bucket with matching lifecycle retention.
+- Repository scripts are `scripts/backup-db.sh`, `scripts/restore-db.sh`, and `scripts/verify-latest-backup.sh`. Restore always creates a validated database that does not already exist; it never overwrites or drops the source. The monthly drill compares `question_bank`, `students`, `exam_questions`, and `violation_events`, then removes only its temporary database.
+- Shell tools must translate `sslmode=no-verify` to libpq `require`, must anchor `grep '^DATABASE_URL='`, and must never print connection strings. Backup/restore-check failures append safe system issues to the current tenant log-plane; success timestamps and sizes are stored on the control-plane tenant row for `/tenants`.
+- A green source test is not sufficient by itself: before changing these scripts, temporarily break a pinned invariant, confirm `scripts/backupRestore.test.js` fails, then restore it. A real staging restore remains required before production rollout.
+
 ## Environment variables
 
 | Variable | Required | Default | Description |

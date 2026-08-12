@@ -102,6 +102,11 @@ async function initPostgres(config: ControlPlaneConnectionConfig) {
         aws_region VARCHAR(32) NOT NULL DEFAULT 'ap-southeast-1',
         instance_type VARCHAR(32) NOT NULL DEFAULT 't3.micro',
         root_volume_size INTEGER NOT NULL DEFAULT 12,
+        backup_retention_days INTEGER NOT NULL DEFAULT 14,
+        last_backup_at TIMESTAMP,
+        last_backup_size_bytes BIGINT,
+        last_restore_test_at TIMESTAMP,
+        last_restore_test_status VARCHAR(16),
         compiler_enabled BOOLEAN NOT NULL DEFAULT FALSE,
         -- Danh sách chế độ ghi màn hình tenant được PHÉP dùng (batch chọn trong đó).
         -- Tenant mới mặc định chỉ 'none': bật ghi màn hình là quyết định có chủ đích
@@ -160,6 +165,11 @@ async function initPostgres(config: ControlPlaneConnectionConfig) {
     // Tenant tạo MỚI thì theo DEFAULT 'none' của cột.
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS allowed_record_modes TEXT NOT NULL DEFAULT 'none,local,s3'`);
     await client.query(`ALTER TABLE tenants ALTER COLUMN allowed_record_modes SET DEFAULT 'none'`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS backup_retention_days INTEGER NOT NULL DEFAULT 14`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_backup_at TIMESTAMP`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_backup_size_bytes BIGINT`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_restore_test_at TIMESTAMP`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_restore_test_status VARCHAR(16)`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_memory_mb INTEGER NOT NULL DEFAULT 512`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_concurrency INTEGER NOT NULL DEFAULT 2`);
@@ -194,6 +204,11 @@ function initSqlite(config: ControlPlaneConnectionConfig) {
       aws_region TEXT NOT NULL DEFAULT 'ap-southeast-1',
       instance_type TEXT NOT NULL DEFAULT 't3.micro',
       root_volume_size INTEGER NOT NULL DEFAULT 12,
+      backup_retention_days INTEGER NOT NULL DEFAULT 14,
+      last_backup_at DATETIME,
+      last_backup_size_bytes INTEGER,
+      last_restore_test_at DATETIME,
+      last_restore_test_status TEXT,
       compiler_enabled INTEGER NOT NULL DEFAULT 0,
       allowed_record_modes TEXT NOT NULL DEFAULT 'none',
       compiler_memory_mb INTEGER NOT NULL DEFAULT 512,
@@ -252,11 +267,21 @@ function initSqlite(config: ControlPlaneConnectionConfig) {
     sqliteDb.exec("ALTER TABLE tenants ADD COLUMN allowed_record_modes TEXT NOT NULL DEFAULT 'none'");
     sqliteDb.exec("UPDATE tenants SET allowed_record_modes = 'none,local,s3'");
   }
+  for (const [name, definition] of [
+    ['backup_retention_days', 'INTEGER NOT NULL DEFAULT 14'],
+    ['last_backup_at', 'DATETIME'],
+    ['last_backup_size_bytes', 'INTEGER'],
+    ['last_restore_test_at', 'DATETIME'],
+    ['last_restore_test_status', 'TEXT'],
+  ] as const) {
+    if (!tenantColumns.includes(name)) sqliteDb.exec(`ALTER TABLE tenants ADD COLUMN ${name} ${definition}`);
+  }
 }
 
 const ADMIN_COLUMNS = ['id', 'username', 'password_hash', 'role', 'tenant_id', 'created_at', 'updated_at'];
 const TENANT_COLUMNS = [
   'id', 'slug', 'name', 'contact_email', 'status', 'aws_region', 'instance_type', 'root_volume_size',
+  'backup_retention_days', 'last_backup_at', 'last_backup_size_bytes', 'last_restore_test_at', 'last_restore_test_status',
   'allowed_record_modes', 'compiler_enabled', 'compiler_memory_mb', 'compiler_timeout_seconds', 'compiler_concurrency',
   'compiler_lambda_arn', 'domain_name', 'route53_zone_id', 'secret_arn', 'repository_url',
   'repository_ref', 'provision_status', 'terraform_state_key', 'instance_id', 'public_ip',
@@ -531,6 +556,7 @@ async function migrateLegacyControlPlane() {
     ...row,
     slug: mapLegacyTenantSlug(String(row.slug)),
     name: String(row.slug).trim().toLowerCase() === 'fsa' ? 'FSA CLS' : row.name,
+    backup_retention_days: Number(row.backup_retention_days) > 0 ? Number(row.backup_retention_days) : 14,
   }));
   await copyRowsWhenEmpty('tenant_provision_jobs', JOB_COLUMNS, legacyJobs);
   await copyRowsWhenEmpty('tenant_audit_events', AUDIT_COLUMNS, legacyAudits);

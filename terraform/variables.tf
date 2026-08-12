@@ -49,6 +49,16 @@ variable "db_instance_class" {
   default     = "db.t3.micro"
 }
 
+variable "backup_retention_days" {
+  description = "Always-on RDS and S3 backup retention in days."
+  type        = number
+  default     = 14
+  validation {
+    condition     = var.backup_retention_days >= 1 && var.backup_retention_days <= 35
+    error_message = "backup_retention_days must be between 1 and 35."
+  }
+}
+
 variable "db_name" {
   description = "PostgreSQL database name"
   type        = string

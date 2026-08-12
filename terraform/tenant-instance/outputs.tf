@@ -18,6 +18,11 @@ output "app_url" {
   value       = "https://${var.domain_name}/"
 }
 
+output "backup_bucket" {
+  description = "Private S3 bucket used for tenant database backups and restore drills."
+  value       = aws_s3_bucket.backup.id
+}
+
 output "compiler_lambda_arn" {
   description = "Practice compiler Lambda ARN, or an empty string when disabled."
   value       = var.compiler_enabled ? aws_lambda_function.compiler[0].arn : ""

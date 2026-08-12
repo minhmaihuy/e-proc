@@ -5,7 +5,7 @@ exec > >(tee /var/log/eproc-bootstrap.log) 2>&1
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -y
-apt-get install -y awscli ca-certificates curl git jq nginx
+apt-get install -y awscli ca-certificates curl git jq nginx postgresql-client
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 npm install -g pm2
@@ -19,7 +19,7 @@ aws secretsmanager get-secret-value \
 chmod 0600 /opt/eproc/runtime-secrets.json
 
 jq -r '
-  ["DATABASE_URL", "CONTROL_DATABASE_URL", "LOG_DATABASE_URL", "JWT_SECRET", "SESSION_SECRET", "GEMINI_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY"] as $allowed
+  ["DATABASE_URL", "CONTROL_DATABASE_URL", "LOG_DATABASE_URL", "DATABASE_MAINTENANCE_DB", "JWT_SECRET", "SESSION_SECRET", "GEMINI_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY"] as $allowed
   | to_entries[]
   | select(.key as $key | $allowed | index($key))
   | "\(.key)=\(.value | tostring | gsub("[\\r\\n]"; ""))"
@@ -33,6 +33,16 @@ rm -f /opt/eproc/runtime-secrets.json
 su - ubuntu -c "git clone --branch '${repository_ref}' --single-branch '${repository_url}' /opt/eproc/app"
 cp /opt/eproc/.env /opt/eproc/app/.env
 chown -R ubuntu:ubuntu /opt/eproc
+install -m 0755 -o ubuntu -g ubuntu /opt/eproc/app/scripts/backup-db.sh /opt/eproc/backup-db.sh
+install -m 0755 -o ubuntu -g ubuntu /opt/eproc/app/scripts/restore-db.sh /opt/eproc/restore-db.sh
+install -m 0755 -o ubuntu -g ubuntu /opt/eproc/app/scripts/verify-latest-backup.sh /opt/eproc/verify-latest-backup.sh
+
+cat > /etc/cron.d/eproc-database-protection <<'CRON'
+SHELL=/bin/bash
+0 2 * * * ubuntu EAUDIT_ENV_FILE='/opt/eproc/.env' S3_BACKUP_BUCKET='${backup_bucket}' AWS_REGION='${aws_region}' /opt/eproc/backup-db.sh >> /var/log/eproc-backup.log 2>&1
+0 4 1 * * ubuntu EAUDIT_ENV_FILE='/opt/eproc/.env' S3_BACKUP_BUCKET='${backup_bucket}' AWS_REGION='${aws_region}' /opt/eproc/verify-latest-backup.sh >> /var/log/eproc-restore-check.log 2>&1
+CRON
+chmod 0644 /etc/cron.d/eproc-database-protection
 
 su - ubuntu -c 'cd /opt/eproc/app && npm ci && npm run build:server'
 su - ubuntu -c 'cd /opt/eproc/app/client && npm ci && npm run build'

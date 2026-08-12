@@ -10,6 +10,7 @@ import {
 import { TenantLogAccessError, readTenantIssues } from '../services/tenantLogReader.js';
 import { isTenantDomainForSlug, tenantDomainForSlug } from '../tenantContext.js';
 import { serializeAllowedRecordModes } from '../services/recordingPolicy.js';
+import { isBackupRetentionDays } from '../services/backupPolicy.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -29,6 +30,7 @@ interface TenantInput {
   awsRegion: string;
   instanceType: string;
   rootVolumeSize: number;
+  backupRetentionDays: number;
   compilerEnabled: boolean;
   compilerMemoryMb: number;
   compilerTimeoutSeconds: number;
@@ -61,6 +63,9 @@ function normalizeTenantInput(body: unknown, existing?: Partial<TenantRow>): Ten
     awsRegion: String(input.aws_region ?? input.awsRegion ?? existing?.aws_region ?? 'ap-southeast-1').trim(),
     instanceType: String(input.instance_type ?? input.instanceType ?? existing?.instance_type ?? 't3.micro').trim(),
     rootVolumeSize: Number(input.root_volume_size ?? input.rootVolumeSize ?? existing?.root_volume_size ?? 12),
+    backupRetentionDays: Number(
+      input.backup_retention_days ?? input.backupRetentionDays ?? existing?.backup_retention_days ?? 14,
+    ),
     compilerEnabled: Boolean(input.compiler_enabled ?? input.compilerEnabled ?? existing?.compiler_enabled ?? false),
     compilerMemoryMb: Number(input.compiler_memory_mb ?? input.compilerMemoryMb ?? existing?.compiler_memory_mb ?? 512),
     compilerTimeoutSeconds: Number(input.compiler_timeout_seconds ?? input.compilerTimeoutSeconds ?? existing?.compiler_timeout_seconds ?? 15),
@@ -84,6 +89,7 @@ function validateTenantInput(input: TenantInput, requireSecret: boolean): string
   if (!REGION_PATTERN.test(input.awsRegion)) return 'Invalid AWS region.';
   if (!INSTANCE_TYPES.has(input.instanceType)) return 'Unsupported EC2 instance type.';
   if (!Number.isInteger(input.rootVolumeSize) || input.rootVolumeSize < 8 || input.rootVolumeSize > 100) return 'Root volume must be 8-100 GiB.';
+  if (!isBackupRetentionDays(input.backupRetentionDays)) return 'Backup retention must be 1-35 days.';
   if (!Number.isInteger(input.compilerMemoryMb) || input.compilerMemoryMb < 256 || input.compilerMemoryMb > 3008) return 'Compiler memory must be 256-3008 MB.';
   if (!Number.isInteger(input.compilerTimeoutSeconds) || input.compilerTimeoutSeconds < 10 || input.compilerTimeoutSeconds > 30) return 'Compiler timeout must be 10-30 seconds.';
   if (!Number.isInteger(input.compilerConcurrency) || input.compilerConcurrency < 1 || input.compilerConcurrency > 20) return 'Compiler concurrency must be 1-20.';
@@ -197,11 +203,11 @@ router.post('/', requireSuperAdmin, async (req: Request, res: Response) => {
     const created = await db.query(
       `INSERT INTO tenants
        (slug, name, contact_email, aws_region, instance_type, root_volume_size, compiler_enabled,
-        compiler_memory_mb, compiler_timeout_seconds, compiler_concurrency, domain_name,
+        backup_retention_days, compiler_memory_mb, compiler_timeout_seconds, compiler_concurrency, domain_name,
         route53_zone_id, secret_arn, allowed_record_modes, repository_url, repository_ref, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [input.slug, input.name, input.contactEmail, input.awsRegion, input.instanceType,
-        input.rootVolumeSize, input.compilerEnabled, input.compilerMemoryMb, input.compilerTimeoutSeconds,
+        input.rootVolumeSize, input.compilerEnabled, input.backupRetentionDays, input.compilerMemoryMb, input.compilerTimeoutSeconds,
         input.compilerConcurrency, input.domainName, input.route53ZoneId, input.secretArn,
         input.allowedRecordModes, input.repositoryUrl, input.repositoryRef, req.adminUser!.id],
     );
@@ -244,13 +250,13 @@ router.put('/:id', async (req: Request, res: Response) => {
 
     await db.query(
       `UPDATE tenants SET name = ?, contact_email = ?, aws_region = ?, instance_type = ?,
-       root_volume_size = ?, compiler_enabled = ?, compiler_memory_mb = ?, compiler_timeout_seconds = ?,
+       root_volume_size = ?, backup_retention_days = ?, compiler_enabled = ?, compiler_memory_mb = ?, compiler_timeout_seconds = ?,
        compiler_concurrency = ?, domain_name = ?, route53_zone_id = ?, secret_arn = ?,
        allowed_record_modes = ?, repository_url = ?, repository_ref = ?,
        status = 'pending', provision_status = 'not_started',
        approved_by = NULL, approved_at = NULL, last_error = NULL, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [input.name, input.contactEmail, input.awsRegion, input.instanceType, input.rootVolumeSize,
+      [input.name, input.contactEmail, input.awsRegion, input.instanceType, input.rootVolumeSize, input.backupRetentionDays,
         input.compilerEnabled, input.compilerMemoryMb, input.compilerTimeoutSeconds, input.compilerConcurrency,
         input.domainName, input.route53ZoneId, input.secretArn, input.allowedRecordModes,
         input.repositoryUrl, input.repositoryRef, tenantId],

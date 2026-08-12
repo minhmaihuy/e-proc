@@ -19,6 +19,7 @@ allowed_ssh_ipv6_cidr = "::/0" # Keep "::/0" for anywhere, or restrict to your h
 
 # RDS PostgreSQL — Multitenant: 3 separate databases on same RDS instance
 db_instance_class = "db.t3.micro" # Free Tier eligible
+backup_retention_days = 14
 db_username       = "eaudit_admin"
 # Mat khau chua ky tu dac biet van dung duoc: ec2.tf boc urlencode() truoc khi
 # ghep vao connection URL (dau '#' neu khong ma hoa se lam hong ca ba DATABASE_URL).

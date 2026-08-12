@@ -70,9 +70,8 @@ resource "aws_db_instance" "eaudit" {
   # Dual-Stack: Enables database to accept private IPv6/IPv4 queries
   network_type = "DUAL"
 
-  # Backup (Disabled RDS-managed backups to satisfy Free Tier account limits.
-  # We already have an automated backup script daily to S3)
-  backup_retention_period = 0
+  # Always-on point-in-time recovery. Changing retention is an in-place RDS update.
+  backup_retention_period = var.backup_retention_days
 
   # Maintenance
   maintenance_window         = "sun:04:00-sun:05:00"
@@ -89,8 +88,9 @@ resource "aws_db_instance" "eaudit" {
   multi_az = false
 
   # Deletion
-  deletion_protection = false
-  skip_final_snapshot = true
+  deletion_protection       = true
+  skip_final_snapshot       = false
+  final_snapshot_identifier = "eaudit-db-final-${random_id.bucket_suffix_v3.hex}"
 
   # Đổi mật khẩu phải có hiệu lực ngay, không chờ maintenance_window (sun 04:00).
   # Nếu chờ, `apply` báo thành công nhưng RDS vẫn giữ mật khẩu cũ tới Chủ nhật —

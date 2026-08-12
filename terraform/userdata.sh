@@ -228,6 +228,9 @@ su - ubuntu -c "cd /opt/eaudit && git clone https://github.com/minhmaihuy/e-proc
     sleep 10
     su - ubuntu -c "cd /opt/eaudit && git clone https://github.com/minhmaihuy/e-proc.git app"
 }
+install -m 0755 -o ubuntu -g ubuntu /opt/eaudit/app/scripts/backup-db.sh /opt/eaudit/backup-db.sh
+install -m 0755 -o ubuntu -g ubuntu /opt/eaudit/app/scripts/restore-db.sh /opt/eaudit/restore-db.sh
+install -m 0755 -o ubuntu -g ubuntu /opt/eaudit/app/scripts/verify-latest-backup.sh /opt/eaudit/verify-latest-backup.sh
 
 # Copy .env to app directory
 cp /opt/eaudit/.env /opt/eaudit/app/.env
@@ -277,7 +280,10 @@ cat > /tmp/eaudit-cron << 'CRONEOF'
 0 3 * * * certbot renew --quiet --post-hook 'systemctl reload nginx'
 
 # DB backup to S3 (daily 2 AM)
-0 2 * * * /opt/eaudit/backup-db.sh >> /var/log/eaudit-backup.log 2>&1
+0 2 * * * S3_BACKUP_BUCKET='${s3_bucket}' AWS_REGION='${aws_region}' /opt/eaudit/backup-db.sh >> /var/log/eaudit-backup.log 2>&1
+
+# Monthly restore drill into a temporary, newly-created database.
+0 4 1 * * S3_BACKUP_BUCKET='${s3_bucket}' AWS_REGION='${aws_region}' /opt/eaudit/verify-latest-backup.sh >> /var/log/eaudit-restore-check.log 2>&1
 
 # AI queue processor (every minute)
 * * * * * curl -s http://localhost:3001/api/queue/process > /dev/null 2>&1

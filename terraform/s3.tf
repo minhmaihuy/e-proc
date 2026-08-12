@@ -35,7 +35,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "backup" {
   }
 }
 
-# --- Lifecycle: Delete old backups after 30 days ---
+# --- Lifecycle: Match the tenant backup-retention contract ---
 resource "aws_s3_bucket_lifecycle_configuration" "backup" {
   bucket = aws_s3_bucket.backup.id
 
@@ -46,7 +46,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "backup" {
     filter {}
 
     expiration {
-      days = 30
+      days = var.backup_retention_days
     }
 
     noncurrent_version_expiration {

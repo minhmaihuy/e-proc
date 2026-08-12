@@ -22,6 +22,7 @@ export interface ProvisionableTenant {
   aws_region: string;
   instance_type: string;
   root_volume_size: number;
+  backup_retention_days?: number;
   compiler_enabled: boolean | number;
   compiler_memory_mb: number;
   compiler_timeout_seconds: number;
@@ -166,6 +167,7 @@ export async function runTenantProvisioning(
       aws_region: tenant.aws_region,
       instance_type: tenant.instance_type,
       root_volume_size: Number(tenant.root_volume_size),
+      backup_retention_days: Number(tenant.backup_retention_days || 14),
       compiler_enabled: Boolean(tenant.compiler_enabled),
       compiler_image_uri: Boolean(tenant.compiler_enabled) ? process.env.TENANT_COMPILER_IMAGE_URI!.trim() : '',
       compiler_memory_mb: Number(tenant.compiler_memory_mb),

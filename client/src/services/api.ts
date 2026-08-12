@@ -73,6 +73,11 @@ export interface Tenant {
   aws_region: string;
   instance_type: string;
   root_volume_size: number;
+  backup_retention_days: number;
+  last_backup_at?: string | null;
+  last_backup_size_bytes?: number | null;
+  last_restore_test_at?: string | null;
+  last_restore_test_status?: 'passed' | 'failed' | null;
   /** Chế độ ghi màn hình tenant được phép dùng, vd "none,local,s3". */
   allowed_record_modes?: string;
   compiler_enabled: boolean | number;
@@ -137,6 +142,7 @@ export interface TenantConfiguration {
   aws_region: string;
   instance_type: string;
   root_volume_size: number;
+  backup_retention_days: number;
   allowed_record_modes?: string;
   compiler_enabled: boolean;
   compiler_memory_mb: number;

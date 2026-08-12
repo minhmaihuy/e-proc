@@ -14,6 +14,7 @@ const EMPTY_CONFIG: TenantConfiguration = {
   aws_region: 'ap-southeast-1',
   instance_type: 't3.micro',
   root_volume_size: 12,
+  backup_retention_days: 14,
   allowed_record_modes: 'none',
   compiler_enabled: false,
   compiler_memory_mb: 512,
@@ -53,6 +54,7 @@ function configFromTenant(tenant: Tenant): TenantConfiguration {
     aws_region: tenant.aws_region,
     instance_type: tenant.instance_type,
     root_volume_size: Number(tenant.root_volume_size),
+    backup_retention_days: Number(tenant.backup_retention_days || 14),
     allowed_record_modes: tenant.allowed_record_modes || 'none',
     compiler_enabled: Boolean(tenant.compiler_enabled),
     compiler_memory_mb: Number(tenant.compiler_memory_mb || 512),
@@ -354,6 +356,7 @@ function TenantManagement() {
                   <label className="field"><span>AWS region</span><select value={form.aws_region} onChange={(event) => handleConfigChange('aws_region', event.target.value)}>{REGIONS.map((region) => <option key={region} value={region}>{region}</option>)}</select></label>
                   <label className="field"><span>Instance type</span><select value={form.instance_type} onChange={(event) => handleConfigChange('instance_type', event.target.value)}>{INSTANCE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
                   <label className="field"><span>Root volume (GiB)</span><input type="number" min={8} max={100} value={form.root_volume_size} onChange={(event) => handleConfigChange('root_volume_size', Number(event.target.value))} /></label>
+                  <label className="field"><span>Backup retention (days)</span><input type="number" min={1} max={35} value={form.backup_retention_days} onChange={(event) => handleConfigChange('backup_retention_days', Number(event.target.value))} /><small>Backups are always enabled. The current default is 14 days.</small></label>
                   <div className="field field-wide">
                     <span>Screen recording</span>
                     <div className="flex flex-wrap items-center gap-4 pt-1">
@@ -409,6 +412,8 @@ function TenantManagement() {
                   <div><span>Public IPv6</span><strong>{selectedTenant.ipv6_address || 'Pending'}</strong></div>
                   <div><span>IPv4 fallback</span><strong>{selectedTenant.public_ip || 'Pending'}</strong></div>
                   <div><span>Practice compiler</span><strong>{selectedTenant.compiler_enabled ? (selectedTenant.compiler_lambda_arn || 'Pending Lambda') : 'Local / EC2'}</strong></div>
+                  <div><span>Latest backup</span><strong>{selectedTenant.last_backup_at ? new Date(selectedTenant.last_backup_at).toLocaleString() : 'Not reported'}</strong><small>{selectedTenant.last_backup_size_bytes ? `${(selectedTenant.last_backup_size_bytes / 1024 / 1024).toFixed(1)} MB` : 'Size unavailable'}</small></div>
+                  <div><span>Latest restore check</span><strong>{selectedTenant.last_restore_test_at ? new Date(selectedTenant.last_restore_test_at).toLocaleString() : 'Not tested'}</strong><small>{selectedTenant.last_restore_test_status || 'No result'}</small></div>
                   <div><span>State</span><strong>{selectedTenant.terraform_state_key || `tenants/${selectedTenant.slug}/terraform.tfstate`}</strong></div>
                 </div>
                 {selectedTenant.last_error && <div className="notice notice-error"><strong>Last error:</strong> {selectedTenant.last_error}</div>}
