@@ -153,7 +153,7 @@ function UserManagement() {
 
       <section className="provision-card">
         <div className="section-heading"><div><span className="eyebrow">DIRECTORY</span><h2>Administrator accounts</h2></div><span className="count-pill">{users.length}</span></div>
-        <div style={{ overflowX: 'auto' }}>
+        <div className="overflow-x-auto">
           <table>
             <thead><tr><th>Username</th><th>Tenant</th><th>Role</th><th>Created</th><th>Actions</th></tr></thead>
             <tbody>
@@ -191,7 +191,7 @@ function UserManagement() {
         </div>
       </section>
 
-      <p style={{ color: 'var(--text-light)', fontSize: 12 }}>
+      <p className="text-xs text-slate-500">
         Session scope: <strong>{tenantName || 'Tenant'} ({tenantSlug || tenantId})</strong>
       </p>
     </main>

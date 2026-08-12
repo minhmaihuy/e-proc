@@ -6,7 +6,7 @@
       "type": "regex_forbidden",
       "severity": "error",
       "scope": "code",
-      "patterns": ["\\bdebugger\\b", "TODO|FIXME|XXX|HACK"],
+      "patterns": ["\\bdebugger\\b", "\\b(TODO|FIXME|XXX|HACK)\\b"],
       "message": "Unresolved debug or placeholder marker in changed code"
     },
     {

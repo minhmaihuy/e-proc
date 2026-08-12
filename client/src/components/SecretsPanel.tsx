@@ -22,20 +22,16 @@ function KeyBadges({ keys, tone }: { keys: string[]; tone: 'secret' | 'env' | 'w
     env: { bg: 'rgba(100,116,139,0.12)', fg: '#475569', border: 'rgba(100,116,139,0.3)' },
     warn: { bg: 'rgba(234,179,8,0.14)', fg: '#a16207', border: 'rgba(234,179,8,0.4)' },
   }[tone];
-  if (keys.length === 0) return <span style={{ color: 'var(--text-light)', fontSize: 13 }}>—</span>;
+  if (keys.length === 0) return <span className="text-[13px] text-slate-500">—</span>;
   return (
-    <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+    <span className="flex flex-wrap gap-1.5">
       {keys.map((key) => (
         <code
           key={key}
-          style={{
-            fontSize: 12,
-            padding: '2px 8px',
-            borderRadius: 5,
-            background: palette.bg,
-            color: palette.fg,
-            border: `1px solid ${palette.border}`,
-          }}
+          className="rounded-[5px] border px-2 py-0.5 text-xs"
+      // Mau lay tu palette tinh trong JS theo trang thai khoa, khong the bieu dien
+      // bang class tinh cua Tailwind, nen ba thuoc tinh nay van phai la inline.
+      style={{ background: palette.bg, color: palette.fg, borderColor: palette.border }}
         >
           {key}
         </code>
@@ -99,15 +95,9 @@ function SecretsPanel() {
           <h2>
             Secrets Manager{' '}
             <span
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                padding: '3px 10px',
-                borderRadius: 999,
-                verticalAlign: 'middle',
-                background: enabled ? 'rgba(34,197,94,0.14)' : 'rgba(100,116,139,0.14)',
-                color: enabled ? '#15803d' : '#475569',
-              }}
+              className={`inline-flex items-center rounded-full px-2.5 py-0.5 align-middle text-xs font-semibold ${
+        enabled ? 'bg-green-500/15 text-green-700' : 'bg-slate-500/15 text-slate-600'
+      }`}
             >
               {enabled ? 'ENABLED' : 'DISABLED'}
             </span>
@@ -127,7 +117,7 @@ function SecretsPanel() {
 
       {status && (
         <>
-          <p style={{ color: 'var(--text-light)' }}>
+          <p className="text-slate-500">
             {enabled
               ? 'This server loads sensitive configuration from AWS Secrets Manager. Values are never displayed here — only key names.'
               : 'This server reads all configuration from its .env file. That is the default and is working as intended. Test a secret below before enabling.'}
@@ -135,37 +125,37 @@ function SecretsPanel() {
 
           {expanded && (
             <>
-              <div style={{ overflowX: 'auto' }}>
+              <div className="overflow-x-auto">
                 <table>
                   <tbody>
                     <tr>
-                      <td style={{ width: 210, color: 'var(--text-light)' }}>Secret ARN</td>
-                      <td style={{ fontFamily: 'monospace', fontSize: 12, overflowWrap: 'anywhere' }}>
-                        {status.secretArn || <span style={{ color: 'var(--text-light)' }}>not configured</span>}
+                      <td className="w-[210px] text-slate-500">Secret ARN</td>
+                      <td className="break-words font-mono text-xs">
+                        {status.secretArn || <span className="text-slate-500">not configured</span>}
                       </td>
                     </tr>
                     <tr>
-                      <td style={{ color: 'var(--text-light)' }}>Region</td>
-                      <td>{status.region || <span style={{ color: 'var(--text-light)' }}>not configured</span>}</td>
+                      <td className="text-slate-500">Region</td>
+                      <td>{status.region || <span className="text-slate-500">not configured</span>}</td>
                     </tr>
                     <tr>
-                      <td style={{ color: 'var(--text-light)' }}>Loaded at</td>
+                      <td className="text-slate-500">Loaded at</td>
                       <td>{status.loadedAt ? new Date(status.loadedAt).toLocaleString() : '—'}</td>
                     </tr>
                     <tr>
-                      <td style={{ color: 'var(--text-light)' }}>Keys from secret</td>
+                      <td className="text-slate-500">Keys from secret</td>
                       <td><KeyBadges keys={status.appliedKeys} tone="secret" /></td>
                     </tr>
                     <tr>
-                      <td style={{ color: 'var(--text-light)' }}>Keys still from .env</td>
+                      <td className="text-slate-500">Keys still from .env</td>
                       <td><KeyBadges keys={status.envFallbackKeys} tone="env" /></td>
                     </tr>
                     {status.ignoredKeys.length > 0 && (
                       <tr>
-                        <td style={{ color: 'var(--text-light)' }}>Ignored keys</td>
+                        <td className="text-slate-500">Ignored keys</td>
                         <td>
                           <KeyBadges keys={status.ignoredKeys} tone="warn" />
-                          <small style={{ color: 'var(--text-light)', display: 'block', marginTop: 6 }}>
+                          <small className="mt-1.5 block text-slate-500">
                             Not in the managed list — usually a mistyped key name.
                           </small>
                         </td>
@@ -173,7 +163,7 @@ function SecretsPanel() {
                     )}
                     {status.error && (
                       <tr>
-                        <td style={{ color: 'var(--text-light)' }}>Error</td>
+                        <td className="text-slate-500">Error</td>
                         <td className="error">{status.error}</td>
                       </tr>
                     )}
@@ -181,7 +171,7 @@ function SecretsPanel() {
                 </table>
               </div>
 
-              <form onSubmit={handleTest} style={{ marginTop: 18 }}>
+              <form onSubmit={handleTest} className="mt-[18px]">
                 <div className="form-grid">
                   <label className="field field-wide">
                     <span>Secret ARN to test</span>
@@ -189,7 +179,7 @@ function SecretsPanel() {
                       value={testArn}
                       onChange={(event) => setTestArn(event.target.value)}
                       placeholder="arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:eproc/app-AbCdEf"
-                      style={{ fontFamily: 'monospace', fontSize: 12 }}
+                      className="font-mono text-xs"
                       required
                     />
                   </label>
@@ -216,34 +206,34 @@ function SecretsPanel() {
               {testResult && (
                 <div className="notice notice-success" role="status">
                   <div>{testResult.message}</div>
-                  <div style={{ marginTop: 8 }}>
-                    <small style={{ color: 'var(--text-light)' }}>Would be applied:</small>
+                  <div className="mt-2">
+                    <small className="text-slate-500">Would be applied:</small>
                     <KeyBadges keys={testResult.appliedKeys} tone="secret" />
                   </div>
                   {testResult.ignoredKeys.length > 0 && (
-                    <div style={{ marginTop: 8 }}>
-                      <small style={{ color: 'var(--text-light)' }}>Would be ignored:</small>
+                    <div className="mt-2">
+                      <small className="text-slate-500">Would be ignored:</small>
                       <KeyBadges keys={testResult.ignoredKeys} tone="warn" />
                     </div>
                   )}
                 </div>
               )}
 
-              <details style={{ marginTop: 16 }}>
-                <summary style={{ cursor: 'pointer' }}>How to enable</summary>
-                <p style={{ color: 'var(--text-light)', lineHeight: 1.7 }}>
+              <details className="mt-4">
+                <summary className="cursor-pointer">How to enable</summary>
+                <p className="leading-relaxed text-slate-500">
                   Enabling is deliberately not an API action. If one click could repoint the
                   application at another secret, a hijacked superadmin session could take over the
                   database. It lives in the server <code>.env</code>, so only someone with SSH can
                   change it.
                 </p>
-                <pre style={{ fontSize: 12, overflowX: 'auto' }}>{`# /opt/eaudit/.env
+                <pre className="overflow-x-auto text-xs">{`# /opt/eaudit/.env
 APP_SECRETS_ENABLED=true
 APP_SECRETS_ARN=arn:aws:secretsmanager:...:secret:eproc/app-AbCdEf
 APP_SECRETS_REGION=ap-southeast-1
 
 # then: pm2 restart eaudit`}</pre>
-                <p style={{ color: 'var(--text-light)', lineHeight: 1.7 }}>
+                <p className="leading-relaxed text-slate-500">
                   The secret must be a JSON object, e.g.{' '}
                   <code>{'{"DATABASE_URL":"postgres://…","JWT_SECRET":"…"}'}</code>. Once enabled,
                   secret values override same-named <code>.env</code> entries, and a failed load

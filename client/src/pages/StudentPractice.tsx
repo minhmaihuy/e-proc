@@ -484,17 +484,17 @@ function StudentPractice() {
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
-        <p>Loading practice exam...</p>
+      <div className="flex min-h-screen items-center justify-center">
+        <p className="loading">Loading practice exam...</p>
       </div>
     );
   }
 
   if (locked) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
-        <div className="card" style={{ textAlign: 'center' }}>
-          <h2 style={{ color: 'var(--danger)' }}>Exam Locked</h2>
+      <div className="flex min-h-screen items-center justify-center p-4">
+        <div className="card max-w-md text-center" role="alert">
+          <h2 className="mb-2 text-xl font-bold text-red-600">Exam Locked</h2>
           <p>You have violated exam rules multiple times.</p>
           <p>Please contact your administrator.</p>
         </div>
@@ -522,12 +522,12 @@ function StudentPractice() {
     };
     const { icon, title, message } = blockedMessages[blockedReason];
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--background)' }}>
-        <div className="card" style={{ textAlign: 'center', maxWidth: 480 }}>
-          <div style={{ fontSize: 64, marginBottom: 16 }}>{icon}</div>
-          <h2 style={{ color: 'var(--danger)', marginBottom: 12 }}>{title}</h2>
-          <p style={{ lineHeight: 1.6, color: 'var(--text)' }}>{message}</p>
-          <p style={{ marginTop: 20, color: 'var(--text-light)', fontSize: 14 }}>Please contact your administrator if you believe this is an error.</p>
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
+        <div className="card max-w-md text-center" role="alert">
+          <div aria-hidden="true" className="mb-4 text-6xl">{icon}</div>
+          <h2 className="mb-3 text-xl font-bold text-red-600">{title}</h2>
+          <p className="leading-relaxed text-slate-700">{message}</p>
+          <p className="mt-5 text-sm text-slate-500">Please contact your administrator if you believe this is an error.</p>
         </div>
       </div>
     );
@@ -535,29 +535,44 @@ function StudentPractice() {
 
   if (!practice) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+      <div className="flex min-h-screen items-center justify-center">
         <p className="loading">Loading practice exam...</p>
       </div>
     );
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--background)' }}>
-      <div className="exam-timer" style={{ background: timeLeft < 300 ? 'var(--danger)' : 'var(--primary)' }}>
-        {formatTime(timeLeft)}
-      </div>
-
-      <div style={{ maxWidth: 1500, margin: '0 auto', padding: '20px 32px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <h2>{practice.name}</h2>
+    <div className="min-h-screen select-none bg-slate-50 pb-20">
+      {/* Header dinh, cung khuon voi StudentExam de hai trang thi khong lech nhau.
+          Dong ho noi cu dinh vi fixed nen de len noi dung o man hinh hep. */}
+      <div className="sticky top-0 z-40 border-b border-slate-200 bg-white shadow-sm">
+        <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
+          <div className="flex min-w-0 items-center gap-4">
+            <div
+              className={`flex items-center gap-2 rounded-lg px-4 py-2 font-mono text-lg font-bold tracking-wider ${
+                timeLeft < 300
+                  ? 'animate-pulse border border-red-200 bg-red-100 text-red-700'
+                  : 'bg-slate-900 text-white shadow-md'
+              }`}
+            >
+              <svg className="h-5 w-5 opacity-80" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              {formatTime(timeLeft)}
+            </div>
+            <h1 className="truncate text-lg font-semibold text-slate-900">{practice.name}</h1>
+          </div>
           <button
             onClick={() => handleSubmit()}
             disabled={submitting}
-            className="btn btn-primary"
+            className="btn btn-primary shrink-0"
           >
             {submitting ? 'Submitting...' : 'Submit Exam'}
           </button>
         </div>
+      </div>
+
+      <div className="mx-auto max-w-[1500px] px-4 py-5 sm:px-6 lg:px-8">
 
         {violationCount > 0 && (
           <div className="violation-warning">
@@ -566,7 +581,7 @@ function StudentPractice() {
         )}
 
         {clipboardWarning && (
-          <div className="violation-warning" style={{ marginTop: 12, marginBottom: 12 }}>
+          <div className="violation-warning my-3" role="alert">
             {clipboardWarning}
           </div>
         )}
@@ -582,18 +597,17 @@ function StudentPractice() {
 
           {/* Bài làm — panel phải */}
           <div className="card practice-editor-panel">
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <label style={{ marginBottom: 0 }}>Your Answer:</label>
+            <div className="form-group mb-0">
+              <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                <span className="flex items-center gap-2.5">
+                  <label className="mb-0">Your Answer:</label>
                   {compilerMode === 'lambda' && <span className="status-badge provision-active">AWS Lambda compiler</span>}
                 </span>
                 <button
                   type="button"
                   onClick={handleRun}
                   disabled={running || locked || submitting || !answer.trim()}
-                  className="btn btn-secondary"
-                  style={{ fontSize: 13, padding: '6px 16px' }}
+                  className="btn btn-secondary text-[13px]"
                 >
                   {running ? '⏳ Running...' : '▶ Run Code'}
                 </button>
@@ -619,7 +633,7 @@ function StudentPractice() {
               </Suspense>
 
               {runError && (
-                <p className="error" style={{ marginTop: 10 }}>{runError}</p>
+                <p className="error mt-2.5" role="alert">{runError}</p>
               )}
 
               {runResult && (
@@ -634,14 +648,13 @@ function StudentPractice() {
                             ? '✅ Output'
                             : `⚠️ Exited with code ${runResult.exitCode}`}
                     </strong>
-                    <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                      <span style={{ fontSize: 12, color: 'var(--text-light)' }}>
+                    <span className="flex items-center gap-2.5">
+                      <span className="text-xs font-normal normal-case text-slate-500">
                         {runResult.durationMs}ms · {runResult.runner === 'lambda' ? 'AWS Lambda' : runResult.ranLocally ? 'chạy trên máy bạn' : 'chạy trên server'}
                       </span>
                       <button
                         type="button"
-                        className="btn btn-secondary"
-                        style={{ fontSize: 11, padding: '2px 10px' }}
+                        className="btn btn-secondary px-2.5 py-0.5 text-[11px]"
                         onClick={() => setRunResult(null)}
                       >
                         Close
@@ -660,32 +673,29 @@ function StudentPractice() {
 
       {/* Violation warning modal toast */}
       {violationWarningModal && (
-        <div style={{
-          position: 'fixed', top: 20, left: '50%', transform: 'translateX(-50%)',
-          background: '#fef2f2', border: '2px solid #ef4444', color: '#991b1b',
-          padding: '14px 24px', borderRadius: 10, zIndex: 2000, maxWidth: 560,
-          fontWeight: 600, boxShadow: '0 8px 24px rgba(0,0,0,0.18)'
-        }}>
+        <div
+          role="alert"
+          className="fixed left-1/2 top-5 z-[60] max-w-xl -translate-x-1/2 rounded-xl border-2 border-red-500 bg-red-50 px-6 py-3.5 font-semibold text-red-800 shadow-xl"
+        >
           {violationWarningModal}
         </div>
       )}
 
       {/* Resume notification */}
       {resumeInfo && (
-        <div
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1500
-          }}
-          onClick={() => setResumeInfo(null)}
-        >
-          <div className="card" style={{ maxWidth: 420, textAlign: 'center' }} onClick={e => e.stopPropagation()}>
-            <div style={{ fontSize: 40, marginBottom: 10 }}>🔄</div>
-            <h3 style={{ marginBottom: 8 }}>Exam Resumed</h3>
-            <p style={{ color: 'var(--text-light)', marginBottom: 16 }}>
+        <div className="modal-backdrop" onClick={() => setResumeInfo(null)}>
+          <div
+            className="modal-card max-w-sm text-center"
+            role="dialog"
+            aria-modal="true"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div aria-hidden="true" className="mb-2.5 text-4xl">🔄</div>
+            <h2 className="mb-2 text-lg font-semibold text-slate-900">Exam Resumed</h2>
+            <p className="mb-4 text-slate-500">
               Your session has been restored. Time remaining: <strong>{formatTime(resumeInfo.timeLeft)}</strong>
             </p>
-            <button className="btn btn-primary" style={{ width: '100%' }} onClick={() => setResumeInfo(null)}>
+            <button className="btn btn-primary w-full" autoFocus onClick={() => setResumeInfo(null)}>
               Continue
             </button>
           </div>

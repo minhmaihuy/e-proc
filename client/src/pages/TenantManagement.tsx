@@ -356,12 +356,14 @@ function TenantManagement() {
                   <label className="field"><span>Root volume (GiB)</span><input type="number" min={8} max={100} value={form.root_volume_size} onChange={(event) => handleConfigChange('root_volume_size', Number(event.target.value))} /></label>
                   <div className="field field-wide">
                     <span>Screen recording</span>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center', paddingTop: 4 }}>
+                    <div className="flex flex-wrap items-center gap-4 pt-1">
                       {(['local', 's3'] as const).map((mode) => {
                         const current = (form.allowed_record_modes || 'none').split(',').map((m) => m.trim());
                         const checked = current.includes(mode);
                         return (
-                          <label key={mode} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400 }}>
+                          // checkbox-field cần thiết ở đây: quy tắc `input` chung đặt w-full,
+                          // nên ô tick trần sẽ giãn hết chiều ngang và trông như thanh xám.
+                          <label key={mode} className="checkbox-field font-normal">
                             <input
                               type="checkbox"
                               checked={checked}
@@ -379,7 +381,7 @@ function TenantManagement() {
                         );
                       })}
                     </div>
-                    <small style={{ color: 'var(--text-light)' }}>
+                    <small className="text-slate-500">
                       Tenant admin chỉ chọn được các chế độ đã bật ở đây khi tạo đợt thi. Không bật gì
                       nghĩa là tenant chỉ được thi không ghi màn hình.
                     </small>
@@ -434,11 +436,11 @@ function TenantManagement() {
                     {issueLoading ? 'Loading...' : 'Refresh logs'}
                   </button>
                 </div>
-                <p style={{ color: 'var(--text-light)' }}>
+                <p className="text-slate-500">
                   Superadmin can observe safe operational failures for this tenant but cannot resolve or delete them. Tenant administrators retain issue ownership.
                 </p>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
-                  <label className="field" style={{ minWidth: 180 }}>
+                <div className="mb-4 flex flex-wrap items-end gap-3">
+                  <label className="field min-w-[11rem]">
                     <span>Status</span>
                     <select value={issueStatus} onChange={(event) => setIssueStatus(event.target.value as typeof issueStatus)}>
                       <option value="">All</option>
@@ -447,7 +449,7 @@ function TenantManagement() {
                       <option value="archived">Archived</option>
                     </select>
                   </label>
-                  <label className="field" style={{ minWidth: 180 }}>
+                  <label className="field min-w-[11rem]">
                     <span>Severity</span>
                     <select value={issueSeverity} onChange={(event) => setIssueSeverity(event.target.value as typeof issueSeverity)}>
                       <option value="">All</option>
@@ -458,7 +460,7 @@ function TenantManagement() {
                   </label>
                 </div>
                 {issueError && <div className="notice notice-error" role="alert">{issueError}</div>}
-                <div style={{ overflowX: 'auto' }}>
+                <div className="overflow-x-auto">
                   <table>
                     <thead>
                       <tr><th>Time</th><th>Severity</th><th>Issue</th><th>Request</th><th>Status</th></tr>
@@ -466,12 +468,12 @@ function TenantManagement() {
                     <tbody>
                       {issues.map((issue) => (
                         <tr key={issue.id}>
-                          <td style={{ whiteSpace: 'nowrap' }}>{new Date(issue.created_at).toLocaleString()}</td>
+                          <td className="whitespace-nowrap align-top text-slate-600">{new Date(issue.created_at).toLocaleString()}</td>
                           <td><strong>{issue.severity.toUpperCase()}</strong></td>
                           <td>
                             <div><code>{issue.code}</code> · {issue.source}</div>
-                            <div style={{ maxWidth: 420, overflowWrap: 'anywhere' }}>{issue.message}</div>
-                            <small style={{ color: 'var(--text-light)' }}>Request ID: {issue.request_id || 'n/a'}</small>
+                            <div className="max-w-md break-words text-slate-800">{issue.message}</div>
+                            <small className="text-slate-500">Request ID: {issue.request_id || 'n/a'}</small>
                             {issue.metadata && <details><summary>Safe metadata</summary><pre>{JSON.stringify(issue.metadata, null, 2)}</pre></details>}
                           </td>
                           <td><code>{issue.http_method || '-'} {issue.request_path || '-'}</code><div>{issue.http_status || '-'}</div></td>
@@ -479,9 +481,9 @@ function TenantManagement() {
                         </tr>
                       ))}
                       {!issueLoading && !issueError && issues.length === 0 && (
-                        <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-light)' }}>No issues match these filters.</td></tr>
+                        <tr><td colSpan={5} className="py-10 text-center text-slate-500">No issues match these filters.</td></tr>
                       )}
-                      {issueLoading && <tr><td colSpan={5} style={{ textAlign: 'center' }}>Loading tenant log database...</td></tr>}
+                      {issueLoading && <tr><td colSpan={5} className="py-10 text-center text-slate-500">Loading tenant log database…</td></tr>}
                     </tbody>
                   </table>
                 </div>

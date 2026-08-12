@@ -639,22 +639,15 @@ function BatchManagement() {
     value: BlueprintMode;
     onChange: (m: BlueprintMode) => void;
   }) => (
-    <div style={{ display: 'flex', gap: 0, marginBottom: 16, border: '1.5px solid #6366f1', borderRadius: 8, overflow: 'hidden', width: 'fit-content' }}>
+    <div className="mb-4 flex w-fit overflow-hidden rounded-lg border-[1.5px] border-indigo-500">
       {(['module', 'type'] as BlueprintMode[]).map(mode => (
         <button
           key={mode}
           type="button"
           onClick={() => onChange(mode)}
-          style={{
-            padding: '7px 22px',
-            fontSize: 13,
-            fontWeight: 600,
-            border: 'none',
-            cursor: 'pointer',
-            background: value === mode ? '#6366f1' : '#f5f3ff',
-            color: value === mode ? '#fff' : '#6366f1',
-            transition: 'background 0.18s, color 0.18s',
-          }}
+          className={`cursor-pointer border-none px-[22px] py-[7px] text-[13px] font-semibold transition-colors ${
+            value === mode ? 'bg-indigo-500 text-white' : 'bg-violet-50 text-indigo-500'
+          }`}
         >
           {mode === 'module' ? '🗂 By Module' : '🏷 By Type'}
         </button>
@@ -666,38 +659,32 @@ function BatchManagement() {
   const QuestionBankStatsPanel = () => {
     if (moduleStats.length === 0) return null;
     return (
-      <div style={{
-        marginBottom: 20,
-        padding: '14px 18px',
-        background: 'linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%)',
-        border: '1px solid #93c5fd',
-        borderRadius: 10,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-          <span style={{ fontSize: 18 }}>📊</span>
-          <strong style={{ color: '#1e40af', fontSize: 14 }}>Question Bank – By Module</strong>
-          <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 4 }}>
+      <div className="mb-5 rounded-[10px] border border-blue-300 bg-gradient-to-br from-blue-50 to-green-50 px-[18px] py-3.5">
+        <div className="mb-3 flex items-center gap-2">
+          <span className="text-lg">📊</span>
+          <strong className="text-sm text-blue-800">Question Bank – By Module</strong>
+          <span className="ml-1 text-xs text-slate-500">
             — Available question counts by Module
           </span>
         </div>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <table className="w-full border-collapse text-[13px]">
           <thead>
-            <tr style={{ background: 'rgba(59,130,246,0.1)' }}>
-              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#1e3a5f' }}>Module</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#15803d' }}>🟢 Easy</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b45309' }}>🟡 Medium</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b91c1c' }}>🔴 Hard</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#374151' }}>Total</th>
+            <tr className="bg-blue-500/10">
+              <th className="px-2.5 py-1.5 text-left text-slate-800">Module</th>
+              <th className="px-2.5 py-1.5 text-center text-green-700">🟢 Easy</th>
+              <th className="px-2.5 py-1.5 text-center text-amber-700">🟡 Medium</th>
+              <th className="px-2.5 py-1.5 text-center text-red-700">🔴 Hard</th>
+              <th className="px-2.5 py-1.5 text-center text-slate-700">Total</th>
             </tr>
           </thead>
           <tbody>
             {moduleStats.map((stat, i) => (
-              <tr key={stat.module} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.5)', borderTop: '1px solid #e5e7eb' }}>
-                <td style={{ padding: '5px 10px', fontWeight: 500, color: '#1f2937' }}>{stat.module}</td>
-                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#166534', fontWeight: 600 }}>{stat.easy}</td>
-                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#92400e', fontWeight: 600 }}>{stat.medium}</td>
-                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#991b1b', fontWeight: 600 }}>{stat.hard}</td>
-                <td style={{ padding: '5px 10px', textAlign: 'center', color: '#374151', fontWeight: 700 }}>
+              <tr key={stat.module} className={`border-t border-slate-200 ${i % 2 === 0 ? '' : 'bg-white/50'}`}>
+                <td className="px-2.5 py-1 font-medium text-slate-800">{stat.module}</td>
+                <td className="px-2.5 py-1 text-center font-semibold text-green-800">{stat.easy}</td>
+                <td className="px-2.5 py-1 text-center font-semibold text-amber-800">{stat.medium}</td>
+                <td className="px-2.5 py-1 text-center font-semibold text-red-800">{stat.hard}</td>
+                <td className="px-2.5 py-1 text-center font-bold text-slate-700">
                   {stat.easy + stat.medium + stat.hard}
                 </td>
               </tr>
@@ -718,45 +705,39 @@ function BatchManagement() {
       return acc;
     }, {});
     return (
-      <div style={{
-        marginBottom: 20,
-        padding: '14px 18px',
-        background: 'linear-gradient(135deg, #faf5ff 0%, #f0fdf4 100%)',
-        border: '1px solid #c4b5fd',
-        borderRadius: 10,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-          <span style={{ fontSize: 18 }}>🏷</span>
-          <strong style={{ color: '#6d28d9', fontSize: 14 }}>Question Bank – By Module + Type</strong>
-          <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 4 }}>
+      <div className="mb-5 rounded-[10px] border border-violet-300 bg-gradient-to-br from-violet-50 to-green-50 px-[18px] py-3.5">
+        <div className="mb-3 flex items-center gap-2">
+          <span className="text-lg">🏷</span>
+          <strong className="text-sm text-violet-700">Question Bank – By Module + Type</strong>
+          <span className="ml-1 text-xs text-slate-500">
             — Available question counts by Module × Type
           </span>
         </div>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <table className="w-full border-collapse text-[13px]">
           <thead>
-            <tr style={{ background: 'rgba(139,92,246,0.1)' }}>
-              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Module</th>
-              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#4c1d95' }}>Type</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#15803d' }}>🟢 Easy</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b45309' }}>🟡 Medium</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#b91c1c' }}>🔴 Hard</th>
-              <th style={{ padding: '6px 10px', textAlign: 'center', color: '#374151' }}>Total</th>
+            <tr className="bg-violet-500/10">
+              <th className="px-2.5 py-1.5 text-left text-violet-900">Module</th>
+              <th className="px-2.5 py-1.5 text-left text-violet-900">Type</th>
+              <th className="px-2.5 py-1.5 text-center text-green-700">🟢 Easy</th>
+              <th className="px-2.5 py-1.5 text-center text-amber-700">🟡 Medium</th>
+              <th className="px-2.5 py-1.5 text-center text-red-700">🔴 Hard</th>
+              <th className="px-2.5 py-1.5 text-center text-slate-700">Total</th>
             </tr>
           </thead>
           <tbody>
             {Object.entries(grouped).map(([mod, stats]) =>
               stats.map((stat, i) => (
-                <tr key={`${mod}-${stat.type}`} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.5)', borderTop: '1px solid #e5e7eb' }}>
+                <tr key={`${mod}-${stat.type}`} className={`border-t border-slate-200 ${i % 2 === 0 ? '' : 'bg-white/50'}`}>
                   {i === 0 && (
-                    <td rowSpan={stats.length} style={{ padding: '5px 10px', fontWeight: 600, color: '#1f2937', verticalAlign: 'top', borderRight: '1px solid #e5e7eb' }}>
+                    <td rowSpan={stats.length} className="border-r border-slate-200 px-2.5 py-1 align-top font-semibold text-slate-800">
                       {mod}
                     </td>
                   )}
-                  <td style={{ padding: '5px 10px', color: '#374151' }}>{typeEmoji[stat.type] || '❓'} {stat.type}</td>
-                  <td style={{ padding: '5px 10px', textAlign: 'center', color: '#166534', fontWeight: 600 }}>{stat.easy}</td>
-                  <td style={{ padding: '5px 10px', textAlign: 'center', color: '#92400e', fontWeight: 600 }}>{stat.medium}</td>
-                  <td style={{ padding: '5px 10px', textAlign: 'center', color: '#991b1b', fontWeight: 600 }}>{stat.hard}</td>
-                  <td style={{ padding: '5px 10px', textAlign: 'center', color: '#374151', fontWeight: 700 }}>
+                  <td className="px-2.5 py-1 text-slate-700">{typeEmoji[stat.type] || '❓'} {stat.type}</td>
+                  <td className="px-2.5 py-1 text-center font-semibold text-green-800">{stat.easy}</td>
+                  <td className="px-2.5 py-1 text-center font-semibold text-amber-800">{stat.medium}</td>
+                  <td className="px-2.5 py-1 text-center font-semibold text-red-800">{stat.hard}</td>
+                  <td className="px-2.5 py-1 text-center font-bold text-slate-700">
                     {stat.easy + stat.medium + stat.hard}
                   </td>
                 </tr>
@@ -780,27 +761,21 @@ function BatchManagement() {
   }) => {
     const exceeded = value > max;
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+      <div className="flex flex-col items-center gap-0.5">
         <input
           type="number"
           min={0}
           max={max}
           value={value}
           onChange={e => onChange(e.target.value)}
-          style={{
-            width: 70,
-            padding: '6px 8px',
-            border: exceeded ? '2px solid #ef4444' : '1px solid #d1d5db',
-            borderRadius: 6,
-            background: exceeded ? '#fef2f2' : 'white',
-            color: exceeded ? '#b91c1c' : '#111827',
-            fontWeight: exceeded ? 700 : 400,
-            textAlign: 'center',
-            outline: 'none',
-          }}
+          className={`w-[70px] rounded-md px-2 py-1.5 text-center outline-none ${
+            exceeded
+              ? 'border-2 border-red-500 bg-red-50 font-bold text-red-700'
+              : 'border border-slate-300 bg-white font-normal text-slate-900'
+          }`}
         />
         {exceeded && (
-          <span style={{ fontSize: 10, color: '#ef4444', whiteSpace: 'nowrap' }}>
+          <span className="whitespace-nowrap text-[10px] text-red-500">
             ⚠️ Max: {max}
           </span>
         )}
@@ -980,7 +955,6 @@ function BatchManagement() {
                             <select
                               name={`module_${index}`}
                               id={`module_${index}`}
-                              style={{ width: '100%', padding: '8px' }}
                               value={comboKey(item.module, item.question_group || '')}
                               onChange={e => {
                                 const d = decodeComboKey(e.target.value);
@@ -993,7 +967,7 @@ function BatchManagement() {
                                 </option>
                               ))}
                             </select>
-                            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4, paddingLeft: 2 }}>
+                            <div className="mt-1 pl-0.5 text-[11px] text-slate-500">
                               Available: {stats.easy}E / {stats.medium}M / {stats.hard}H
                             </div>
                           </td>
@@ -1006,11 +980,11 @@ function BatchManagement() {
                           <td>
                             <ValidatedInput value={item.hard} max={stats.hard} onChange={v => updateBlueprint(index, 'hard', v)} />
                           </td>
-                          <td style={{ textAlign: 'center', fontWeight: 600 }}>
+                          <td className="text-center font-semibold">
                             {Number(item.easy) + Number(item.medium) + Number(item.hard)}
                           </td>
                           <td>
-                            <button type="button" onClick={() => removeBlueprintRow(index)} className="btn btn-danger" style={{ padding: '5px 10px', fontSize: 12 }}>
+                            <button type="button" onClick={() => removeBlueprintRow(index)} className="btn btn-danger px-2.5 py-1 text-xs">
                               Remove
                             </button>
                           </td>
@@ -1019,7 +993,7 @@ function BatchManagement() {
                     })}
                   </tbody>
                 </table>
-                <button type="button" onClick={addBlueprintRow} className="btn btn-secondary" style={{ marginTop: 10 }}>
+                <button type="button" onClick={addBlueprintRow} className="btn btn-secondary mt-2.5">
                   + Add Module
                 </button>
               </>
@@ -1049,9 +1023,8 @@ function BatchManagement() {
                         .map(i => `${i.module}||${i.type}`);
                       return (
                         <tr key={item.rowId ?? index}>
-                          <td style={{ minWidth: 140 }}>
+                          <td className="min-w-[8.75rem]">
                             <select
-                              style={{ width: '100%', padding: '8px' }}
                               value={comboKey(item.module, item.question_group || '')}
                               onChange={e => {
                                 const d = decodeComboKey(e.target.value);
@@ -1065,9 +1038,8 @@ function BatchManagement() {
                               ))}
                             </select>
                           </td>
-                          <td style={{ minWidth: 120 }}>
+                          <td className="min-w-[7.5rem]">
                             <select
-                              style={{ width: '100%', padding: '8px' }}
                               value={item.type}
                               onChange={e => updateTypeBlueprint(index, 'type', e.target.value as QuestionType)}
                             >
@@ -1081,7 +1053,7 @@ function BatchManagement() {
                                 );
                               })}
                             </select>
-                            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4, paddingLeft: 2 }}>
+                            <div className="mt-1 pl-0.5 text-[11px] text-slate-500">
                               Available: {stats.easy}E / {stats.medium}M / {stats.hard}H
                             </div>
                           </td>
@@ -1094,11 +1066,11 @@ function BatchManagement() {
                           <td>
                             <ValidatedInput value={item.hard} max={stats.hard} onChange={v => updateTypeBlueprint(index, 'hard', v)} />
                           </td>
-                          <td style={{ textAlign: 'center', fontWeight: 600 }}>
+                          <td className="text-center font-semibold">
                             {Number(item.easy) + Number(item.medium) + Number(item.hard)}
                           </td>
                           <td>
-                            <button type="button" onClick={() => removeTypeBlueprintRow(index)} className="btn btn-danger" style={{ padding: '5px 10px', fontSize: 12 }}>
+                            <button type="button" onClick={() => removeTypeBlueprintRow(index)} className="btn btn-danger px-2.5 py-1 text-xs">
                               Remove
                             </button>
                           </td>
@@ -1111,8 +1083,7 @@ function BatchManagement() {
                   type="button"
                   onClick={addTypeBlueprintRow}
                   disabled={!nextAvailableModuleType}
-                  className="btn btn-secondary"
-                  style={{ marginTop: 10 }}
+                  className="btn btn-secondary mt-2.5"
                   title={!nextAvailableModuleType ? 'All combinations have been added' : ''}
                 >
                   + Add Module / Type

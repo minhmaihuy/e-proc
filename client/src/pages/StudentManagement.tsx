@@ -121,8 +121,7 @@ function StudentManagement() {
                   value={emails}
                   onChange={e => setEmails(e.target.value)}
                   placeholder="student1@example.com&#10;student2@example.com&#10;student3@example.com"
-                  className="block w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:ring-2 focus:ring-blue-500 text-sm resize-y font-mono"
-                  style={{ minHeight: '160px' }}
+                  className="block min-h-40 w-full resize-y rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-sm text-slate-900 focus:ring-2 focus:ring-blue-500"
                 />
               </div>
               
