@@ -15,8 +15,50 @@ console.log('[DB] DATABASE_URL:', process.env.DATABASE_URL ? 'present' : 'MISSIN
 
 let pgPool: pg.Pool | null = null;
 let sqliteDb: Database.Database | null = null;
+let sqliteTransactionTail: Promise<void> = Promise.resolve();
 
 const { Pool } = pg;
+
+/** Idempotent assessment-plane migration kept separately so legacy SQLite data can be regression-tested. */
+export function ensureEmailUsageTablesSqlite(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS email_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      dedupe_key TEXT UNIQUE NOT NULL,
+      template TEXT NOT NULL,
+      recipient TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      error_code TEXT,
+      sent_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS email_suppressions (
+      recipient TEXT PRIMARY KEY,
+      reason TEXT NOT NULL,
+      provider_event_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS usage_outbox (
+      event_key TEXT PRIMARY KEY,
+      metric TEXT NOT NULL,
+      amount REAL NOT NULL,
+      occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  const usageOutboxColumns = (database.prepare("PRAGMA table_info(usage_outbox)").all() as { name: string }[])
+    .map((column) => column.name);
+  if (!usageOutboxColumns.includes('occurred_at')) {
+    database.exec('ALTER TABLE usage_outbox ADD COLUMN occurred_at DATETIME');
+    database.exec('UPDATE usage_outbox SET occurred_at = COALESCE(created_at, CURRENT_TIMESTAMP) WHERE occurred_at IS NULL');
+  }
+}
 
 async function initPostgres() {
   console.log('[DB] Attempting PostgreSQL connection...');
@@ -372,6 +414,46 @@ await client.query(`
     await client.query(`ALTER TABLE ai_queue ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'exam'`);
   } catch (_) { /* already exists */ }
   console.log('[DB] ai_queue ready');
+
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS email_queue (
+      id SERIAL PRIMARY KEY,
+      dedupe_key VARCHAR(180) UNIQUE NOT NULL,
+      template VARCHAR(40) NOT NULL,
+      recipient VARCHAR(254) NOT NULL,
+      payload_json TEXT NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      error_code VARCHAR(64),
+      sent_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS email_suppressions (
+      recipient VARCHAR(254) PRIMARY KEY,
+      reason VARCHAR(24) NOT NULL,
+      provider_event_id VARCHAR(180),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS usage_outbox (
+      event_key VARCHAR(180) PRIMARY KEY,
+      metric VARCHAR(32) NOT NULL,
+      amount NUMERIC NOT NULL,
+      occurred_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await client.query('ALTER TABLE usage_outbox ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMP');
+  await client.query('UPDATE usage_outbox SET occurred_at = COALESCE(created_at, CURRENT_TIMESTAMP) WHERE occurred_at IS NULL');
+  await client.query('ALTER TABLE usage_outbox ALTER COLUMN occurred_at SET DEFAULT CURRENT_TIMESTAMP');
+  await client.query('ALTER TABLE usage_outbox ALTER COLUMN occurred_at SET NOT NULL');
   
   await client.query(`
     CREATE TABLE IF NOT EXISTS admin_users (
@@ -611,6 +693,8 @@ function initSqlite() {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    ensureEmailUsageTablesSqlite(sqliteDb);
     
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS admin_users (
@@ -822,15 +906,22 @@ export async function query(text: string, params?: any[]): Promise<DbResult> {
 /** Run all statements on one physical connection. Required for row locks and atomic exam state changes. */
 export async function withTransaction<T>(work: (tx: DbExecutor) => Promise<T>): Promise<T> {
   if (USE_SQLITE && sqliteDb) {
-    sqliteDb.exec('BEGIN IMMEDIATE');
-    const tx: DbExecutor = { query };
+    const previous = sqliteTransactionTail;
+    let release!: () => void;
+    sqliteTransactionTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    let began = false;
     try {
-      const result = await work(tx);
+      sqliteDb.exec('BEGIN IMMEDIATE');
+      began = true;
+      const result = await work({ query });
       sqliteDb.exec('COMMIT');
       return result;
     } catch (error) {
-      sqliteDb.exec('ROLLBACK');
+      if (began) sqliteDb.exec('ROLLBACK');
       throw error;
+    } finally {
+      release();
     }
   }
 

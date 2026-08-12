@@ -563,6 +563,13 @@ Batches support two blueprint formats for question assignment:
 - Shell tools must translate `sslmode=no-verify` to libpq `require`, must anchor `grep '^DATABASE_URL='`, and must never print connection strings. Backup/restore-check failures append safe system issues to the current tenant log-plane; success timestamps and sizes are stored on the control-plane tenant row for `/tenants`.
 - A green source test is not sufficient by itself: before changing these scripts, temporarily break a pinned invariant, confirm `scripts/backupRestore.test.js` fails, then restore it. A real staging restore remains required before production rollout.
 
+### Email delivery and usage measurement (2026-08-12)
+- Email is tenant-controlled in the control-plane and defaults off: `email_enabled=false`, optional sender name, and a daily safety limit of 200. Only superadmin changes these values at `/tenants`; tenant `admin`/`tenant_admin` may queue batch invitations, reminders, and result notices only after backend tenant-scope checks.
+- Recipient PII, the asynchronous `email_queue`, and bounce/complaint suppressions stay in the assessment data-plane. The queue shares `QUEUE_PROCESS_INTERVAL`, claims a row before calling SES, retries at most three times, never includes attachments, and records a sent event only after SES accepts it.
+- Sending requires `AWS_REGION`, `SES_FROM_EMAIL`, `SES_SNS_TOPIC_ARN`, and `SES_CONFIGURATION_SET`. Each tenant requires its own configuration set, SNS feedback topic, and webhook subscription so recipient PII never crosses assessment planes (see `docs/ses-email-setup.md`); the sender identity may be shared. The SNS webhook verifies the AWS signature and exact configured topic before recording suppressions. Missing provider/event configuration returns 503 without affecting non-email flows.
+- `tenant_usage` and its immutable idempotency ledger live only in the control-plane. The assessment-plane `usage_outbox` durably retries delivery and preserves each event's UTC `occurred_at`, so a July event delivered in August remains July usage; reconciliation uses the original exam/recording/email timestamps. Events measure exam starts, successful AI gradings, recording minutes, successful email sends, and accepted code runs. Duplicate keys never increment twice; retry reconciles the aggregate from the event ledger.
+- Quota limits are nullable and displayed against current-month usage. The product decisions for default plan limits, blocking versus overage, and whether code runs are billable remain open, so current code is measurement-only and must not call quota enforcement from batch creation, exam start, or an in-progress exam.
+
 ## Environment variables
 
 | Variable | Required | Default | Description |
@@ -583,6 +590,9 @@ Batches support two blueprint formats for question assignment:
 | `GEMINI_API_KEY` | No | — | Fallback AI key if `ai_settings` table is empty |
 | `ANSWER_FLUSH_INTERVAL` | No | `5000` | Milliseconds between answer buffer flushes |
 | `QUEUE_PROCESS_INTERVAL` | No | `10000` | Milliseconds between AI queue processing ticks |
+| `SES_FROM_EMAIL` | Email | â€” | Verified shared SES sender address. Email APIs return 503 when absent. |
+| `SES_SNS_TOPIC_ARN` | Email | â€” | Exact SNS topic allowed to report SES bounce/complaint events. Email APIs return 503 when absent. |
+| `SES_CONFIGURATION_SET` | Email | â€” | SES configuration set whose event destination publishes bounce/complaint events to `SES_SNS_TOPIC_ARN`. |
 | `DB_POOL_MAX` | No | `10` | PostgreSQL connection pool max size |
 | `DB_POOL_MIN` | No | `2` | PostgreSQL connection pool min size |
 | `TENANT_SLUG` | No | `fsa-cls` | Current assessment data-plane tenant; takes precedence over `DEFAULT_TENANT_SLUG`. |

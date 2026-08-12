@@ -190,3 +190,60 @@ test('migration backup backfill schema cũ rồi chạy lại không hạ retent
     fs.rmSync(tempDirectory, { recursive: true, force: true });
   }
 });
+
+test('email and quota migration uses safe defaults without losing existing tenants', async () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'eproc-control-email-'));
+  const previousPath = process.env.CONTROL_SQLITE_PATH;
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.CONTROL_SQLITE_PATH = path.join(tempDirectory, 'control.db');
+  process.env.NODE_ENV = 'test';
+  try {
+    await initControlPlaneDatabase();
+    const countBefore = Number((await query('SELECT COUNT(*) AS count FROM tenants')).rows[0].count);
+    await closeControlPlaneDatabase();
+
+    const legacy = new Database(process.env.CONTROL_SQLITE_PATH);
+    for (const column of [
+      'email_enabled', 'email_from_name', 'email_daily_limit', 'quota_exams_per_month',
+      'quota_ai_gradings_per_month', 'quota_recording_gb', 'quota_emails_per_month',
+    ]) legacy.exec(`ALTER TABLE tenants DROP COLUMN ${column}`);
+    legacy.close();
+
+    await initControlPlaneDatabase();
+    const row = (await query(`SELECT email_enabled, email_from_name, email_daily_limit,
+      quota_exams_per_month, quota_ai_gradings_per_month, quota_recording_gb, quota_emails_per_month
+      FROM tenants WHERE slug = 'fsa-cls'`)).rows[0];
+    assert.equal(Boolean(row.email_enabled), false);
+    assert.equal(row.email_from_name, null);
+    assert.equal(Number(row.email_daily_limit), 200);
+    assert.equal(row.quota_exams_per_month, null);
+    assert.equal(row.quota_ai_gradings_per_month, null);
+    assert.equal(row.quota_recording_gb, null);
+    assert.equal(row.quota_emails_per_month, null);
+    assert.equal(Number((await query('SELECT COUNT(*) AS count FROM tenants')).rows[0].count), countBefore);
+    await query(`UPDATE tenants SET email_enabled = ?, email_from_name = ?, email_daily_limit = ?,
+      quota_exams_per_month = ?, quota_ai_gradings_per_month = ?, quota_recording_gb = ?, quota_emails_per_month = ?
+      WHERE slug = 'fsa-cls'`, [true, 'FSA Mail', 350, 1000, 2000, 50.5, 3000]);
+    await closeControlPlaneDatabase();
+
+    await initControlPlaneDatabase();
+    const preserved = (await query(`SELECT email_enabled, email_from_name, email_daily_limit,
+      quota_exams_per_month, quota_ai_gradings_per_month, quota_recording_gb, quota_emails_per_month
+      FROM tenants WHERE slug = 'fsa-cls'`)).rows[0];
+    assert.equal(Boolean(preserved.email_enabled), true);
+    assert.equal(preserved.email_from_name, 'FSA Mail');
+    assert.equal(Number(preserved.email_daily_limit), 350);
+    assert.equal(Number(preserved.quota_exams_per_month), 1000);
+    assert.equal(Number(preserved.quota_ai_gradings_per_month), 2000);
+    assert.equal(Number(preserved.quota_recording_gb), 50.5);
+    assert.equal(Number(preserved.quota_emails_per_month), 3000);
+    assert.equal(Number((await query('SELECT COUNT(*) AS count FROM tenants')).rows[0].count), countBefore);
+  } finally {
+    await closeControlPlaneDatabase();
+    if (previousPath === undefined) delete process.env.CONTROL_SQLITE_PATH;
+    else process.env.CONTROL_SQLITE_PATH = previousPath;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    fs.rmSync(tempDirectory, { recursive: true, force: true });
+  }
+});

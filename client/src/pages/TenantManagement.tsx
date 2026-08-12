@@ -15,6 +15,13 @@ const EMPTY_CONFIG: TenantConfiguration = {
   instance_type: 't3.micro',
   root_volume_size: 12,
   backup_retention_days: 14,
+  email_enabled: false,
+  email_from_name: '',
+  email_daily_limit: 200,
+  quota_exams_per_month: null,
+  quota_ai_gradings_per_month: null,
+  quota_recording_gb: null,
+  quota_emails_per_month: null,
   allowed_record_modes: 'none',
   compiler_enabled: false,
   compiler_memory_mb: 512,
@@ -55,6 +62,13 @@ function configFromTenant(tenant: Tenant): TenantConfiguration {
     instance_type: tenant.instance_type,
     root_volume_size: Number(tenant.root_volume_size),
     backup_retention_days: Number(tenant.backup_retention_days || 14),
+    email_enabled: Boolean(tenant.email_enabled),
+    email_from_name: tenant.email_from_name || '',
+    email_daily_limit: Number(tenant.email_daily_limit || 200),
+    quota_exams_per_month: tenant.quota_exams_per_month == null ? null : Number(tenant.quota_exams_per_month),
+    quota_ai_gradings_per_month: tenant.quota_ai_gradings_per_month == null ? null : Number(tenant.quota_ai_gradings_per_month),
+    quota_recording_gb: tenant.quota_recording_gb == null ? null : Number(tenant.quota_recording_gb),
+    quota_emails_per_month: tenant.quota_emails_per_month == null ? null : Number(tenant.quota_emails_per_month),
     allowed_record_modes: tenant.allowed_record_modes || 'none',
     compiler_enabled: Boolean(tenant.compiler_enabled),
     compiler_memory_mb: Number(tenant.compiler_memory_mb || 512),
@@ -70,6 +84,22 @@ function configFromTenant(tenant: Tenant): TenantConfiguration {
 
 function statusLabel(status: string): string {
   return status.replace(/_/g, ' ').replace(/\b\w/g, (letter: string) => letter.toUpperCase());
+}
+
+function UsageMeter({ label, used, limit }: { label: string; used: number; limit: number | null | undefined }) {
+  const ratio = limit == null ? 0 : Math.min(100, (used / limit) * 100);
+  const state = limit == null ? 'Unlimited'
+    : used >= limit ? 'Over configured limit (measurement only)'
+      : ratio >= 80 ? 'Approaching configured limit'
+        : `${ratio.toFixed(0)}% used`;
+  return (
+    <div className="field">
+      <span>{label}</span>
+      <strong>{used.toLocaleString()} / {limit == null ? 'Unlimited' : limit.toLocaleString()}</strong>
+      {limit != null && <progress max={100} value={ratio} aria-label={`${label}: ${ratio.toFixed(0)}%`} />}
+      <small>{state}</small>
+    </div>
+  );
 }
 
 function tenantApplicationUrl(tenant: Tenant): string {
@@ -180,11 +210,11 @@ function TenantManagement() {
     setSuccess('');
   };
 
-  const handleConfigChange = (field: keyof TenantConfiguration, value: string | number | boolean) => {
+  const handleConfigChange = (field: keyof TenantConfiguration, value: string | number | boolean | null) => {
     setForm((current) => ({ ...current, [field]: value }));
   };
 
-  const handleCreateChange = (field: keyof CreateTenantForm, value: string | number | boolean) => {
+  const handleCreateChange = (field: keyof CreateTenantForm, value: string | number | boolean | null) => {
     setCreateForm((current) => {
       if (field !== 'slug' || typeof value !== 'string') return { ...current, [field]: value };
       return { ...current, slug: value, domain_name: domainForTenantSlug(value) };
@@ -357,6 +387,13 @@ function TenantManagement() {
                   <label className="field"><span>Instance type</span><select value={form.instance_type} onChange={(event) => handleConfigChange('instance_type', event.target.value)}>{INSTANCE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
                   <label className="field"><span>Root volume (GiB)</span><input type="number" min={8} max={100} value={form.root_volume_size} onChange={(event) => handleConfigChange('root_volume_size', Number(event.target.value))} /></label>
                   <label className="field"><span>Backup retention (days)</span><input type="number" min={1} max={35} value={form.backup_retention_days} onChange={(event) => handleConfigChange('backup_retention_days', Number(event.target.value))} /><small>Backups are always enabled. The current default is 14 days.</small></label>
+                  <label className="field checkbox-field"><span>Email delivery</span><span><input type="checkbox" checked={form.email_enabled} onChange={(event) => handleConfigChange('email_enabled', event.target.checked)} /> Allow this tenant to queue SES email</span><small>Disabled by default to protect the shared sender reputation.</small></label>
+                  <label className="field"><span>Email sender name</span><input maxLength={160} value={form.email_from_name || ''} onChange={(event) => handleConfigChange('email_from_name', event.target.value)} placeholder={form.name || 'Tenant name'} /></label>
+                  <label className="field"><span>Daily email safety limit</span><input type="number" min={1} max={50000} value={form.email_daily_limit} onChange={(event) => handleConfigChange('email_daily_limit', Number(event.target.value))} /></label>
+                  <label className="field"><span>Monthly exam quota</span><input type="number" min={1} value={form.quota_exams_per_month ?? ''} placeholder="Unlimited" onChange={(event) => handleConfigChange('quota_exams_per_month', event.target.value === '' ? null : Number(event.target.value))} /><small>Measurement only; currently does not block.</small></label>
+                  <label className="field"><span>Monthly AI grading quota</span><input type="number" min={1} value={form.quota_ai_gradings_per_month ?? ''} placeholder="Unlimited" onChange={(event) => handleConfigChange('quota_ai_gradings_per_month', event.target.value === '' ? null : Number(event.target.value))} /><small>Measurement only; currently does not block.</small></label>
+                  <label className="field"><span>Recording quota (GB)</span><input type="number" min={0.01} step={0.01} value={form.quota_recording_gb ?? ''} placeholder="Unlimited" onChange={(event) => handleConfigChange('quota_recording_gb', event.target.value === '' ? null : Number(event.target.value))} /><small>Configured for future enforcement; usage is currently measured in minutes.</small></label>
+                  <label className="field"><span>Monthly email quota</span><input type="number" min={1} value={form.quota_emails_per_month ?? ''} placeholder="Unlimited" onChange={(event) => handleConfigChange('quota_emails_per_month', event.target.value === '' ? null : Number(event.target.value))} /><small>Measurement only; daily safety limit still applies.</small></label>
                   <div className="field field-wide">
                     <span>Screen recording</span>
                     <div className="flex flex-wrap items-center gap-4 pt-1">
@@ -404,6 +441,17 @@ function TenantManagement() {
                   <button className="btn btn-primary" type="submit" disabled={saving || ['planning', 'applying'].includes(selectedTenant.provision_status)}>{saving ? 'Saving...' : 'Save configuration'}</button>
                 </div>
               </form>
+
+              <section className="provision-card" aria-labelledby="tenant-usage-heading">
+                <div className="section-heading"><div><span className="eyebrow">CURRENT MONTH</span><h3 id="tenant-usage-heading">Measured usage</h3></div><small>Informational only — quota blocking is not enabled</small></div>
+                <div className="form-grid">
+                  <UsageMeter label="Exams started" used={Number(selectedTenant.usage_exams_started || 0)} limit={selectedTenant.quota_exams_per_month} />
+                  <UsageMeter label="AI gradings" used={Number(selectedTenant.usage_ai_gradings || 0)} limit={selectedTenant.quota_ai_gradings_per_month} />
+                  <UsageMeter label="Emails sent" used={Number(selectedTenant.usage_emails_sent || 0)} limit={selectedTenant.quota_emails_per_month} />
+                  <div className="field"><span>Recording measured</span><strong>{Number(selectedTenant.usage_recording_minutes || 0).toFixed(1)} minutes</strong><small>Configured storage quota: {selectedTenant.quota_recording_gb == null ? 'Unlimited' : `${selectedTenant.quota_recording_gb} GB`}</small></div>
+                  <div className="field"><span>Code runs tracked</span><strong>{Number(selectedTenant.usage_code_runs || 0).toLocaleString()}</strong><small>No code-run quota decision has been made.</small></div>
+                </div>
+              </section>
 
               <section className="provision-card">
                 <div className="section-heading"><div><span className="eyebrow">INFRASTRUCTURE</span><h3>Terraform deployment</h3></div>{latestJob && <span className={`status-badge job-${latestJob.status}`}>{statusLabel(latestJob.status)}</span>}</div>

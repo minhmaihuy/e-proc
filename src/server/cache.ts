@@ -476,14 +476,21 @@ Provide a JSON response with "score" (0-10) and "feedback" (detailed feedback):
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
-          
-          await query(`UPDATE ${targetTable} SET ai_score = ?, ai_feedback = ? WHERE id = ?`, 
-            [parsed.score, parsed.feedback, job.examQuestionId]);
-          
           job.status = 'completed';
           job.result = { score: parsed.score, feedback: parsed.feedback };
           job.updatedAt = Date.now();
-          await this.updateQueueInDB(job);
+          const { withTransaction } = await import('../server/db/postgres.js');
+          await withTransaction(async (tx) => {
+            await tx.query(`UPDATE ${targetTable} SET ai_score = ?, ai_feedback = ? WHERE id = ?`,
+              [parsed.score, parsed.feedback, job.examQuestionId]);
+            await tx.query(
+              `INSERT INTO usage_outbox (event_key, metric, amount, occurred_at) VALUES (?, ?, ?, ?)
+               ON CONFLICT (event_key) DO NOTHING`,
+              [`ai-grading:${job.kind}:${job.examQuestionId}`, 'ai_gradings', 1, new Date(job.updatedAt).toISOString()],
+            );
+            await tx.query('UPDATE ai_queue SET status = ?, attempts = ?, updated_at = ? WHERE id = ?',
+              [job.status, job.attempts, new Date(job.updatedAt).toISOString(), parseInt(job.id.replace('job_', ''))]);
+          });
           console.log(`[Queue] Job ${job.id} completed: Score ${parsed.score}`);
         } else {
           throw new Error('No JSON in AI response: ' + text.substring(0, 100));
@@ -516,6 +523,10 @@ Provide a JSON response with "score" (0-10) and "feedback" (detailed feedback):
     const interval = parseInt(process.env.QUEUE_PROCESS_INTERVAL || '10000');
     this.queueFlushInterval = setInterval(async () => {
       await this.processQueue(5).catch(console.error);
+      const { processEmailQueue } = await import('./services/emailDelivery.js');
+      await processEmailQueue(5).catch(error => console.error('[Email] Queue tick failed', error));
+      const { processUsageOutbox } = await import('./services/usageOutbox.js');
+      await processUsageOutbox(50).catch(error => console.error('[Usage] Outbox tick failed', error));
     }, interval);
   }
 

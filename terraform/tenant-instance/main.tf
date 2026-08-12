@@ -181,6 +181,11 @@ resource "aws_iam_role_policy" "runtime" {
         Resource = "${aws_s3_bucket.backup.arn}/backups/${var.tenant_slug}/*"
       },
       {
+        Effect   = "Allow"
+        Action   = ["ses:SendEmail"]
+        Resource = "*"
+      },
+      {
         Effect = "Allow"
         Action = [
           "ssm:UpdateInstanceInformation",

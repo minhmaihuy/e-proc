@@ -17,6 +17,9 @@ export interface AdminUser {
    * giữa hai plane) — đọc giá trị này thay vì mở kết nối chéo.
    */
   allowedRecordModes?: RecordMode[];
+  emailEnabled?: boolean;
+  emailFromName?: string | null;
+  emailDailyLimit?: number;
 }
 
 // Extend Express Request type
@@ -57,7 +60,10 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
     const result = await db.query(
       `SELECT u.id, u.username, u.role, u.tenant_id, t.slug AS tenant_slug,
               t.name AS tenant_name, t.status AS tenant_status,
-              t.allowed_record_modes AS tenant_allowed_record_modes
+              t.allowed_record_modes AS tenant_allowed_record_modes,
+              t.email_enabled AS tenant_email_enabled,
+              t.email_from_name AS tenant_email_from_name,
+              t.email_daily_limit AS tenant_email_daily_limit
        FROM admin_users u LEFT JOIN tenants t ON t.id = u.tenant_id
        WHERE u.id = ?`,
       [payload.id],
@@ -92,6 +98,9 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       allowedRecordModes: isSuperAdmin
         ? undefined
         : parseAllowedRecordModes(current.tenant_allowed_record_modes),
+      emailEnabled: isSuperAdmin ? undefined : Boolean(current.tenant_email_enabled),
+      emailFromName: isSuperAdmin ? undefined : current.tenant_email_from_name,
+      emailDailyLimit: isSuperAdmin ? undefined : Number(current.tenant_email_daily_limit || 200),
     };
     next();
   } catch (error) {

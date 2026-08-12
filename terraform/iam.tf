@@ -44,6 +44,11 @@ resource "aws_iam_role_policy" "s3_backup" {
           aws_s3_bucket.backup.arn,
           "${aws_s3_bucket.backup.arn}/*"
         ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ses:SendEmail"]
+        Resource = "*"
       }
     ]
   })

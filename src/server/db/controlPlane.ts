@@ -12,6 +12,10 @@ interface DbResult {
   lastInsertRowid?: number | bigint;
 }
 
+export interface ControlPlaneExecutor {
+  query(text: string, params?: any[]): Promise<DbResult>;
+}
+
 export interface ControlPlaneConnectionConfig {
   useSqlite: boolean;
   connectionString: string;
@@ -23,6 +27,7 @@ const { Pool } = pg;
 let pgPool: pg.Pool | null = null;
 let sqliteDb: Database.Database | null = null;
 let connectionConfig: ControlPlaneConnectionConfig | null = null;
+let sqliteTransactionTail: Promise<void> = Promise.resolve();
 
 export function resolveControlPlaneConnection(
   env: NodeJS.ProcessEnv = process.env,
@@ -72,6 +77,50 @@ export async function query(text: string, params: any[] = []): Promise<DbResult>
   throw new Error('Control-plane database is not initialized.');
 }
 
+/** Keep a usage event and its aggregate on one physical control-plane connection. */
+export async function withTransaction<T>(work: (tx: ControlPlaneExecutor) => Promise<T>): Promise<T> {
+  if (sqliteDb) {
+    const previous = sqliteTransactionTail;
+    let release!: () => void;
+    sqliteTransactionTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    let began = false;
+    try {
+      sqliteDb.exec('BEGIN IMMEDIATE');
+      began = true;
+      const result = await work({ query });
+      sqliteDb.exec('COMMIT');
+      return result;
+    } catch (error) {
+      if (began) sqliteDb.exec('ROLLBACK');
+      throw error;
+    } finally {
+      release();
+    }
+  }
+  if (!pgPool) throw new Error('Control-plane database is not initialized.');
+  const client = await pgPool.connect();
+  const tx: ControlPlaneExecutor = {
+    query: async (text: string, params: any[] = []) => {
+      let index = 1;
+      const pgText = params.length ? text.replace(/\?/g, () => `$${index++}`) : text;
+      const result = await client.query(pgText, params);
+      return { rows: result.rows, rowCount: result.rowCount || 0 };
+    },
+  };
+  try {
+    await client.query('BEGIN');
+    const result = await work(tx);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function initPostgres(config: ControlPlaneConnectionConfig) {
   pgPool = new Pool({
     connectionString: config.connectionString,
@@ -107,6 +156,13 @@ async function initPostgres(config: ControlPlaneConnectionConfig) {
         last_backup_size_bytes BIGINT,
         last_restore_test_at TIMESTAMP,
         last_restore_test_status VARCHAR(16),
+        email_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        email_from_name VARCHAR(160),
+        email_daily_limit INTEGER NOT NULL DEFAULT 200,
+        quota_exams_per_month INTEGER,
+        quota_ai_gradings_per_month INTEGER,
+        quota_recording_gb NUMERIC,
+        quota_emails_per_month INTEGER,
         compiler_enabled BOOLEAN NOT NULL DEFAULT FALSE,
         -- Danh sách chế độ ghi màn hình tenant được PHÉP dùng (batch chọn trong đó).
         -- Tenant mới mặc định chỉ 'none': bật ghi màn hình là quyết định có chủ đích
@@ -157,6 +213,25 @@ async function initPostgres(config: ControlPlaneConnectionConfig) {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
       CREATE INDEX IF NOT EXISTS idx_tenant_audit_tenant ON tenant_audit_events(tenant_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS tenant_usage (
+        tenant_id INTEGER NOT NULL,
+        period_month VARCHAR(7) NOT NULL,
+        exams_started INTEGER NOT NULL DEFAULT 0,
+        ai_gradings INTEGER NOT NULL DEFAULT 0,
+        recording_minutes NUMERIC NOT NULL DEFAULT 0,
+        emails_sent INTEGER NOT NULL DEFAULT 0,
+        code_runs INTEGER NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (tenant_id, period_month)
+      );
+      CREATE TABLE IF NOT EXISTS tenant_usage_events (
+        event_key VARCHAR(180) PRIMARY KEY,
+        tenant_id INTEGER NOT NULL,
+        period_month VARCHAR(7) NOT NULL,
+        metric VARCHAR(32) NOT NULL,
+        amount NUMERIC NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
     `);
     await client.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS tenant_id INTEGER`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
@@ -170,6 +245,13 @@ async function initPostgres(config: ControlPlaneConnectionConfig) {
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_backup_size_bytes BIGINT`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_restore_test_at TIMESTAMP`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_restore_test_status VARCHAR(16)`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS email_from_name VARCHAR(160)`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS email_daily_limit INTEGER NOT NULL DEFAULT 200`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS quota_exams_per_month INTEGER`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS quota_ai_gradings_per_month INTEGER`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS quota_recording_gb NUMERIC`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS quota_emails_per_month INTEGER`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_memory_mb INTEGER NOT NULL DEFAULT 512`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_concurrency INTEGER NOT NULL DEFAULT 2`);
@@ -209,6 +291,13 @@ function initSqlite(config: ControlPlaneConnectionConfig) {
       last_backup_size_bytes INTEGER,
       last_restore_test_at DATETIME,
       last_restore_test_status TEXT,
+      email_enabled INTEGER NOT NULL DEFAULT 0,
+      email_from_name TEXT,
+      email_daily_limit INTEGER NOT NULL DEFAULT 200,
+      quota_exams_per_month INTEGER,
+      quota_ai_gradings_per_month INTEGER,
+      quota_recording_gb REAL,
+      quota_emails_per_month INTEGER,
       compiler_enabled INTEGER NOT NULL DEFAULT 0,
       allowed_record_modes TEXT NOT NULL DEFAULT 'none',
       compiler_memory_mb INTEGER NOT NULL DEFAULT 512,
@@ -256,6 +345,25 @@ function initSqlite(config: ControlPlaneConnectionConfig) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS idx_tenant_audit_tenant ON tenant_audit_events(tenant_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS tenant_usage (
+      tenant_id INTEGER NOT NULL,
+      period_month TEXT NOT NULL,
+      exams_started INTEGER NOT NULL DEFAULT 0,
+      ai_gradings INTEGER NOT NULL DEFAULT 0,
+      recording_minutes REAL NOT NULL DEFAULT 0,
+      emails_sent INTEGER NOT NULL DEFAULT 0,
+      code_runs INTEGER NOT NULL DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (tenant_id, period_month)
+    );
+    CREATE TABLE IF NOT EXISTS tenant_usage_events (
+      event_key TEXT PRIMARY KEY,
+      tenant_id INTEGER NOT NULL,
+      period_month TEXT NOT NULL,
+      metric TEXT NOT NULL,
+      amount REAL NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // SQLite không có ADD COLUMN IF NOT EXISTS → phải tự kiểm tra. Backfill 'none,local,s3'
@@ -273,6 +381,13 @@ function initSqlite(config: ControlPlaneConnectionConfig) {
     ['last_backup_size_bytes', 'INTEGER'],
     ['last_restore_test_at', 'DATETIME'],
     ['last_restore_test_status', 'TEXT'],
+    ['email_enabled', 'INTEGER NOT NULL DEFAULT 0'],
+    ['email_from_name', 'TEXT'],
+    ['email_daily_limit', 'INTEGER NOT NULL DEFAULT 200'],
+    ['quota_exams_per_month', 'INTEGER'],
+    ['quota_ai_gradings_per_month', 'INTEGER'],
+    ['quota_recording_gb', 'REAL'],
+    ['quota_emails_per_month', 'INTEGER'],
   ] as const) {
     if (!tenantColumns.includes(name)) sqliteDb.exec(`ALTER TABLE tenants ADD COLUMN ${name} ${definition}`);
   }
@@ -282,6 +397,8 @@ const ADMIN_COLUMNS = ['id', 'username', 'password_hash', 'role', 'tenant_id', '
 const TENANT_COLUMNS = [
   'id', 'slug', 'name', 'contact_email', 'status', 'aws_region', 'instance_type', 'root_volume_size',
   'backup_retention_days', 'last_backup_at', 'last_backup_size_bytes', 'last_restore_test_at', 'last_restore_test_status',
+  'email_enabled', 'email_from_name', 'email_daily_limit', 'quota_exams_per_month',
+  'quota_ai_gradings_per_month', 'quota_recording_gb', 'quota_emails_per_month',
   'allowed_record_modes', 'compiler_enabled', 'compiler_memory_mb', 'compiler_timeout_seconds', 'compiler_concurrency',
   'compiler_lambda_arn', 'domain_name', 'route53_zone_id', 'secret_arn', 'repository_url',
   'repository_ref', 'provision_status', 'terraform_state_key', 'instance_id', 'public_ip',
@@ -610,4 +727,4 @@ export function getControlPlaneConfig(): ControlPlaneConnectionConfig | null {
   return connectionConfig;
 }
 
-export default { initControlPlaneDatabase, closeControlPlaneDatabase, query, getControlPlaneConfig };
+export default { initControlPlaneDatabase, closeControlPlaneDatabase, query, withTransaction, getControlPlaneConfig };
