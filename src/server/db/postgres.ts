@@ -60,6 +60,24 @@ export function ensureEmailUsageTablesSqlite(database: Database.Database): void 
   }
 }
 
+/** Idempotent identity migration extracted so an actual legacy assessment DB can be tested. */
+export function ensureIdentitySchemaSqlite(database: Database.Database): void {
+  const batchColumns = (database.prepare('PRAGMA table_info(batches)').all() as { name: string }[])
+    .map((column) => column.name);
+  if (!batchColumns.includes('identity_verification')) {
+    database.exec("ALTER TABLE batches ADD COLUMN identity_verification TEXT NOT NULL DEFAULT 'off'");
+  }
+  const studentColumns = (database.prepare('PRAGMA table_info(students)').all() as { name: string }[])
+    .map((column) => column.name);
+  for (const [name, definition] of [
+    ['identity_status', "TEXT NOT NULL DEFAULT 'not_required'"],
+    ['identity_id_key', 'TEXT'], ['identity_face_key', 'TEXT'], ['identity_capture_id', 'TEXT'],
+    ['identity_score', 'REAL'], ['identity_reviewed_by', 'INTEGER'], ['identity_reviewed_at', 'DATETIME'],
+  ] as const) {
+    if (!studentColumns.includes(name)) database.exec(`ALTER TABLE students ADD COLUMN ${name} ${definition}`);
+  }
+}
+
 async function initPostgres() {
   console.log('[DB] Attempting PostgreSQL connection...');
   
@@ -200,6 +218,7 @@ await client.query(`
       blueprint JSONB,
       record_enabled BOOLEAN DEFAULT false,
       record_mode VARCHAR(16) DEFAULT 'none',
+      identity_verification VARCHAR(16) NOT NULL DEFAULT 'off',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -213,6 +232,7 @@ await client.query(`
     await client.query("ALTER TABLE batches ADD COLUMN IF NOT EXISTS record_mode VARCHAR(16) DEFAULT 'none'");
     await client.query("UPDATE batches SET record_mode = 's3' WHERE record_enabled = true AND (record_mode IS NULL OR record_mode = 'none')");
   } catch (_) { /* already exists */ }
+  await client.query("ALTER TABLE batches ADD COLUMN IF NOT EXISTS identity_verification VARCHAR(16) NOT NULL DEFAULT 'off'");
   // Migration: loại đề (essay = tự luận/coding, quiz = trắc nghiệm). Batch cũ mặc định 'essay'.
   try {
     await client.query("ALTER TABLE batches ADD COLUMN IF NOT EXISTS exam_type TEXT DEFAULT 'essay'");
@@ -262,6 +282,13 @@ await client.query(`
       recording_finalized_at TIMESTAMP,
       recording_final_part_index INTEGER,
       recording_incomplete BOOLEAN DEFAULT FALSE,
+      identity_status VARCHAR(16) NOT NULL DEFAULT 'not_required',
+      identity_id_key TEXT,
+      identity_face_key TEXT,
+      identity_capture_id VARCHAR(36),
+      identity_score NUMERIC,
+      identity_reviewed_by INTEGER,
+      identity_reviewed_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -278,6 +305,13 @@ await client.query(`
     { col: 'recording_finalized_at', def: 'TIMESTAMP' },
     { col: 'recording_final_part_index', def: 'INTEGER' },
     { col: 'recording_incomplete', def: 'BOOLEAN DEFAULT FALSE' },
+    { col: 'identity_status', def: "VARCHAR(16) NOT NULL DEFAULT 'not_required'" },
+    { col: 'identity_id_key', def: 'TEXT' },
+    { col: 'identity_face_key', def: 'TEXT' },
+    { col: 'identity_capture_id', def: 'VARCHAR(36)' },
+    { col: 'identity_score', def: 'NUMERIC' },
+    { col: 'identity_reviewed_by', def: 'INTEGER' },
+    { col: 'identity_reviewed_at', def: 'TIMESTAMP' },
   ];
   for (const { col, def } of colChecks) {
     try {
@@ -515,6 +549,7 @@ function initSqlite() {
         blueprint TEXT,
         record_enabled INTEGER DEFAULT 0,
         record_mode TEXT DEFAULT 'none',
+        identity_verification TEXT NOT NULL DEFAULT 'off',
         practice_exam_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
@@ -555,6 +590,13 @@ function initSqlite() {
         recording_finalized_at DATETIME,
         recording_final_part_index INTEGER,
         recording_incomplete INTEGER DEFAULT 0,
+        identity_status TEXT NOT NULL DEFAULT 'not_required',
+        identity_id_key TEXT,
+        identity_face_key TEXT,
+        identity_capture_id TEXT,
+        identity_score REAL,
+        identity_reviewed_by INTEGER,
+        identity_reviewed_at DATETIME,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
       )
@@ -720,6 +762,7 @@ function initSqlite() {
       // Backfill: batch cũ có record_enabled=1 → 's3'
       sqliteDb.exec("UPDATE batches SET record_mode = 's3' WHERE record_enabled = 1 AND (record_mode IS NULL OR record_mode = 'none')");
     }
+    ensureIdentitySchemaSqlite(sqliteDb);
     if (!batchCols.includes('created_by')) {
       sqliteDb.exec('ALTER TABLE batches ADD COLUMN created_by INTEGER');
     }

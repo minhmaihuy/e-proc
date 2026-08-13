@@ -2,12 +2,17 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import * as examRecorder from '../services/examRecorder';
 import { getExamEnvironmentSnapshot } from '../services/examEnvironment';
-import { UserCheck, AlertTriangle } from 'lucide-react';
+import { studentApi } from '../services/api';
+import { UserCheck, AlertTriangle, Camera, ShieldCheck } from 'lucide-react';
 
 function StudentConfirm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [environment, setEnvironment] = useState(() => getExamEnvironmentSnapshot());
+  const [identityStatus, setIdentityStatus] = useState<'not_required' | 'pending' | 'captured' | 'verified' | 'rejected'>('not_required');
+  const [idPhoto, setIdPhoto] = useState<File | null>(null);
+  const [facePhoto, setFacePhoto] = useState<File | null>(null);
+  const [identityLoading, setIdentityLoading] = useState(false);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -17,19 +22,56 @@ function StudentConfirm() {
   const email = location.state?.email;
   const duration = location.state?.duration;
   const recordMode: 'none' | 'local' | 's3' = location.state?.recordMode || 'none';
+  const examKind: 'exam' | 'practice' = location.state?.examKind === 'practice' ? 'practice' : 'exam';
+  const identityMode: 'off' | 'photo' = location.state?.identityMode === 'photo' ? 'photo' : 'off';
+  const identityRetentionDays: number | undefined = location.state?.identityRetentionDays;
   const recordingPassword: string | undefined = location.state?.recordingPassword; // chỉ mode 'local'
 
   useEffect(() => {
     // Redirect to login if no state or missing token
     if (!studentId || !email || !studentToken) {
       navigate('/');
+    } else {
+      localStorage.setItem('studentToken', studentToken);
+      setIdentityStatus(location.state?.identityStatus || 'not_required');
     }
-  }, [studentId, email, studentToken, navigate]);
+  }, [studentId, email, studentToken, navigate, location.state]);
 
   useEffect(() => {
     const interval = setInterval(() => setEnvironment(getExamEnvironmentSnapshot()), 2000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (identityMode !== 'photo' || !studentToken || identityStatus === 'verified') return;
+    const refresh = () => studentApi.getIdentityStatus()
+      .then((response) => setIdentityStatus(response.data.status))
+      .catch(() => undefined);
+    void refresh();
+    const interval = window.setInterval(refresh, 5000);
+    return () => window.clearInterval(interval);
+  }, [identityMode, identityStatus, studentToken]);
+
+  const uploadIdentity = async () => {
+    if (!idPhoto || !facePhoto) return setError('Choose both a government ID photo and a current face photo.');
+    if (idPhoto.type !== 'image/jpeg' || facePhoto.type !== 'image/jpeg') return setError('Identity photos must be JPEG files.');
+    setError('');
+    setIdentityLoading(true);
+    try {
+      const upload = await studentApi.getIdentityUploadUrls();
+      const responses = await Promise.all([
+        fetch(upload.data.id_url, { method: 'PUT', headers: { 'Content-Type': 'image/jpeg' }, body: idPhoto }),
+        fetch(upload.data.face_url, { method: 'PUT', headers: { 'Content-Type': 'image/jpeg' }, body: facePhoto }),
+      ]);
+      if (responses.some((response) => !response.ok)) throw new Error('upload_failed');
+      await studentApi.completeIdentityUpload();
+      setIdentityStatus('captured');
+    } catch {
+      setError('Could not upload both identity photos. Please try again.');
+    } finally {
+      setIdentityLoading(false);
+    }
+  };
 
   const handleStartExam = async () => {
     setError('');
@@ -87,7 +129,7 @@ function StudentConfirm() {
     localStorage.setItem('duration', duration.toString());
     localStorage.setItem('studentEmail', email); // lưu email cho watermark forensic
 
-    navigate('/exam');
+    navigate(examKind === 'practice' ? '/practice' : '/exam');
   };
 
   return (
@@ -113,6 +155,25 @@ function StudentConfirm() {
           <p className="text-slate-500 text-sm mb-6 text-center">
             Please confirm your email before starting the assessment.
           </p>
+
+          {identityMode === 'photo' && (
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 text-sm text-blue-950">
+              <div className="flex gap-2 mb-2"><ShieldCheck size={18} className="text-blue-700 shrink-0" /><strong>Identity photo review required</strong></div>
+              <p className="leading-relaxed mb-3">Before the assessment, upload a clear government ID photo and a current face photo. Only authorized tenant reviewers can view them. They are stored in private tenant storage and automatically deleted after <b>{identityRetentionDays ?? 'the configured number of'} days</b>.</p>
+              {identityStatus === 'verified' ? (
+                <p className="font-semibold text-emerald-700">Identity approved. You may start.</p>
+              ) : identityStatus === 'captured' ? (
+                <p className="font-semibold text-amber-700">Photos submitted. Waiting for a tenant reviewer; this page checks automatically.</p>
+              ) : (
+                <div className="space-y-3">
+                  {identityStatus === 'rejected' && <p className="font-semibold text-red-700">The photos were rejected. Submit clearer replacements.</p>}
+                  <label className="block"><span className="font-medium">Government ID (JPEG)</span><input className="mt-1 block w-full" type="file" accept="image/jpeg" capture="environment" onChange={(event) => setIdPhoto(event.target.files?.[0] || null)} /></label>
+                  <label className="block"><span className="font-medium">Current face photo (JPEG)</span><input className="mt-1 block w-full" type="file" accept="image/jpeg" capture="user" onChange={(event) => setFacePhoto(event.target.files?.[0] || null)} /></label>
+                  <button type="button" onClick={uploadIdentity} disabled={identityLoading || !idPhoto || !facePhoto} className="w-full inline-flex items-center justify-center gap-2 bg-blue-700 text-white rounded-lg py-2.5 disabled:opacity-50"><Camera size={17} />{identityLoading ? 'Uploading...' : 'Submit photos for review'}</button>
+                </div>
+              )}
+            </div>
+          )}
 
           {environment.screenExtended === true && (
             <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6 text-sm">
@@ -148,7 +209,7 @@ function StudentConfirm() {
           <div className="space-y-3">
             <button
               onClick={handleStartExam}
-              disabled={loading || environment.screenExtended === true}
+              disabled={loading || environment.screenExtended === true || (identityMode === 'photo' && identityStatus !== 'verified')}
               className="w-full bg-blue-600 text-white font-medium text-base py-3 rounded-xl hover:bg-blue-700 focus:ring-4 focus:ring-blue-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
             >
               {loading ? 'Preparing screen recording...' : 'Start Exam'}

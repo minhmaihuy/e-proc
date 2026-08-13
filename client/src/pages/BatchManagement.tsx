@@ -110,10 +110,12 @@ function BatchManagement() {
   const [batches, setBatches] = useState<any[]>([]);
   // Chế độ ghi màn hình superadmin cấp cho tenant này. Backend chặn độc lập; đây chỉ để
   // không bày ra lựa chọn chắc chắn bị từ chối.
-  const [recordingConfig, setRecordingConfig] = useState<{ allowed: string[]; canChange: boolean; s3Configured: boolean }>({
+  const [recordingConfig, setRecordingConfig] = useState<{ allowed: string[]; canChange: boolean; s3Configured: boolean; identityMode: 'off' | 'photo'; identityS3Configured: boolean }>({
     allowed: ['none'],
     canChange: false,
     s3Configured: false,
+    identityMode: 'off',
+    identityS3Configured: false,
   });
   const [modules, setModules] = useState<string[]>([]);
   // Cặp (module, bộ đề) — dropdown blueprint phải chọn theo cặp, không chỉ module.
@@ -138,6 +140,7 @@ function BatchManagement() {
     blueprintByType: [] as BlueprintItemByType[],
     record_mode: 'none' as 'none' | 'local' | 's3',
     exam_type: 'essay' as 'essay' | 'quiz',
+    identity_verification: 'off' as 'off' | 'photo',
   });
   // Edit form state
   const [editBlueprintMode, setEditBlueprintMode] = useState<BlueprintMode>('module');
@@ -222,6 +225,8 @@ function BatchManagement() {
         allowed: res.data.allowed_record_modes || ['none'],
         canChange: Boolean(res.data.can_change),
         s3Configured: Boolean(res.data.s3_configured),
+        identityMode: res.data.identity_verification === 'photo' ? 'photo' : 'off',
+        identityS3Configured: Boolean(res.data.identity_s3_configured),
       }))
       .catch(() => { /* giữ mặc định chỉ 'none' nếu không lấy được */ });
     loadBatches();
@@ -474,6 +479,7 @@ function BatchManagement() {
         blueprint: blueprintPayload,
         record_mode: editingBatch.record_mode || 'none',
         exam_type: editingBatch.exam_type === 'quiz' ? 'quiz' : 'essay',
+        identity_verification: editingBatch.identity_verification || 'off',
       });
       loadBatches();
       setEditingBatch(null);
@@ -524,11 +530,12 @@ function BatchManagement() {
         blueprint: blueprintPayload,
         record_mode: formData.record_mode,
         exam_type: formData.exam_type,
+        identity_verification: formData.identity_verification,
       });
       console.log('[BatchManagement] Response:', res.data);
       const batchId = res.data.id;
       setShowForm(false);
-      setFormData({ name: '', start_time: '', end_time: '', duration: 30, blueprint: [], blueprintByType: [], record_mode: 'none', exam_type: 'essay' });
+      setFormData({ name: '', start_time: '', end_time: '', duration: 30, blueprint: [], blueprintByType: [], record_mode: 'none', exam_type: 'essay', identity_verification: 'off' });
       setBlueprintMode('module');
       loadBatches();
       setSelectedBatchId(batchId);
@@ -934,6 +941,20 @@ function BatchManagement() {
                       ⚠ Máy chủ chưa cấu hình S3 — video sẽ không tải lên được.
                     </p>
                   )}
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-bold text-slate-700">Identity verification</label>
+                  <select
+                    value={formData.identity_verification}
+                    disabled={!recordingConfig.canChange}
+                    onChange={e => setFormData(prev => ({ ...prev, identity_verification: e.target.value as 'off' | 'photo' }))}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-white disabled:opacity-60"
+                  >
+                    <option value="off">Off</option>
+                    {recordingConfig.identityMode === 'photo' && <option value="photo">Manual photo review</option>}
+                  </select>
+                  {formData.identity_verification === 'photo' && !recordingConfig.identityS3Configured && <p className="text-xs text-amber-600 font-medium">Identity S3 storage is not configured on this server.</p>}
                 </div>
               </div>
 
@@ -1494,6 +1515,18 @@ function BatchManagement() {
                 {!isAdmin && (
                   <p className="mt-2 text-sm text-amber-600 font-medium">Only admin accounts can change this setting.</p>
                 )}
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-1">Identity verification</label>
+                <select
+                  value={editingBatch.identity_verification || 'off'}
+                  disabled={!recordingConfig.canChange}
+                  onChange={e => setEditingBatch({ ...editingBatch, identity_verification: e.target.value })}
+                  className="px-4 py-2.5 rounded-xl border border-slate-300 bg-white min-w-[300px] disabled:bg-slate-50"
+                >
+                  <option value="off">Off</option>
+                  {recordingConfig.identityMode === 'photo' && <option value="photo">Manual photo review</option>}
+                </select>
               </div>
             </div>
 

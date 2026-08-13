@@ -27,6 +27,7 @@ jq -r '
 printf 'NODE_ENV=production\nPORT=${app_port}\nTENANT_SLUG=${tenant_slug}\nDEFAULT_TENANT_NAME_B64=${tenant_name_b64}\nDEFAULT_TENANT_CONTACT_EMAIL_B64=${tenant_contact_email_b64}\n' >> /opt/eproc/.env
 printf 'DEFAULT_TENANT_DOMAIN=${domain_name}\nDEFAULT_TENANT_APP_URL=https://${domain_name}/\nALLOWED_ORIGINS=https://${domain_name}\n' >> /opt/eproc/.env
 printf 'PRACTICE_COMPILER_MODE=${compiler_mode}\nPRACTICE_COMPILER_LAMBDA_ARN=${compiler_lambda_arn}\nAWS_REGION=${aws_region}\n' >> /opt/eproc/.env
+printf 'S3_IDENTITY_BUCKET=${identity_bucket}\n' >> /opt/eproc/.env
 chmod 0600 /opt/eproc/.env
 rm -f /opt/eproc/runtime-secrets.json
 

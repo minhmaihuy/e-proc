@@ -36,6 +36,9 @@ function StudentLogin() {
             duration: res.data.duration,
             examKind: res.data.exam_kind, // 'practice' → làm bài tại /practice
             recordMode: res.data.record_mode || (res.data.record_enabled ? 's3' : 'none'), // 'none' | 'local' | 's3'
+            identityMode: res.data.identity_mode || 'off',
+            identityStatus: res.data.identity_status || 'not_required',
+            identityRetentionDays: res.data.identity_retention_days,
             recordingPassword: res.data.recording_password // chỉ có khi mode 'local' (server cấp, HV không thấy)
           }
         });

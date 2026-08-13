@@ -23,6 +23,11 @@ output "backup_bucket" {
   value       = aws_s3_bucket.backup.id
 }
 
+output "identity_bucket" {
+  description = "Private S3 bucket for tenant identity evidence, or empty when disabled."
+  value       = var.identity_retention_days != null ? aws_s3_bucket.identity[0].id : ""
+}
+
 output "compiler_lambda_arn" {
   description = "Practice compiler Lambda ARN, or an empty string when disabled."
   value       = var.compiler_enabled ? aws_lambda_function.compiler[0].arn : ""

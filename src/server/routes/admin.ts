@@ -13,7 +13,8 @@ import { canManageTenantUser } from '../tenantContext.js';
 import crypto from 'crypto';
 import { parseBlueprintCompat } from '../services/blueprint.js';
 import { resolveBatchRecordMode } from '../services/recordingPolicy.js';
-import { createRecordingViewUrl, isS3Configured } from '../services/s3.js';
+import { createIdentityViewUrl, createRecordingViewUrl, isIdentityS3Configured, isS3Configured } from '../services/s3.js';
+import { resolveBatchIdentityMode } from '../services/identityPolicy.js';
 import { isEmailTemplate } from '../services/emailPolicy.js';
 import { enqueueEmail, isEmailProviderConfigured, isEmailRecipient } from '../services/emailDelivery.js';
 
@@ -966,7 +967,7 @@ router.delete('/practice/:id', async (req: Request, res: Response) => {
 
 router.post('/batches', async (req: Request, res: Response) => {
   try {
-    const { name, start_time, end_time, duration, blueprint, practice_exam_id, record_mode, exam_type } = req.body;
+    const { name, start_time, end_time, duration, blueprint, practice_exam_id, record_mode, exam_type, identity_verification } = req.body;
     console.log('[CreateBatch] Input:', { name, start_time, end_time, duration, blueprint, exam_type, record_mode });
     const examType = exam_type === 'quiz' ? 'quiz' : 'essay';
 
@@ -1012,20 +1013,29 @@ router.post('/batches', async (req: Request, res: Response) => {
     const recordMode = recordDecision.mode;
     const recordFlag = recordMode === 's3' ? 1 : 0;
 
+    const identityDecision = resolveBatchIdentityMode({
+      requested: identity_verification,
+      tenantMode: req.adminUser?.identityVerification ?? 'off',
+      fallback: 'off',
+      canChange: req.adminUser?.role === 'tenant_admin',
+    });
+    if (identityDecision.rejected) return res.status(403).json({ error: identityDecision.reason });
+    const identityMode = identityDecision.mode;
+
     // Lưu người tạo batch
     const createdBy = req.adminUser?.id ?? null;
 
     let result;
     if (USE_SQLITE) {
       result = await db.query(`
-        INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, exam_type, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, recordFlag, recordMode, examType, createdBy]);
+        INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, exam_type, identity_verification, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, recordFlag, recordMode, examType, identityMode, createdBy]);
     } else {
       result = await db.query(`
-        INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, exam_type, created_by)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, !!recordFlag, recordMode, examType, createdBy]);
+        INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, exam_type, identity_verification, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, !!recordFlag, recordMode, examType, identityMode, createdBy]);
     }
     console.log('[CreateBatch] Success, id:', result.lastInsertRowid);
     res.json({ success: true, id: result.lastInsertRowid || result.rows?.[0]?.id });
@@ -1118,7 +1128,7 @@ router.get('/batches/:id', async (req: Request, res: Response) => {
 router.put('/batches/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, start_time, end_time, duration, blueprint, practice_exam_id, record_mode, exam_type } = req.body;
+    const { name, start_time, end_time, duration, blueprint, practice_exam_id, record_mode, exam_type, identity_verification } = req.body;
     const examType = exam_type === 'quiz' ? 'quiz' : 'essay';
     const isPractice = practice_exam_id !== undefined && practice_exam_id !== null && practice_exam_id !== '';
     const practiceExamId = isPractice ? parseInt(practice_exam_id) : null;
@@ -1138,7 +1148,7 @@ router.put('/batches/:id', async (req: Request, res: Response) => {
     // Chế độ ghi màn hình: chỉ tenant_admin đổi được, và chỉ trong allowlist của tenant.
     // Vai trò khác (hoặc mode bị từ chối) → giữ nguyên giá trị đang lưu, không hạ về
     // 'none' vì như vậy sẽ âm thầm tắt ghi màn hình của một đợt thi đang cấu hình sẵn.
-    const currentRecord = await db.query('SELECT record_mode FROM batches WHERE id = ?', [parseInt(id)]);
+    const currentRecord = await db.query('SELECT record_mode, identity_verification FROM batches WHERE id = ?', [parseInt(id)]);
     const existingMode = currentRecord.rows[0]?.record_mode || 'none';
     const recordDecision = resolveBatchRecordMode({
       requested: record_mode,
@@ -1151,17 +1161,25 @@ router.put('/batches/:id', async (req: Request, res: Response) => {
     }
     const recordMode = recordDecision.mode;
     const recordFlag = recordMode === 's3' ? 1 : 0;
+    const identityDecision = resolveBatchIdentityMode({
+      requested: identity_verification,
+      tenantMode: req.adminUser?.identityVerification ?? 'off',
+      fallback: currentRecord.rows[0]?.identity_verification || 'off',
+      canChange: req.adminUser?.role === 'tenant_admin',
+    });
+    if (identityDecision.rejected) return res.status(403).json({ error: identityDecision.reason });
+    const identityMode = identityDecision.mode;
 
     if (USE_SQLITE) {
       await db.query(`
-        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, practice_exam_id = ?, record_enabled = ?, record_mode = ?, exam_type = ?
+        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, practice_exam_id = ?, record_enabled = ?, record_mode = ?, exam_type = ?, identity_verification = ?
         WHERE id = ?
-      `, [name, startUTC, endUTC, duration, isPractice ? null : JSON.stringify(blueprint), practiceExamId, recordFlag, recordMode, examType, parseInt(id)]);
+      `, [name, startUTC, endUTC, duration, isPractice ? null : JSON.stringify(blueprint), practiceExamId, recordFlag, recordMode, examType, identityMode, parseInt(id)]);
     } else {
       await db.query(`
-        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, practice_exam_id = ?, record_enabled = ?, record_mode = ?, exam_type = ?
+        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, practice_exam_id = ?, record_enabled = ?, record_mode = ?, exam_type = ?, identity_verification = ?
         WHERE id = ?
-      `, [name, startUTC, endUTC, duration, isPractice ? null : JSON.stringify(blueprint), practiceExamId, !!recordFlag, recordMode, examType, parseInt(id)]);
+      `, [name, startUTC, endUTC, duration, isPractice ? null : JSON.stringify(blueprint), practiceExamId, !!recordFlag, recordMode, examType, identityMode, parseInt(id)]);
     }
 
     res.json({ success: true });
@@ -1478,7 +1496,7 @@ router.get('/batches/:id/students', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const result = await db.query('SELECT * FROM students WHERE batch_id = ?', [parseInt(id)]);
-    res.json(result.rows);
+    res.json(result.rows.map(({ identity_id_key: _identityIdKey, identity_face_key: _identityFaceKey, identity_capture_id: _identityCaptureId, ...student }: any) => student));
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -1561,7 +1579,94 @@ router.get('/recording-config', async (req: Request, res: Response) => {
     allowed_record_modes: req.adminUser?.allowedRecordModes ?? ['none'],
     can_change: req.adminUser?.role === 'tenant_admin',
     s3_configured: isS3Configured(),
+    identity_verification: req.adminUser?.identityVerification ?? 'off',
+    identity_retention_days: req.adminUser?.identityRetentionDays ?? null,
+    identity_s3_configured: isIdentityS3Configured(),
   });
+});
+
+async function identityReviewTarget(req: Request, batchId: number, studentId: number) {
+  const result = await db.query(
+    `SELECT s.id, s.email, s.identity_status, s.identity_id_key, s.identity_face_key, s.identity_capture_id,
+            b.name AS batch_name, b.created_by
+     FROM students s JOIN batches b ON b.id = s.batch_id WHERE s.id = ? AND s.batch_id = ?`,
+    [studentId, batchId],
+  );
+  const row = result.rows[0];
+  if (!row) return { error: 'Student not found in this batch', status: 404 } as const;
+  if (req.adminUser?.role === 'admin' && Number(row.created_by) !== req.adminUser.id) {
+    return { error: 'You may review identity only for batches you created.', status: 403 } as const;
+  }
+  return { row } as const;
+}
+
+function identityReviewToken(batchId: number, studentId: number, captureId: string): string {
+  return crypto.createHmac('sha256', process.env.JWT_SECRET || 'your-secret-key')
+    .update(`identity-review:${batchId}:${studentId}:${captureId}`)
+    .digest('hex');
+}
+
+router.get('/batches/:id/students/:studentId/identity', requireTenantDataAdmin, async (req: Request, res: Response) => {
+  try {
+    const batchId = Number(req.params.id);
+    const studentId = Number(req.params.studentId);
+    if (!Number.isInteger(batchId) || !Number.isInteger(studentId)) return res.status(400).json({ error: 'Invalid batch or student id.' });
+    const target = await identityReviewTarget(req, batchId, studentId);
+    if ('error' in target) return res.status(target.status).json({ error: target.error });
+    if (!target.row.identity_id_key || !target.row.identity_face_key) return res.status(409).json({ error: 'Identity images have not been captured.' });
+    const [idUrl, faceUrl] = await Promise.all([
+      createIdentityViewUrl(String(target.row.identity_id_key)),
+      createIdentityViewUrl(String(target.row.identity_face_key)),
+    ]);
+    await controlDb.query(
+      'INSERT INTO tenant_audit_events (tenant_id, actor_id, action, detail) VALUES (?, ?, ?, ?)',
+      [req.adminUser!.tenantId, req.adminUser!.id, 'tenant.identity_viewed', JSON.stringify({ batch_id: batchId, student_id: studentId })],
+    );
+    if (!target.row.identity_capture_id) return res.status(409).json({ error: 'Identity capture is incomplete.' });
+    return res.json({
+      status: target.row.identity_status,
+      id_url: idUrl,
+      face_url: faceUrl,
+      review_token: identityReviewToken(batchId, studentId, String(target.row.identity_capture_id)),
+      url_expires_seconds: 300,
+    });
+  } catch (error) {
+    console.error('[Identity] View failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return res.status(500).json({ error: 'Unable to load identity evidence.' });
+  }
+});
+
+router.post('/batches/:id/students/:studentId/identity/review', requireTenantDataAdmin, async (req: Request, res: Response) => {
+  try {
+    const batchId = Number(req.params.id);
+    const studentId = Number(req.params.studentId);
+    const decision = req.body?.decision;
+    const reviewToken = String(req.body?.review_token || '');
+    if (!Number.isInteger(batchId) || !Number.isInteger(studentId) || !['verified', 'rejected'].includes(decision)
+        || !/^[a-f0-9]{64}$/.test(reviewToken)) {
+      return res.status(400).json({ error: 'Invalid identity review.' });
+    }
+    const target = await identityReviewTarget(req, batchId, studentId);
+    if ('error' in target) return res.status(target.status).json({ error: target.error });
+    if (!target.row.identity_id_key || !target.row.identity_face_key || !target.row.identity_capture_id || target.row.identity_status !== 'captured') {
+      return res.status(409).json({ error: 'Identity images are not ready for review.' });
+    }
+    const expectedToken = identityReviewToken(batchId, studentId, String(target.row.identity_capture_id));
+    if (!crypto.timingSafeEqual(Buffer.from(reviewToken, 'hex'), Buffer.from(expectedToken, 'hex'))) {
+      return res.status(409).json({ error: 'Identity evidence changed; reopen the review before deciding.' });
+    }
+    const reviewed = await db.query(
+      `UPDATE students SET identity_status = ?, identity_reviewed_by = ?, identity_reviewed_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND batch_id = ? AND identity_capture_id = ? AND identity_status = 'captured'
+         AND identity_id_key IS NOT NULL AND identity_face_key IS NOT NULL`,
+      [decision, req.adminUser!.id, studentId, batchId, target.row.identity_capture_id],
+    );
+    if (reviewed.rowCount !== 1) return res.status(409).json({ error: 'Identity evidence was already reviewed or changed.' });
+    return res.json({ status: decision });
+  } catch (error) {
+    console.error('[Identity] Review failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return res.status(500).json({ error: 'Unable to save identity review.' });
+  }
 });
 
 router.get('/batches/:id/students/:studentId/recordings', async (req: Request, res: Response) => {
@@ -1770,8 +1875,11 @@ router.get('/batches/:id/results', async (req: Request, res: Response) => {
         console.error('[results] recording_parts query failed (non-fatal):', recordErr?.message);
       }
 
+      // Object keys are storage internals. The browser receives only status; image access
+      // always goes through the audited short-lived URL endpoint above.
+      const { identity_id_key: _identityIdKey, identity_face_key: _identityFaceKey, identity_capture_id: _identityCaptureId, ...safeStudent } = student;
       results.push({
-        student,
+        student: safeStudent,
         questions: questionsResult.rows,
         violations: parseInt(violationsResult.rows[0]?.total) || 0,
         violations_breakdown: violationsBreakdown,

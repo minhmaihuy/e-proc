@@ -570,6 +570,14 @@ Batches support two blueprint formats for question assignment:
 - `tenant_usage` and its immutable idempotency ledger live only in the control-plane. The assessment-plane `usage_outbox` durably retries delivery and preserves each event's UTC `occurred_at`, so a July event delivered in August remains July usage; reconciliation uses the original exam/recording/email timestamps. Events measure exam starts, successful AI gradings, recording minutes, successful email sends, and accepted code runs. Duplicate keys never increment twice; retry reconciles the aggregate from the event ledger.
 - Quota limits are nullable and displayed against current-month usage. The product decisions for default plan limits, blocking versus overage, and whether code runs are billable remain open, so current code is measurement-only and must not call quota enforcement from batch creation, exam start, or an in-progress exam.
 
+### Candidate identity verification — manual photo review (2026-08-12)
+- `tenants.identity_verification` belongs to the control-plane and safely defaults/backfills to `off`; `batches.identity_verification` belongs to the assessment plane. Only superadmin may enable tenant capability and only `tenant_admin` may select it for a batch. The backend rejects a batch mode above the tenant mode.
+- This release implements only `photo`: candidate uploads one government-ID JPEG and one current-face JPEG, then an authorized tenant reviewer approves or rejects them. `face_match`, Rekognition, periodic biometric sampling, score thresholds, and `identity_mismatch` are deliberately not implemented.
+- The retention open decision is not replaced by a code default. New/never-enabled tenants keep `identity_retention_days` null; enabling `photo` requires superadmin to enter an explicit 1–365-day value. Disabling later preserves that chosen lifecycle so existing evidence can expire instead of triggering a destructive bucket removal. Production rollout must choose a period shorter than the applicable screen-recording retention before approval/provisioning.
+- Identity upload/status endpoints use the student JWT. Uploads land at server-nonce staging keys, then completion copies validated JPEGs to immutable `identity/{batchId}/{studentId}/{captureId}/{id|face}.jpg` evidence; an old presigned PUT can alter only staging, never approved bytes. Request bodies never select a student, batch, capture id, or key. Exam start, `GET /student/exam/questions`, and `GET /student/practice` return `403 identity_required` until status is `verified`. Reviewer decisions carry an HMAC token bound to the capture being viewed and use a capture/status compare-and-set update, so a stale modal or concurrent reviewer cannot approve different evidence.
+- Terraform creates a separate private encrypted identity bucket only when enabled, grants the tenant instance only `s3:GetObject`/`s3:PutObject` on `identity/*`, configures origin-scoped PUT CORS and an explicit lifecycle. A user-data change replaces the EC2 instance so cloud-init cannot silently leave the bucket env unset. The application uses `S3_IDENTITY_BUCKET`; it never returns raw object keys or capture ids. Reviewer views use five-minute presigned GET URLs and append `tenant.identity_viewed` to control-plane audit events.
+- Source invariant coverage is `scripts/identityVerification.test.js`; pure policy coverage is `identityPolicy.test.ts`. Any change to this flow must prove the source test can fail, not merely that it is green.
+
 ## Environment variables
 
 | Variable | Required | Default | Description |
@@ -619,10 +627,11 @@ Batches support two blueprint formats for question assignment:
 | `APP_SECRETS_ENABLED` | No | `false` | Load configuration from AWS Secrets Manager. Any value other than `'true'` keeps the `.env`-only path with no AWS calls. |
 | `APP_SECRETS_ARN` | When enabled | — | ARN of the JSON secret holding configuration. Required if `APP_SECRETS_ENABLED=true`; startup fails fast when missing or malformed. |
 | `APP_SECRETS_REGION` | No | `AWS_REGION` | Region of that secret. |
-| `AWS_ACCESS_KEY_ID` | Rec | — | IAM key for S3 recording uploads. Absent → recording endpoint returns 503. |
+| `AWS_ACCESS_KEY_ID` | Rec | — | Optional explicit IAM key for S3; EC2 normally uses its instance profile/default AWS credential chain. |
 | `AWS_SECRET_ACCESS_KEY` | Rec | — | IAM secret for S3. |
 | `AWS_REGION` | No | `us-east-1` | S3 bucket region. |
 | `S3_RECORDINGS_BUCKET` | Rec | — | S3 bucket that stores exam screen recordings. |
+| `S3_IDENTITY_BUCKET` | Photo identity | — | Separate private bucket for candidate identity evidence; normally written by Terraform. |
 
 ## Important project-specific notes
 
