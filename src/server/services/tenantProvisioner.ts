@@ -4,6 +4,8 @@ import path from 'path';
 import { promisify } from 'util';
 import db from '../db/controlPlane.js';
 import { getCurrentTenantConfig, isTenantDomainForSlug, tenantDomainForSlug } from '../tenantContext.js';
+import { validateEvidenceRetention } from './identityPolicy.js';
+import { parseAllowedRecordModes } from './recordingPolicy.js';
 
 const execFileAsync = promisify(execFile);
 const SLUG_PATTERN = /^[a-z][a-z0-9-]{2,30}$/;
@@ -25,6 +27,8 @@ export interface ProvisionableTenant {
   backup_retention_days?: number;
   identity_verification?: string;
   identity_retention_days?: number | null;
+  recording_retention_days?: number | null;
+  allowed_record_modes?: string;
   compiler_enabled: boolean | number;
   compiler_memory_mb: number;
   compiler_timeout_seconds: number;
@@ -59,10 +63,13 @@ export function validateTenantForProvisioning(tenant: ProvisionableTenant): stri
     return 'TENANT_COMPILER_IMAGE_URI must be a versioned ECR image URI when Lambda compiler is enabled.';
   }
   if (tenant.identity_verification === 'face_match') return 'Automated face matching is not available.';
-  if (tenant.identity_verification === 'photo'
-      && (!Number.isInteger(tenant.identity_retention_days) || Number(tenant.identity_retention_days) < 1 || Number(tenant.identity_retention_days) > 365)) {
-    return 'Identity retention must be explicitly set to 1-365 days.';
-  }
+  const retentionError = validateEvidenceRetention({
+    identityMode: tenant.identity_verification === 'photo' ? 'photo' : 'off',
+    s3RecordingEnabled: parseAllowedRecordModes(tenant.allowed_record_modes).includes('s3'),
+    identityRetentionDays: tenant.identity_retention_days == null ? null : Number(tenant.identity_retention_days),
+    recordingRetentionDays: tenant.recording_retention_days == null ? null : Number(tenant.recording_retention_days),
+  });
+  if (retentionError) return retentionError;
   return null;
 }
 
@@ -177,6 +184,8 @@ export async function runTenantProvisioning(
       backup_retention_days: Number(tenant.backup_retention_days || 14),
       identity_enabled: tenant.identity_verification === 'photo',
       identity_retention_days: tenant.identity_retention_days == null ? null : Number(tenant.identity_retention_days),
+      recording_enabled: parseAllowedRecordModes(tenant.allowed_record_modes).includes('s3'),
+      recording_retention_days: tenant.recording_retention_days == null ? null : Number(tenant.recording_retention_days),
       compiler_enabled: Boolean(tenant.compiler_enabled),
       compiler_image_uri: Boolean(tenant.compiler_enabled) ? process.env.TENANT_COMPILER_IMAGE_URI!.trim() : '',
       compiler_memory_mb: Number(tenant.compiler_memory_mb),

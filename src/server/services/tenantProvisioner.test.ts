@@ -45,11 +45,23 @@ test('photo identity provisioning requires explicit retention and face matching 
     ...validTenant, identity_verification: 'photo', identity_retention_days: null,
   }) || '', /retention/);
   assert.equal(validateTenantForProvisioning({
-    ...validTenant, identity_verification: 'photo', identity_retention_days: 45,
+    ...validTenant, identity_verification: 'photo', identity_retention_days: 45, recording_retention_days: 90,
   }), null);
   assert.match(validateTenantForProvisioning({
-    ...validTenant, identity_verification: 'face_match', identity_retention_days: 45,
+    ...validTenant, identity_verification: 'photo', identity_retention_days: 90, recording_retention_days: 90,
+  }) || '', /shorter/);
+  assert.match(validateTenantForProvisioning({
+    ...validTenant, identity_verification: 'face_match', identity_retention_days: 45, recording_retention_days: 90,
   }) || '', /not available/);
+});
+
+test('S3 recording provisioning requires an explicit video retention', () => {
+  assert.match(validateTenantForProvisioning({
+    ...validTenant, allowed_record_modes: 'none,s3', recording_retention_days: null,
+  }) || '', /screen-recording retention/i);
+  assert.equal(validateTenantForProvisioning({
+    ...validTenant, allowed_record_modes: 'none,s3', recording_retention_days: 90,
+  }), null);
 });
 
 test('provisioning validation rejects unsafe slugs and malformed secret ARNs', () => {

@@ -11,6 +11,8 @@ test('legacy tenants and batches remain off and no retention period is silently 
   assert.match(control, /identity_verification VARCHAR\(16\) NOT NULL DEFAULT 'off'/);
   assert.match(control, /identity_retention_days INTEGER/);
   assert.doesNotMatch(control, /identity_retention_days INTEGER[^\n]*DEFAULT/);
+  assert.match(control, /recording_retention_days INTEGER/);
+  assert.doesNotMatch(control, /recording_retention_days INTEGER[^\n]*DEFAULT/);
   assert.match(data, /identity_verification VARCHAR\(16\) NOT NULL DEFAULT 'off'/);
   assert.match(data, /identity_status VARCHAR\(16\) NOT NULL DEFAULT 'not_required'/);
 });
@@ -56,7 +58,7 @@ test('identity evidence is private, short-lived, audited and raw keys are stripp
   assert.match(admin, /reviewed\.rowCount !== 1/);
 });
 
-test('Terraform creates isolated private identity storage with explicit lifecycle and prefix-only object IAM', () => {
+test('Terraform creates isolated private evidence storage with ordered lifecycles and prefix-only object IAM', () => {
   const terraform = source('terraform', 'tenant-instance', 'main.tf');
   const variables = source('terraform', 'tenant-instance', 'variables.tf');
   const bootstrap = source('terraform', 'tenant-instance', 'user-data.sh.tftpl');
@@ -66,10 +68,18 @@ test('Terraform creates isolated private identity storage with explicit lifecycl
   assert.match(terraform, /expiration \{ days = var\.identity_retention_days \}/);
   assert.match(terraform, /Action\s*= \["s3:GetObject", "s3:PutObject"\]/);
   assert.match(terraform, /Resource = "\$\{aws_s3_bucket\.identity\[0\]\.arn\}\/identity\/\*"/);
+  assert.match(terraform, /resource "aws_s3_bucket" "recording"/);
+  assert.match(terraform, /resource "aws_s3_bucket_public_access_block" "recording"/);
+  assert.match(terraform, /filter \{ prefix = "recordings\/" \}/);
+  assert.match(terraform, /expiration \{ days = var\.recording_retention_days \}/);
+  assert.match(terraform, /Resource = "\$\{aws_s3_bucket\.recording\[0\]\.arn\}\/recordings\/\*"/);
+  assert.match(terraform, /identity_retention_days < var\.recording_retention_days/);
   assert.match(terraform, /user_data_replace_on_change\s*=\s*true/);
   assert.match(variables, /identity_retention_days/);
+  assert.match(variables, /recording_retention_days/);
   assert.match(variables, /default\s*= null/);
   assert.match(bootstrap, /S3_IDENTITY_BUCKET/);
+  assert.match(bootstrap, /S3_RECORDINGS_BUCKET/);
 });
 
 test('photo UI explains collection, audience and retention while face_match remains unavailable', () => {
@@ -85,5 +95,15 @@ test('photo UI explains collection, audience and retention while face_match rema
   assert.match(results, /identityEvidence\.status === 'captured'/,
     'review actions must appear only for an unreviewed captured evidence set');
   assert.match(tenants, /Automated face matching is intentionally not available/);
+  assert.match(tenants, /Screen recording retention \(days\)/);
+  assert.match(tenants, /Identity-photo retention must be shorter than screen-recording retention/);
   assert.doesNotMatch(confirm, /Rekognition|identity_mismatch/);
+});
+
+test('tenant API persists both retention values and validates their ordering on the backend', () => {
+  const routes = source('src', 'server', 'routes', 'tenants.ts');
+  assert.match(routes, /validateEvidenceRetention\(\{/);
+  assert.match(routes, /s3RecordingEnabled: parseAllowedRecordModes\(input\.allowedRecordModes\)\.includes\('s3'\)/);
+  assert.match(routes, /identity_verification, identity_retention_days, recording_retention_days/);
+  assert.match(routes, /identity_verification = \?, identity_retention_days = \?, recording_retention_days = \?/);
 });

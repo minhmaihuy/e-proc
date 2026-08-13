@@ -90,6 +90,7 @@ export interface Tenant {
   quota_emails_per_month?: number | null;
   identity_verification?: 'off' | 'photo';
   identity_retention_days?: number | null;
+  recording_retention_days?: number | null;
   usage_exams_started?: number;
   usage_ai_gradings?: number;
   usage_recording_minutes?: number;
@@ -169,6 +170,7 @@ export interface TenantConfiguration {
   quota_emails_per_month: number | null;
   identity_verification: 'off' | 'photo';
   identity_retention_days: number | null;
+  recording_retention_days: number | null;
   allowed_record_modes?: string;
   compiler_enabled: boolean;
   compiler_memory_mb: number;

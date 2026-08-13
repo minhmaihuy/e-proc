@@ -9,9 +9,9 @@ import {
 } from '../services/tenantIssueQuery.js';
 import { TenantLogAccessError, readTenantIssues } from '../services/tenantLogReader.js';
 import { isTenantDomainForSlug, tenantDomainForSlug } from '../tenantContext.js';
-import { serializeAllowedRecordModes } from '../services/recordingPolicy.js';
+import { parseAllowedRecordModes, serializeAllowedRecordModes } from '../services/recordingPolicy.js';
 import { isBackupRetentionDays } from '../services/backupPolicy.js';
-import { IdentityMode, normalizeIdentityMode } from '../services/identityPolicy.js';
+import { IdentityMode, normalizeIdentityMode, validateEvidenceRetention } from '../services/identityPolicy.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -41,6 +41,7 @@ interface TenantInput {
   quotaEmailsPerMonth: number | null;
   identityVerification: IdentityMode;
   identityRetentionDays: number | null;
+  recordingRetentionDays: number | null;
   compilerEnabled: boolean;
   compilerMemoryMb: number;
   compilerTimeoutSeconds: number;
@@ -95,6 +96,7 @@ function normalizeTenantInput(body: unknown, existing?: Partial<TenantRow>): Ten
     quotaEmailsPerMonth: nullableNumber('quota_emails_per_month', 'quotaEmailsPerMonth'),
     identityVerification,
     identityRetentionDays: nullableNumber('identity_retention_days', 'identityRetentionDays'),
+    recordingRetentionDays: nullableNumber('recording_retention_days', 'recordingRetentionDays'),
     compilerEnabled: booleanValue(input.compiler_enabled ?? input.compilerEnabled ?? existing?.compiler_enabled ?? false),
     compilerMemoryMb: Number(input.compiler_memory_mb ?? input.compilerMemoryMb ?? existing?.compiler_memory_mb ?? 512),
     compilerTimeoutSeconds: Number(input.compiler_timeout_seconds ?? input.compilerTimeoutSeconds ?? existing?.compiler_timeout_seconds ?? 15),
@@ -130,10 +132,13 @@ function validateTenantInput(input: TenantInput, requireSecret: boolean): string
   }
   if (input.quotaRecordingGb != null && (!Number.isFinite(input.quotaRecordingGb) || input.quotaRecordingGb <= 0)) return 'Recording quota must be positive or unlimited.';
   if (input.identityVerification === 'face_match') return 'Face matching is not available in this release.';
-  if (input.identityVerification === 'photo'
-      && (!Number.isInteger(input.identityRetentionDays) || Number(input.identityRetentionDays) < 1 || Number(input.identityRetentionDays) > 365)) {
-    return 'Choose an identity-image retention period of 1-365 days before enabling photo verification.';
-  }
+  const retentionError = validateEvidenceRetention({
+    identityMode: input.identityVerification,
+    s3RecordingEnabled: parseAllowedRecordModes(input.allowedRecordModes).includes('s3'),
+    identityRetentionDays: input.identityRetentionDays,
+    recordingRetentionDays: input.recordingRetentionDays,
+  });
+  if (retentionError) return retentionError;
   if (!Number.isInteger(input.compilerMemoryMb) || input.compilerMemoryMb < 256 || input.compilerMemoryMb > 3008) return 'Compiler memory must be 256-3008 MB.';
   if (!Number.isInteger(input.compilerTimeoutSeconds) || input.compilerTimeoutSeconds < 10 || input.compilerTimeoutSeconds > 30) return 'Compiler timeout must be 10-30 seconds.';
   if (!Number.isInteger(input.compilerConcurrency) || input.compilerConcurrency < 1 || input.compilerConcurrency > 20) return 'Compiler concurrency must be 1-20.';
@@ -254,14 +259,15 @@ router.post('/', requireSuperAdmin, async (req: Request, res: Response) => {
        (slug, name, contact_email, aws_region, instance_type, root_volume_size, compiler_enabled,
         backup_retention_days, email_enabled, email_from_name, email_daily_limit,
         quota_exams_per_month, quota_ai_gradings_per_month, quota_recording_gb, quota_emails_per_month,
-        identity_verification, identity_retention_days,
+        identity_verification, identity_retention_days, recording_retention_days,
         compiler_memory_mb, compiler_timeout_seconds, compiler_concurrency, domain_name,
         route53_zone_id, secret_arn, allowed_record_modes, repository_url, repository_ref, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [input.slug, input.name, input.contactEmail, input.awsRegion, input.instanceType,
         input.rootVolumeSize, input.compilerEnabled, input.backupRetentionDays, input.emailEnabled, input.emailFromName,
         input.emailDailyLimit, input.quotaExamsPerMonth, input.quotaAiGradingsPerMonth, input.quotaRecordingGb,
-        input.quotaEmailsPerMonth, input.identityVerification, input.identityRetentionDays, input.compilerMemoryMb, input.compilerTimeoutSeconds,
+        input.quotaEmailsPerMonth, input.identityVerification, input.identityRetentionDays, input.recordingRetentionDays,
+        input.compilerMemoryMb, input.compilerTimeoutSeconds,
         input.compilerConcurrency, input.domainName, input.route53ZoneId, input.secretArn,
         input.allowedRecordModes, input.repositoryUrl, input.repositoryRef, req.adminUser!.id],
     );
@@ -307,7 +313,7 @@ router.put('/:id', async (req: Request, res: Response) => {
        root_volume_size = ?, backup_retention_days = ?, compiler_enabled = ?, compiler_memory_mb = ?, compiler_timeout_seconds = ?,
        email_enabled = ?, email_from_name = ?, email_daily_limit = ?, quota_exams_per_month = ?,
        quota_ai_gradings_per_month = ?, quota_recording_gb = ?, quota_emails_per_month = ?,
-       identity_verification = ?, identity_retention_days = ?,
+       identity_verification = ?, identity_retention_days = ?, recording_retention_days = ?,
        compiler_concurrency = ?, domain_name = ?, route53_zone_id = ?, secret_arn = ?,
        allowed_record_modes = ?, repository_url = ?, repository_ref = ?,
        status = 'pending', provision_status = 'not_started',
@@ -316,7 +322,8 @@ router.put('/:id', async (req: Request, res: Response) => {
       [input.name, input.contactEmail, input.awsRegion, input.instanceType, input.rootVolumeSize, input.backupRetentionDays,
         input.compilerEnabled, input.compilerMemoryMb, input.compilerTimeoutSeconds, input.emailEnabled, input.emailFromName,
         input.emailDailyLimit, input.quotaExamsPerMonth, input.quotaAiGradingsPerMonth, input.quotaRecordingGb,
-        input.quotaEmailsPerMonth, input.identityVerification, input.identityRetentionDays, input.compilerConcurrency,
+        input.quotaEmailsPerMonth, input.identityVerification, input.identityRetentionDays, input.recordingRetentionDays,
+        input.compilerConcurrency,
         input.domainName, input.route53ZoneId, input.secretArn, input.allowedRecordModes,
         input.repositoryUrl, input.repositoryRef, tenantId],
     );
