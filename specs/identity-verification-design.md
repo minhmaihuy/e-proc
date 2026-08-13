@@ -56,13 +56,26 @@ biết làm bài.
 
 - `face_match` có nằm trong phạm vi đợt này không. Ảnh hưởng tới chi phí biến đổi và tới
   nghĩa vụ pháp lý: nhiều nơi xếp dữ liệu sinh trắc học vào loại được bảo vệ đặc biệt.
-- Thời hạn lưu ảnh giấy tờ. Đề xuất 30–90 ngày, ngắn hơn bản ghi màn hình.
 - Ngưỡng điểm so khớp để gắn cờ, nếu làm `face_match`.
+
+## Product decision — evidence retention (2026-08-13)
+
+- Superadmin nhập cả `recording_retention_days` và `identity_retention_days` tại màn hình
+  quản lý tenant. Không có giá trị mặc định ngầm cho dữ liệu bằng chứng mới.
+- Khi tenant cho phép chế độ ghi màn hình `s3`, `recording_retention_days` là bắt buộc và
+  phải là số nguyên 1–365. Khi tenant bật `photo`, cả hai thời hạn đều bắt buộc và
+  `identity_retention_days < recording_retention_days`.
+- Tenant cũ được backfill `recording_retention_days = NULL`; migration không tự chọn thời hạn
+  hay thay đổi lifecycle đang vận hành. Tenant phải cấu hình rõ trước lần lưu/approve/provision
+  tiếp theo có bật S3/photo.
+- Terraform quản lý bucket ghi màn hình riêng, private, mã hóa, CORS PUT giới hạn đúng origin,
+  IAM chỉ trên `recordings/*`, và lifecycle theo `recording_retention_days`. Tắt S3/photo không
+  xóa bucket đã có; thời hạn đã nhập được giữ lại để bằng chứng hiện hữu tiếp tục hết hạn.
 
 ## Implemented scope (2026-08-12)
 
 - This change implements `photo` only. `face_match`, automated comparison, biometric scores, periodic sampling, and `identity_mismatch` remain deferred.
-- No retention decision is inferred. Existing/new never-enabled tenants remain `off` with `identity_retention_days = NULL`; enabling `photo` requires superadmin to provide an explicit 1–365-day value. Disabling preserves that selected lifecycle so already-stored evidence expires without planning destructive bucket removal. The owner must still choose the production value and confirm it is shorter than screen-recording retention.
+- Retention is configured explicitly in tenant management. Existing/new never-enabled tenants keep nullable retention values; enabling S3 recording requires `recording_retention_days` and enabling `photo` additionally requires an explicit shorter `identity_retention_days`. Disabling preserves selected lifecycle values so already-stored evidence expires without planning destructive bucket removal.
 
 ## Verification
 

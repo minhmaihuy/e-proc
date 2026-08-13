@@ -28,6 +28,11 @@ output "identity_bucket" {
   value       = var.identity_retention_days != null ? aws_s3_bucket.identity[0].id : ""
 }
 
+output "recording_bucket" {
+  description = "Private S3 bucket for tenant screen recordings, or empty when retention is not configured."
+  value       = var.recording_retention_days != null ? aws_s3_bucket.recording[0].id : ""
+}
+
 output "compiler_lambda_arn" {
   description = "Practice compiler Lambda ARN, or an empty string when disabled."
   value       = var.compiler_enabled ? aws_lambda_function.compiler[0].arn : ""

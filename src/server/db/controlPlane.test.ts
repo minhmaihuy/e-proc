@@ -253,12 +253,14 @@ test('legacy tenant copy supplies safe identity defaults before inserting into t
   const migrated = normalizeLegacyTenantForControlPlane({ slug: 'legacy', name: 'Legacy', backup_retention_days: null });
   assert.equal(migrated.identity_verification, 'off');
   assert.equal(migrated.identity_retention_days, null);
+  assert.equal(migrated.recording_retention_days, null);
   const preserved = normalizeLegacyTenantForControlPlane({
     slug: 'photo-tenant', name: 'Photo', backup_retention_days: 14,
-    identity_verification: 'photo', identity_retention_days: 45,
+    identity_verification: 'photo', identity_retention_days: 45, recording_retention_days: 90,
   });
   assert.equal(preserved.identity_verification, 'photo');
   assert.equal(preserved.identity_retention_days, 45);
+  assert.equal(preserved.recording_retention_days, 90);
 });
 
 test('identity migration backfills off without choosing retention and preserves an explicit operator choice', async () => {
@@ -275,20 +277,23 @@ test('identity migration backfills off without choosing retention and preserves 
     const legacy = new Database(process.env.CONTROL_SQLITE_PATH);
     legacy.exec('ALTER TABLE tenants DROP COLUMN identity_verification');
     legacy.exec('ALTER TABLE tenants DROP COLUMN identity_retention_days');
+    legacy.exec('ALTER TABLE tenants DROP COLUMN recording_retention_days');
     legacy.close();
 
     await initControlPlaneDatabase();
-    const backfilled = (await query("SELECT identity_verification, identity_retention_days FROM tenants WHERE slug = 'fsa-cls'")).rows[0];
+    const backfilled = (await query("SELECT identity_verification, identity_retention_days, recording_retention_days FROM tenants WHERE slug = 'fsa-cls'")).rows[0];
     assert.equal(backfilled.identity_verification, 'off');
     assert.equal(backfilled.identity_retention_days, null);
+    assert.equal(backfilled.recording_retention_days, null);
     assert.equal(Number((await query('SELECT COUNT(*) AS count FROM tenants')).rows[0].count), countBefore);
-    await query("UPDATE tenants SET identity_verification = ?, identity_retention_days = ? WHERE slug = 'fsa-cls'", ['photo', 45]);
+    await query("UPDATE tenants SET identity_verification = ?, identity_retention_days = ?, recording_retention_days = ? WHERE slug = 'fsa-cls'", ['photo', 45, 90]);
     await closeControlPlaneDatabase();
 
     await initControlPlaneDatabase();
-    const preserved = (await query("SELECT identity_verification, identity_retention_days FROM tenants WHERE slug = 'fsa-cls'")).rows[0];
+    const preserved = (await query("SELECT identity_verification, identity_retention_days, recording_retention_days FROM tenants WHERE slug = 'fsa-cls'")).rows[0];
     assert.equal(preserved.identity_verification, 'photo');
     assert.equal(Number(preserved.identity_retention_days), 45);
+    assert.equal(Number(preserved.recording_retention_days), 90);
     assert.equal(Number((await query('SELECT COUNT(*) AS count FROM tenants')).rows[0].count), countBefore);
   } finally {
     await closeControlPlaneDatabase();

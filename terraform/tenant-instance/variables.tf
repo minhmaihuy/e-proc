@@ -159,6 +159,24 @@ variable "identity_enabled" {
   default     = false
 }
 
+variable "recording_enabled" {
+  description = "Allow this tenant to create new S3 screen recordings."
+  type        = bool
+  default     = false
+}
+
+variable "recording_retention_days" {
+  description = "Explicit retention for S3 screen recordings. No default is chosen for tenants."
+  type        = number
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.recording_retention_days == null || try(var.recording_retention_days >= 1 && var.recording_retention_days <= 365, false)
+    error_message = "recording_retention_days must be null or between 1 and 365."
+  }
+}
+
 variable "identity_retention_days" {
   description = "Explicit retention for sensitive identity photos. No default is chosen for tenants."
   type        = number

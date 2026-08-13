@@ -24,6 +24,7 @@ const EMPTY_CONFIG: TenantConfiguration = {
   quota_emails_per_month: null,
   identity_verification: 'off',
   identity_retention_days: null,
+  recording_retention_days: null,
   allowed_record_modes: 'none',
   compiler_enabled: false,
   compiler_memory_mb: 512,
@@ -73,6 +74,7 @@ function configFromTenant(tenant: Tenant): TenantConfiguration {
     quota_emails_per_month: tenant.quota_emails_per_month == null ? null : Number(tenant.quota_emails_per_month),
     identity_verification: tenant.identity_verification === 'photo' ? 'photo' : 'off',
     identity_retention_days: tenant.identity_retention_days == null ? null : Number(tenant.identity_retention_days),
+    recording_retention_days: tenant.recording_retention_days == null ? null : Number(tenant.recording_retention_days),
     allowed_record_modes: tenant.allowed_record_modes || 'none',
     compiler_enabled: Boolean(tenant.compiler_enabled),
     compiler_memory_mb: Number(tenant.compiler_memory_mb || 512),
@@ -88,6 +90,22 @@ function configFromTenant(tenant: Tenant): TenantConfiguration {
 
 function statusLabel(status: string): string {
   return status.replace(/_/g, ' ').replace(/\b\w/g, (letter: string) => letter.toUpperCase());
+}
+
+function retentionValidationMessage(config: TenantConfiguration): string | null {
+  const s3Enabled = (config.allowed_record_modes || 'none').split(',').includes('s3');
+  if ((s3Enabled || config.identity_verification === 'photo') && config.recording_retention_days == null) {
+    return 'Enter screen-recording retention before enabling S3 recording or photo verification.';
+  }
+  if (config.identity_verification === 'photo' && config.identity_retention_days == null) {
+    return 'Enter identity-photo retention before enabling photo verification.';
+  }
+  if (config.identity_retention_days != null
+      && config.recording_retention_days != null
+      && config.identity_retention_days >= config.recording_retention_days) {
+    return 'Identity-photo retention must be shorter than screen-recording retention.';
+  }
+  return null;
 }
 
 function UsageMeter({ label, used, limit }: { label: string; used: number; limit: number | null | undefined }) {
@@ -234,6 +252,11 @@ function TenantManagement() {
     event.preventDefault();
     if (!selectedTenant) return;
     clearMessages();
+    const retentionError = retentionValidationMessage(form);
+    if (retentionError) {
+      setError(retentionError);
+      return;
+    }
     setSaving(true);
     try {
       await tenantControlApi.updateTenant(selectedTenant.id, form);
@@ -399,7 +422,8 @@ function TenantManagement() {
                   <label className="field"><span>Recording quota (GB)</span><input type="number" min={0.01} step={0.01} value={form.quota_recording_gb ?? ''} placeholder="Unlimited" onChange={(event) => handleConfigChange('quota_recording_gb', event.target.value === '' ? null : Number(event.target.value))} /><small>Configured for future enforcement; usage is currently measured in minutes.</small></label>
                   <label className="field"><span>Monthly email quota</span><input type="number" min={1} value={form.quota_emails_per_month ?? ''} placeholder="Unlimited" onChange={(event) => handleConfigChange('quota_emails_per_month', event.target.value === '' ? null : Number(event.target.value))} /><small>Measurement only; daily safety limit still applies.</small></label>
                   <label className="field"><span>Identity verification</span><select value={form.identity_verification} onChange={(event) => handleConfigChange('identity_verification', event.target.value)}><option value="off">Off</option><option value="photo">Manual photo review</option></select><small>Automated face matching is intentionally not available.</small></label>
-                  {form.identity_verification === 'photo' && <label className="field"><span>Identity photo retention (days)</span><input type="number" min={1} max={365} required value={form.identity_retention_days ?? ''} onChange={(event) => handleConfigChange('identity_retention_days', event.target.value === '' ? null : Number(event.target.value))} /><small>Required explicitly; no retention period is selected for you.</small></label>}
+                  {form.identity_verification === 'photo' && <label className="field"><span>Identity photo retention (days)</span><input type="number" min={1} max={365} required value={form.identity_retention_days ?? ''} onChange={(event) => handleConfigChange('identity_retention_days', event.target.value === '' ? null : Number(event.target.value))} /><small>Must be shorter than the screen-recording retention below.</small></label>}
+                  <label className="field"><span>Screen recording retention (days)</span><input type="number" min={1} max={365} required={form.identity_verification === 'photo' || (form.allowed_record_modes || '').split(',').includes('s3')} value={form.recording_retention_days ?? ''} placeholder="Required for S3 or photo" onChange={(event) => handleConfigChange('recording_retention_days', event.target.value === '' ? null : Number(event.target.value))} /><small>Controls the S3 video lifecycle; no retention period is selected automatically.</small></label>
                   <div className="field field-wide">
                     <span>Screen recording</span>
                     <div className="flex flex-wrap items-center gap-4 pt-1">
