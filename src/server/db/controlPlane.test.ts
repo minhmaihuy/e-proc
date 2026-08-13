@@ -8,6 +8,7 @@ import {
   DEFAULT_FSA_TENANT_ADMIN_PASSWORD,
   DEFAULT_FSA_TENANT_ADMIN_USERNAME,
   mapLegacyTenantSlug,
+  normalizeLegacyTenantForControlPlane,
   resolveControlPlaneConnection,
   resolveFsaClsLifecycle,
   resolveTenantAdminSeed,
@@ -237,6 +238,57 @@ test('email and quota migration uses safe defaults without losing existing tenan
     assert.equal(Number(preserved.quota_ai_gradings_per_month), 2000);
     assert.equal(Number(preserved.quota_recording_gb), 50.5);
     assert.equal(Number(preserved.quota_emails_per_month), 3000);
+    assert.equal(Number((await query('SELECT COUNT(*) AS count FROM tenants')).rows[0].count), countBefore);
+  } finally {
+    await closeControlPlaneDatabase();
+    if (previousPath === undefined) delete process.env.CONTROL_SQLITE_PATH;
+    else process.env.CONTROL_SQLITE_PATH = previousPath;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    fs.rmSync(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test('legacy tenant copy supplies safe identity defaults before inserting into the new control schema', () => {
+  const migrated = normalizeLegacyTenantForControlPlane({ slug: 'legacy', name: 'Legacy', backup_retention_days: null });
+  assert.equal(migrated.identity_verification, 'off');
+  assert.equal(migrated.identity_retention_days, null);
+  const preserved = normalizeLegacyTenantForControlPlane({
+    slug: 'photo-tenant', name: 'Photo', backup_retention_days: 14,
+    identity_verification: 'photo', identity_retention_days: 45,
+  });
+  assert.equal(preserved.identity_verification, 'photo');
+  assert.equal(preserved.identity_retention_days, 45);
+});
+
+test('identity migration backfills off without choosing retention and preserves an explicit operator choice', async () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'eproc-control-identity-'));
+  const previousPath = process.env.CONTROL_SQLITE_PATH;
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.CONTROL_SQLITE_PATH = path.join(tempDirectory, 'control.db');
+  process.env.NODE_ENV = 'test';
+  try {
+    await initControlPlaneDatabase();
+    const countBefore = Number((await query('SELECT COUNT(*) AS count FROM tenants')).rows[0].count);
+    await closeControlPlaneDatabase();
+
+    const legacy = new Database(process.env.CONTROL_SQLITE_PATH);
+    legacy.exec('ALTER TABLE tenants DROP COLUMN identity_verification');
+    legacy.exec('ALTER TABLE tenants DROP COLUMN identity_retention_days');
+    legacy.close();
+
+    await initControlPlaneDatabase();
+    const backfilled = (await query("SELECT identity_verification, identity_retention_days FROM tenants WHERE slug = 'fsa-cls'")).rows[0];
+    assert.equal(backfilled.identity_verification, 'off');
+    assert.equal(backfilled.identity_retention_days, null);
+    assert.equal(Number((await query('SELECT COUNT(*) AS count FROM tenants')).rows[0].count), countBefore);
+    await query("UPDATE tenants SET identity_verification = ?, identity_retention_days = ? WHERE slug = 'fsa-cls'", ['photo', 45]);
+    await closeControlPlaneDatabase();
+
+    await initControlPlaneDatabase();
+    const preserved = (await query("SELECT identity_verification, identity_retention_days FROM tenants WHERE slug = 'fsa-cls'")).rows[0];
+    assert.equal(preserved.identity_verification, 'photo');
+    assert.equal(Number(preserved.identity_retention_days), 45);
     assert.equal(Number((await query('SELECT COUNT(*) AS count FROM tenants')).rows[0].count), countBefore);
   } finally {
     await closeControlPlaneDatabase();

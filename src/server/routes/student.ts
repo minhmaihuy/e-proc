@@ -6,7 +6,8 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { studentAuthMiddleware } from '../middleware/studentAuth.js';
 import type { StudentTokenPayload } from '../middleware/studentAuth.js';
-import { createRecordingUploadUrl, inspectRecordingObject, isS3Configured } from '../services/s3.js';
+import controlDb from '../db/controlPlane.js';
+import { createIdentityUploadUrls, createRecordingUploadUrl, finalizeIdentityObjects, inspectRecordingObject, isIdentityS3Configured, isS3Configured } from '../services/s3.js';
 import rateLimit from 'express-rate-limit';
 import { sessionTracker, detectConcurrentSession } from '../middleware/sessionTracker.js';
 import { getExamContext, assertCanStart, computeExamDeadline, sendExamGuardError, ExamGuardError } from '../services/examGuard.js';
@@ -14,12 +15,41 @@ import { parseBlueprintCompat } from '../services/blueprint.js';
 import { runCode } from '../coderunner.js';
 import { getPracticeCompilerMode, runCodeWithLambda } from '../services/lambdaCompiler.js';
 import { enqueueUsageEvent } from '../services/usageOutbox.js';
+import { identitySatisfied, normalizeIdentityMode } from '../services/identityPolicy.js';
+import { getCurrentTenantConfig } from '../tenantContext.js';
 
 dotenv.config();
 
 const USE_SQLITE = process.env.USE_SQLITE === 'true' || process.env.NODE_ENV !== 'production';
 
 const router = Router();
+
+async function currentIdentityConfig() {
+  const row = (await controlDb.query('SELECT identity_verification, identity_retention_days FROM tenants WHERE slug = ?', [
+    getCurrentTenantConfig().slug,
+  ])).rows[0];
+  return {
+    mode: normalizeIdentityMode(row?.identity_verification),
+    retentionDays: row?.identity_retention_days == null ? null : Number(row.identity_retention_days),
+  };
+}
+
+async function requireStudentIdentity(studentId: number, res: Response): Promise<boolean> {
+  const tenant = await currentIdentityConfig();
+  const row = (await db.query(`SELECT s.identity_status, b.identity_verification
+    FROM students s JOIN batches b ON b.id = s.batch_id WHERE s.id = ?`, [studentId])).rows[0];
+  const mode = normalizeIdentityMode(row?.identity_verification);
+  if (mode === 'face_match' || (mode === 'photo' && tenant.mode !== 'photo')) {
+    res.status(403).json({ error: 'Batch identity verification is not permitted by this tenant.', reason: 'identity_required' });
+    return false;
+  }
+  const status = row?.identity_status;
+  if (!identitySatisfied(mode, status)) {
+    res.status(403).json({ error: 'Identity verification is required before the assessment.', reason: 'identity_required' });
+    return false;
+  }
+  return true;
+}
 
 // [SEC] Rate-limit riêng cho /verify — chống brute-force access code.
 // 10 lần / phút / IP đủ cho retry hợp lệ nhưng chặn dò mã hàng loạt.
@@ -263,7 +293,8 @@ router.post('/verify', verifyRateLimit, async (req: Request, res: Response) => {
     }
 
     const result = await db.query(`
-      SELECT s.*, b.name as batch_name, b.start_time, b.end_time, b.duration, b.record_enabled, b.record_mode, b.practice_exam_id
+      SELECT s.*, b.name as batch_name, b.start_time, b.end_time, b.duration, b.record_enabled, b.record_mode,
+             b.practice_exam_id, b.identity_verification
       FROM students s
       JOIN batches b ON s.batch_id = b.id
       WHERE s.access_code = ?
@@ -313,6 +344,15 @@ router.post('/verify', verifyRateLimit, async (req: Request, res: Response) => {
 
     // Chế độ ghi màn hình: 'none' | 'local' | 's3'. record_enabled cũ vẫn được suy ra để tương thích.
     const recordMode: string = student.record_mode || (student.record_enabled ? 's3' : 'none');
+    const tenantIdentity = await currentIdentityConfig();
+    const batchIdentityMode = normalizeIdentityMode(student.identity_verification);
+    const identityMode = batchIdentityMode === 'photo' && tenantIdentity.mode === 'photo' ? 'photo' : 'off';
+    const targetIdentityStatus = identityMode === 'off' ? 'not_required'
+      : student.identity_status === 'verified' ? 'verified'
+        : student.identity_status === 'captured' || student.identity_status === 'rejected' ? student.identity_status : 'pending';
+    if (student.identity_status !== targetIdentityStatus) {
+      await db.query('UPDATE students SET identity_status = ? WHERE id = ?', [targetIdentityStatus, student.id]);
+    }
 
     // Với mode 'local': cấp password mã hóa zip (server sinh & giữ, học viên KHÔNG thấy).
     // Sinh 1 lần rồi tái dùng để resume-after-reload dùng lại đúng pass. Học viên chỉ
@@ -339,6 +379,9 @@ router.post('/verify', verifyRateLimit, async (req: Request, res: Response) => {
       record_mode: recordMode,
       // chỉ trả pass khi local — client dùng ngầm để mã hóa, không hiển thị
       recording_password: recordMode === 'local' ? recordingPassword : undefined,
+      identity_mode: identityMode,
+      identity_status: targetIdentityStatus,
+      identity_retention_days: identityMode === 'photo' ? tenantIdentity.retentionDays : undefined,
     });
   } catch (error: any) {
     if (sendExamGuardError(res, error)) return;
@@ -362,11 +405,103 @@ router.post('/select-email', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/identity/upload-url', studentAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const mode = (await currentIdentityConfig()).mode;
+    if (mode !== 'photo') return res.status(403).json({ error: 'Photo identity verification is not enabled.' });
+    if (!isIdentityS3Configured()) return res.status(503).json({ error: 'Identity image storage is not configured.' });
+    const contentType = req.body?.content_type;
+    if (contentType !== 'image/jpeg') return res.status(400).json({ error: 'Identity images must be JPEG.' });
+    const { studentId, batchId } = req.studentPayload!;
+    const student = (await db.query(`SELECT s.identity_status, b.identity_verification
+      FROM students s JOIN batches b ON b.id = s.batch_id WHERE s.id = ? AND s.batch_id = ?`, [studentId, batchId])).rows[0];
+    if (!student) return res.status(404).json({ error: 'Student not found.' });
+    if (normalizeIdentityMode(student.identity_verification) !== 'photo') {
+      return res.status(403).json({ error: 'Photo identity verification is not required for this batch.' });
+    }
+    if (!['pending', 'rejected'].includes(student.identity_status)) {
+      return res.status(409).json({ error: 'Identity images are already awaiting or have completed review.' });
+    }
+    const captureId = crypto.randomUUID();
+    await db.query(`UPDATE students SET identity_status = 'pending', identity_capture_id = ?,
+      identity_id_key = NULL, identity_face_key = NULL, identity_reviewed_by = NULL, identity_reviewed_at = NULL
+      WHERE id = ? AND batch_id = ?`, [captureId, studentId, batchId]);
+    const upload = await createIdentityUploadUrls({ batchId, studentId, captureId, contentType });
+    return res.json({ id_url: upload.idUrl, face_url: upload.faceUrl, expires_seconds: 900 });
+  } catch (error) {
+    console.error('[Identity] Upload URL failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return res.status(500).json({ error: 'Unable to prepare identity upload.' });
+  }
+});
+
+router.post('/identity/complete', studentAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const mode = (await currentIdentityConfig()).mode;
+    if (mode !== 'photo') return res.status(403).json({ error: 'Photo identity verification is not enabled.' });
+    const { studentId, batchId } = req.studentPayload!;
+    const student = (await db.query(`SELECT s.identity_status, s.identity_capture_id, b.identity_verification
+      FROM students s JOIN batches b ON b.id = s.batch_id WHERE s.id = ? AND s.batch_id = ?`, [studentId, batchId])).rows[0];
+    if (!student) return res.status(404).json({ error: 'Student not found.' });
+    if (normalizeIdentityMode(student.identity_verification) !== 'photo') {
+      return res.status(403).json({ error: 'Photo identity verification is not required for this batch.' });
+    }
+    if (student.identity_status === 'verified') return res.status(409).json({ error: 'Identity was already verified.' });
+    if (!student.identity_capture_id || student.identity_status !== 'pending') {
+      return res.status(409).json({ error: 'No identity capture is ready to complete.' });
+    }
+    const claim = await db.query(`UPDATE students SET identity_status = 'captured'
+      WHERE id = ? AND batch_id = ? AND identity_status = 'pending' AND identity_capture_id = ?`,
+    [studentId, batchId, student.identity_capture_id]);
+    if (claim.rowCount !== 1) return res.status(409).json({ error: 'Identity capture is already being finalized.' });
+    let finalized;
+    try {
+      finalized = await finalizeIdentityObjects({ batchId, studentId, captureId: student.identity_capture_id });
+      const stored = await db.query(
+        `UPDATE students SET identity_status = 'captured', identity_id_key = ?, identity_face_key = ?,
+         identity_score = NULL, identity_reviewed_by = NULL, identity_reviewed_at = NULL
+         WHERE id = ? AND batch_id = ? AND identity_capture_id = ? AND identity_status = 'captured'`,
+        [finalized.idKey, finalized.faceKey, studentId, batchId, student.identity_capture_id],
+      );
+      if (stored.rowCount !== 1) throw new Error('Identity capture changed while finalizing.');
+    } catch (error) {
+      await db.query(`UPDATE students SET identity_status = 'pending'
+        WHERE id = ? AND batch_id = ? AND identity_capture_id = ? AND identity_id_key IS NULL AND identity_face_key IS NULL`,
+      [studentId, batchId, student.identity_capture_id]).catch(() => undefined);
+      throw error;
+    }
+    return res.json({ status: 'captured' });
+  } catch (error) {
+    console.error('[Identity] Upload completion failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return res.status(422).json({ error: 'Both identity images must finish uploading.' });
+  }
+});
+
+router.get('/identity/status', studentAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { studentId, batchId } = req.studentPayload!;
+    const tenant = await currentIdentityConfig();
+    const row = (await db.query(`SELECT s.identity_status, b.identity_verification
+      FROM students s JOIN batches b ON b.id = s.batch_id WHERE s.id = ? AND s.batch_id = ?`, [studentId, batchId])).rows[0];
+    if (!row) return res.status(404).json({ error: 'Student not found.' });
+    const batchMode = normalizeIdentityMode(row.identity_verification);
+    const mode = batchMode === 'photo' && tenant.mode === 'photo' ? 'photo' : 'off';
+    return res.json({
+      mode,
+      status: mode === 'off' ? 'not_required' : row.identity_status,
+      retention_days: mode === 'photo' ? tenant.retentionDays : undefined,
+    });
+  } catch (error) {
+    console.error('[Identity] Status failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return res.status(500).json({ error: 'Unable to load identity status.' });
+  }
+});
+
 router.post('/exam/start', studentAuthMiddleware, async (req: Request, res: Response) => {
   try {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     
     const student_id = req.studentPayload!.studentId;
+    if (!(await requireStudentIdentity(student_id, res))) return;
     const startedExam = await startExamAtomically(student_id);
     const startedAt = (await db.query('SELECT exam_started_at FROM students WHERE id = ?', [student_id])).rows[0]?.exam_started_at;
     await enqueueUsageEvent(`exam-start:${student_id}`, 'exams_started', 1, new Date(startedAt));
@@ -380,7 +515,7 @@ router.post('/exam/start', studentAuthMiddleware, async (req: Request, res: Resp
       [student_id]
     );
     const student = studentResult.rows[0];
-    console.log('[startExam] student:', student);
+    // Never log the student row: it contains recording credentials and private identity object keys.
 
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
@@ -500,6 +635,7 @@ router.get('/exam/questions', studentAuthMiddleware, sessionTracker, async (req:
 
     // [C-4] Đọc studentId từ token đã xác thực, không tin x-student-id header
     const studentId = req.studentPayload!.studentId.toString();
+    if (!(await requireStudentIdentity(parseInt(studentId), res))) return;
 
     // === SERVER-SIDE TIMER GUARD ===
     const studentResult = await db.query(`
@@ -863,6 +999,7 @@ router.post('/exam/recording-url', studentAuthMiddleware, async (req: Request, r
     }
 
     const studentId = req.studentPayload!.studentId;
+    if (!(await requireStudentIdentity(studentId, res))) return;
     const batchId = req.studentPayload!.batchId;
 
     // Chỉ cấp URL khi batch ở mode 's3' (chốt chặn server-side, tránh mod/ai lách).
@@ -1079,6 +1216,7 @@ router.get('/practice', studentAuthMiddleware, async (req: Request, res: Respons
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
 
     const studentId = req.studentPayload!.studentId;
+    if (!(await requireStudentIdentity(studentId, res))) return;
 
     const studentResult = await db.query(`
       SELECT s.status, s.exam_started_at, s.exam_deadline, s.disconnected_at, b.duration, b.practice_exam_id

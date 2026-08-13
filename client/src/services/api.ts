@@ -34,6 +34,9 @@ export interface RecordingConfig {
   allowed_record_modes: ('none' | 'local' | 's3')[];
   can_change: boolean;
   s3_configured: boolean;
+  identity_verification: 'off' | 'photo';
+  identity_retention_days: number | null;
+  identity_s3_configured: boolean;
 }
 
 export interface RecordingPart {
@@ -85,6 +88,8 @@ export interface Tenant {
   quota_ai_gradings_per_month?: number | null;
   quota_recording_gb?: number | null;
   quota_emails_per_month?: number | null;
+  identity_verification?: 'off' | 'photo';
+  identity_retention_days?: number | null;
   usage_exams_started?: number;
   usage_ai_gradings?: number;
   usage_recording_minutes?: number;
@@ -162,6 +167,8 @@ export interface TenantConfiguration {
   quota_ai_gradings_per_month: number | null;
   quota_recording_gb: number | null;
   quota_emails_per_month: number | null;
+  identity_verification: 'off' | 'photo';
+  identity_retention_days: number | null;
   allowed_record_modes?: string;
   compiler_enabled: boolean;
   compiler_memory_mb: number;
@@ -249,6 +256,12 @@ export const adminApi = {
 
   getStudentRecordings: (batchId: number, studentId: number) =>
     api.get<StudentRecordings>(`/admin/batches/${batchId}/students/${studentId}/recordings`),
+
+  getStudentIdentity: (batchId: number, studentId: number) =>
+    api.get<{ status: string; id_url: string; face_url: string; review_token: string; url_expires_seconds: number }>(`/admin/batches/${batchId}/students/${studentId}/identity`),
+
+  reviewStudentIdentity: (batchId: number, studentId: number, decision: 'verified' | 'rejected', reviewToken: string) =>
+    api.post<{ status: string }>(`/admin/batches/${batchId}/students/${studentId}/identity/review`, { decision, review_token: reviewToken }),
 
   // --- Tenant-aware user management ---
   listUsers: () =>
@@ -407,6 +420,15 @@ export const studentApi = {
 
   selectEmail: (studentId: number, email: string) =>
     api.post('/student/select-email', { student_id: studentId, email }),
+
+  getIdentityStatus: () =>
+    api.get<{ mode: 'off' | 'photo'; status: 'not_required' | 'pending' | 'captured' | 'verified' | 'rejected'; retention_days?: number }>('/student/identity/status'),
+
+  getIdentityUploadUrls: () =>
+    api.post<{ id_url: string; face_url: string; expires_seconds: number }>('/student/identity/upload-url', { content_type: 'image/jpeg' }),
+
+  completeIdentityUpload: () =>
+    api.post<{ status: 'captured' }>('/student/identity/complete', {}),
 
   startExam: (studentId: number) =>
     api.post('/student/exam/start', { student_id: studentId }),

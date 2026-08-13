@@ -40,6 +40,18 @@ test('provisioning validation rejects unapproved tenants', () => {
   );
 });
 
+test('photo identity provisioning requires explicit retention and face matching stays unavailable', () => {
+  assert.match(validateTenantForProvisioning({
+    ...validTenant, identity_verification: 'photo', identity_retention_days: null,
+  }) || '', /retention/);
+  assert.equal(validateTenantForProvisioning({
+    ...validTenant, identity_verification: 'photo', identity_retention_days: 45,
+  }), null);
+  assert.match(validateTenantForProvisioning({
+    ...validTenant, identity_verification: 'face_match', identity_retention_days: 45,
+  }) || '', /not available/);
+});
+
 test('provisioning validation rejects unsafe slugs and malformed secret ARNs', () => {
   assert.match(
     validateTenantForProvisioning({ ...validTenant, slug: '../../other-tenant' }) || '',

@@ -153,6 +153,24 @@ variable "backup_retention_days" {
   }
 }
 
+variable "identity_enabled" {
+  description = "Create isolated S3 storage for manual photo identity verification."
+  type        = bool
+  default     = false
+}
+
+variable "identity_retention_days" {
+  description = "Explicit retention for sensitive identity photos. No default is chosen for tenants."
+  type        = number
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = (var.identity_retention_days == null || try(var.identity_retention_days >= 1 && var.identity_retention_days <= 365, false)) && (!var.identity_enabled || var.identity_retention_days != null)
+    error_message = "identity_retention_days must be explicitly set to 1-365 when identity is enabled."
+  }
+}
+
 variable "compiler_enabled" {
   description = "Create an isolated Lambda code runner for Practice exams."
   type        = bool

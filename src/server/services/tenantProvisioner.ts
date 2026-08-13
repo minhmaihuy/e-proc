@@ -23,6 +23,8 @@ export interface ProvisionableTenant {
   instance_type: string;
   root_volume_size: number;
   backup_retention_days?: number;
+  identity_verification?: string;
+  identity_retention_days?: number | null;
   compiler_enabled: boolean | number;
   compiler_memory_mb: number;
   compiler_timeout_seconds: number;
@@ -55,6 +57,11 @@ export function validateTenantForProvisioning(tenant: ProvisionableTenant): stri
   }
   if (Boolean(tenant.compiler_enabled) && !ECR_IMAGE_PATTERN.test(process.env.TENANT_COMPILER_IMAGE_URI?.trim() || '')) {
     return 'TENANT_COMPILER_IMAGE_URI must be a versioned ECR image URI when Lambda compiler is enabled.';
+  }
+  if (tenant.identity_verification === 'face_match') return 'Automated face matching is not available.';
+  if (tenant.identity_verification === 'photo'
+      && (!Number.isInteger(tenant.identity_retention_days) || Number(tenant.identity_retention_days) < 1 || Number(tenant.identity_retention_days) > 365)) {
+    return 'Identity retention must be explicitly set to 1-365 days.';
   }
   return null;
 }
@@ -168,6 +175,8 @@ export async function runTenantProvisioning(
       instance_type: tenant.instance_type,
       root_volume_size: Number(tenant.root_volume_size),
       backup_retention_days: Number(tenant.backup_retention_days || 14),
+      identity_enabled: tenant.identity_verification === 'photo',
+      identity_retention_days: tenant.identity_retention_days == null ? null : Number(tenant.identity_retention_days),
       compiler_enabled: Boolean(tenant.compiler_enabled),
       compiler_image_uri: Boolean(tenant.compiler_enabled) ? process.env.TENANT_COMPILER_IMAGE_URI!.trim() : '',
       compiler_memory_mb: Number(tenant.compiler_memory_mb),

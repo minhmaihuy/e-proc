@@ -163,6 +163,8 @@ async function initPostgres(config: ControlPlaneConnectionConfig) {
         quota_ai_gradings_per_month INTEGER,
         quota_recording_gb NUMERIC,
         quota_emails_per_month INTEGER,
+        identity_verification VARCHAR(16) NOT NULL DEFAULT 'off',
+        identity_retention_days INTEGER,
         compiler_enabled BOOLEAN NOT NULL DEFAULT FALSE,
         -- Danh sách chế độ ghi màn hình tenant được PHÉP dùng (batch chọn trong đó).
         -- Tenant mới mặc định chỉ 'none': bật ghi màn hình là quyết định có chủ đích
@@ -252,6 +254,8 @@ async function initPostgres(config: ControlPlaneConnectionConfig) {
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS quota_ai_gradings_per_month INTEGER`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS quota_recording_gb NUMERIC`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS quota_emails_per_month INTEGER`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS identity_verification VARCHAR(16) NOT NULL DEFAULT 'off'`);
+    await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS identity_retention_days INTEGER`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_memory_mb INTEGER NOT NULL DEFAULT 512`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_timeout_seconds INTEGER NOT NULL DEFAULT 15`);
     await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS compiler_concurrency INTEGER NOT NULL DEFAULT 2`);
@@ -298,6 +302,8 @@ function initSqlite(config: ControlPlaneConnectionConfig) {
       quota_ai_gradings_per_month INTEGER,
       quota_recording_gb REAL,
       quota_emails_per_month INTEGER,
+      identity_verification TEXT NOT NULL DEFAULT 'off',
+      identity_retention_days INTEGER,
       compiler_enabled INTEGER NOT NULL DEFAULT 0,
       allowed_record_modes TEXT NOT NULL DEFAULT 'none',
       compiler_memory_mb INTEGER NOT NULL DEFAULT 512,
@@ -388,6 +394,8 @@ function initSqlite(config: ControlPlaneConnectionConfig) {
     ['quota_ai_gradings_per_month', 'INTEGER'],
     ['quota_recording_gb', 'REAL'],
     ['quota_emails_per_month', 'INTEGER'],
+    ['identity_verification', "TEXT NOT NULL DEFAULT 'off'"],
+    ['identity_retention_days', 'INTEGER'],
   ] as const) {
     if (!tenantColumns.includes(name)) sqliteDb.exec(`ALTER TABLE tenants ADD COLUMN ${name} ${definition}`);
   }
@@ -399,7 +407,7 @@ const TENANT_COLUMNS = [
   'backup_retention_days', 'last_backup_at', 'last_backup_size_bytes', 'last_restore_test_at', 'last_restore_test_status',
   'email_enabled', 'email_from_name', 'email_daily_limit', 'quota_exams_per_month',
   'quota_ai_gradings_per_month', 'quota_recording_gb', 'quota_emails_per_month',
-  'allowed_record_modes', 'compiler_enabled', 'compiler_memory_mb', 'compiler_timeout_seconds', 'compiler_concurrency',
+  'identity_verification', 'identity_retention_days', 'allowed_record_modes', 'compiler_enabled', 'compiler_memory_mb', 'compiler_timeout_seconds', 'compiler_concurrency',
   'compiler_lambda_arn', 'domain_name', 'route53_zone_id', 'secret_arn', 'repository_url',
   'repository_ref', 'provision_status', 'terraform_state_key', 'instance_id', 'public_ip',
   'ipv6_address', 'app_url', 'last_error', 'approved_by', 'approved_at', 'created_by', 'created_at', 'updated_at',
@@ -658,6 +666,19 @@ async function ensureFsaClsTenant(legacyTenantIds: number[]): Promise<number> {
   return tenantId;
 }
 
+export function normalizeLegacyTenantForControlPlane(row: any) {
+  return {
+    ...row,
+    slug: mapLegacyTenantSlug(String(row.slug)),
+    name: String(row.slug).trim().toLowerCase() === 'fsa' ? 'FSA CLS' : row.name,
+    backup_retention_days: Number(row.backup_retention_days) > 0 ? Number(row.backup_retention_days) : 14,
+    identity_verification: row.identity_verification === 'photo' || row.identity_verification === 'face_match'
+      ? row.identity_verification
+      : 'off',
+    identity_retention_days: Number(row.identity_retention_days) > 0 ? Number(row.identity_retention_days) : null,
+  };
+}
+
 async function migrateLegacyControlPlane() {
   const [legacyAdmins, legacyTenants, legacyJobs, legacyAudits] = await Promise.all([
     legacyRows('admin_users'), legacyRows('tenants'), legacyRows('tenant_provision_jobs'), legacyRows('tenant_audit_events'),
@@ -669,12 +690,7 @@ async function migrateLegacyControlPlane() {
 
   await copyRowsWhenEmpty('admin_users', ADMIN_COLUMNS, legacyAdmins);
   await seedSuperAdmin();
-  await copyRowsWhenEmpty('tenants', TENANT_COLUMNS, legacyTenants, (row) => ({
-    ...row,
-    slug: mapLegacyTenantSlug(String(row.slug)),
-    name: String(row.slug).trim().toLowerCase() === 'fsa' ? 'FSA CLS' : row.name,
-    backup_retention_days: Number(row.backup_retention_days) > 0 ? Number(row.backup_retention_days) : 14,
-  }));
+  await copyRowsWhenEmpty('tenants', TENANT_COLUMNS, legacyTenants, normalizeLegacyTenantForControlPlane);
   await copyRowsWhenEmpty('tenant_provision_jobs', JOB_COLUMNS, legacyJobs);
   await copyRowsWhenEmpty('tenant_audit_events', AUDIT_COLUMNS, legacyAudits);
   await resetPostgresSequences();

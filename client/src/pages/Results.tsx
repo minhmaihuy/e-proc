@@ -13,6 +13,40 @@ function Results() {
   const [recordings, setRecordings] = useState<StudentRecordings | null>(null);
   const [recordingsLoading, setRecordingsLoading] = useState(false);
   const [recordingsError, setRecordingsError] = useState('');
+  const [identityFor, setIdentityFor] = useState<{ studentId: number; email: string } | null>(null);
+  const [identityEvidence, setIdentityEvidence] = useState<{ status: string; id_url: string; face_url: string; review_token: string } | null>(null);
+  const [identityError, setIdentityError] = useState('');
+  const [identityLoading, setIdentityLoading] = useState(false);
+
+  const openIdentity = async (studentId: number, email: string) => {
+    setIdentityFor({ studentId, email });
+    setIdentityEvidence(null);
+    setIdentityError('');
+    setIdentityLoading(true);
+    try {
+      const response = await adminApi.getStudentIdentity(Number(id), studentId);
+      setIdentityEvidence(response.data);
+    } catch (error: any) {
+      setIdentityError(error.response?.data?.error || 'Unable to load identity evidence.');
+    } finally {
+      setIdentityLoading(false);
+    }
+  };
+
+  const reviewIdentity = async (decision: 'verified' | 'rejected') => {
+    if (!identityFor) return;
+    setIdentityLoading(true);
+    try {
+      if (!identityEvidence) return;
+      const response = await adminApi.reviewStudentIdentity(Number(id), identityFor.studentId, decision, identityEvidence.review_token);
+      setIdentityEvidence(current => current ? { ...current, status: response.data.status } : current);
+      await loadResults();
+    } catch (error: any) {
+      setIdentityError(error.response?.data?.error || 'Unable to save identity review.');
+    } finally {
+      setIdentityLoading(false);
+    }
+  };
 
   const openRecordings = async (studentId: number, email: string) => {
     setRecordingsFor({ studentId, email });
@@ -192,6 +226,11 @@ function Results() {
                             className="mt-1.5 text-xs font-semibold text-blue-700 hover:text-blue-900 underline underline-offset-2"
                           >
                             ▶ Xem lại video ({r.recording_parts.length} phần)
+                          </button>
+                        )}
+                        {batch?.identity_verification === 'photo' && ['captured', 'verified', 'rejected'].includes(r.student.identity_status) && (
+                          <button type="button" onClick={() => openIdentity(r.student.id, r.student.email)} className="mt-1.5 block text-xs font-semibold text-indigo-700 underline underline-offset-2">
+                            Review identity photos ({r.student.identity_status})
                           </button>
                         )}
                       </td>
@@ -524,6 +563,16 @@ function Results() {
         </div>
       )}
       {/* Xem lại video ghi màn hình (S3) của một học viên */}
+      {identityFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" role="presentation" onMouseDown={() => setIdentityFor(null)}>
+          <section role="dialog" aria-modal="true" aria-label={`Identity evidence for ${identityFor.email}`} className="w-full max-w-4xl rounded-2xl bg-white p-6 shadow-xl" onMouseDown={event => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4"><div><h3 className="text-lg font-bold text-slate-900">Manual identity review</h3><p className="text-sm text-slate-500">{identityFor.email}</p></div><button type="button" aria-label="Close" onClick={() => setIdentityFor(null)}><X size={18} /></button></div>
+            {identityLoading && !identityEvidence && <p className="mt-6 text-sm text-slate-500">Loading short-lived image links…</p>}
+            {identityError && <p className="mt-6 text-sm font-medium text-red-700">{identityError}</p>}
+            {identityEvidence && <><div className="mt-5 grid gap-4 md:grid-cols-2"><figure><figcaption className="mb-2 font-semibold">Government ID</figcaption><img src={identityEvidence.id_url} alt="Government ID supplied by candidate" className="max-h-[55vh] w-full rounded-xl border object-contain" /></figure><figure><figcaption className="mb-2 font-semibold">Current face photo</figcaption><img src={identityEvidence.face_url} alt="Current face supplied by candidate" className="max-h-[55vh] w-full rounded-xl border object-contain" /></figure></div>{identityEvidence.status === 'captured' ? <div className="mt-5 flex justify-end gap-3"><button type="button" disabled={identityLoading} onClick={() => reviewIdentity('rejected')} className="rounded-lg border border-red-300 px-4 py-2 font-semibold text-red-700">Reject</button><button type="button" disabled={identityLoading} onClick={() => reviewIdentity('verified')} className="rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white">Approve</button></div> : <p className="mt-5 text-right text-sm font-semibold text-slate-600">Review status: {identityEvidence.status}</p>}</>}
+          </section>
+        </div>
+      )}
       {recordingsFor && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4"

@@ -59,6 +59,11 @@ biết làm bài.
 - Thời hạn lưu ảnh giấy tờ. Đề xuất 30–90 ngày, ngắn hơn bản ghi màn hình.
 - Ngưỡng điểm so khớp để gắn cờ, nếu làm `face_match`.
 
+## Implemented scope (2026-08-12)
+
+- This change implements `photo` only. `face_match`, automated comparison, biometric scores, periodic sampling, and `identity_mismatch` remain deferred.
+- No retention decision is inferred. Existing/new never-enabled tenants remain `off` with `identity_retention_days = NULL`; enabling `photo` requires superadmin to provide an explicit 1–365-day value. Disabling preserves that selected lifecycle so already-stored evidence expires without planning destructive bucket removal. The owner must still choose the production value and confirm it is shorter than screen-recording retention.
+
 ## Verification
 
 - `npm run test:tenant` xanh, gồm `identityPolicy.test.ts` thuần: `off` không bao giờ chặn;

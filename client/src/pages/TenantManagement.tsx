@@ -22,6 +22,8 @@ const EMPTY_CONFIG: TenantConfiguration = {
   quota_ai_gradings_per_month: null,
   quota_recording_gb: null,
   quota_emails_per_month: null,
+  identity_verification: 'off',
+  identity_retention_days: null,
   allowed_record_modes: 'none',
   compiler_enabled: false,
   compiler_memory_mb: 512,
@@ -69,6 +71,8 @@ function configFromTenant(tenant: Tenant): TenantConfiguration {
     quota_ai_gradings_per_month: tenant.quota_ai_gradings_per_month == null ? null : Number(tenant.quota_ai_gradings_per_month),
     quota_recording_gb: tenant.quota_recording_gb == null ? null : Number(tenant.quota_recording_gb),
     quota_emails_per_month: tenant.quota_emails_per_month == null ? null : Number(tenant.quota_emails_per_month),
+    identity_verification: tenant.identity_verification === 'photo' ? 'photo' : 'off',
+    identity_retention_days: tenant.identity_retention_days == null ? null : Number(tenant.identity_retention_days),
     allowed_record_modes: tenant.allowed_record_modes || 'none',
     compiler_enabled: Boolean(tenant.compiler_enabled),
     compiler_memory_mb: Number(tenant.compiler_memory_mb || 512),
@@ -394,6 +398,8 @@ function TenantManagement() {
                   <label className="field"><span>Monthly AI grading quota</span><input type="number" min={1} value={form.quota_ai_gradings_per_month ?? ''} placeholder="Unlimited" onChange={(event) => handleConfigChange('quota_ai_gradings_per_month', event.target.value === '' ? null : Number(event.target.value))} /><small>Measurement only; currently does not block.</small></label>
                   <label className="field"><span>Recording quota (GB)</span><input type="number" min={0.01} step={0.01} value={form.quota_recording_gb ?? ''} placeholder="Unlimited" onChange={(event) => handleConfigChange('quota_recording_gb', event.target.value === '' ? null : Number(event.target.value))} /><small>Configured for future enforcement; usage is currently measured in minutes.</small></label>
                   <label className="field"><span>Monthly email quota</span><input type="number" min={1} value={form.quota_emails_per_month ?? ''} placeholder="Unlimited" onChange={(event) => handleConfigChange('quota_emails_per_month', event.target.value === '' ? null : Number(event.target.value))} /><small>Measurement only; daily safety limit still applies.</small></label>
+                  <label className="field"><span>Identity verification</span><select value={form.identity_verification} onChange={(event) => handleConfigChange('identity_verification', event.target.value)}><option value="off">Off</option><option value="photo">Manual photo review</option></select><small>Automated face matching is intentionally not available.</small></label>
+                  {form.identity_verification === 'photo' && <label className="field"><span>Identity photo retention (days)</span><input type="number" min={1} max={365} required value={form.identity_retention_days ?? ''} onChange={(event) => handleConfigChange('identity_retention_days', event.target.value === '' ? null : Number(event.target.value))} /><small>Required explicitly; no retention period is selected for you.</small></label>}
                   <div className="field field-wide">
                     <span>Screen recording</span>
                     <div className="flex flex-wrap items-center gap-4 pt-1">

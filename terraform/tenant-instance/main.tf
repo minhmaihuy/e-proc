@@ -39,9 +39,10 @@ data "aws_ami" "ubuntu_arm" {
 }
 
 locals {
-  name_prefix   = "eproc-${var.tenant_slug}"
-  compiler_name = "${local.name_prefix}-compiler"
-  is_arm        = startswith(var.instance_type, "t4g.")
+  name_prefix             = "eproc-${var.tenant_slug}"
+  compiler_name           = "${local.name_prefix}-compiler"
+  is_arm                  = startswith(var.instance_type, "t4g.")
+  identity_storage_exists = var.identity_retention_days != null
 }
 
 resource "aws_vpc" "tenant" {
@@ -206,6 +207,10 @@ resource "aws_iam_role_policy" "runtime" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = var.observed_tenant_secret_arns
+        }] : [], var.identity_enabled ? [{
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = "${aws_s3_bucket.identity[0].arn}/identity/*"
         }] : [], var.compiler_enabled ? [{
         Effect   = "Allow"
         Action   = ["lambda:InvokeFunction"]
@@ -282,12 +287,13 @@ resource "aws_iam_instance_profile" "app" {
 }
 
 resource "aws_instance" "app" {
-  ami                    = local.is_arm ? data.aws_ami.ubuntu_arm.id : data.aws_ami.ubuntu_x86.id
-  instance_type          = var.instance_type
-  subnet_id              = aws_subnet.public.id
-  vpc_security_group_ids = [aws_security_group.app.id]
-  iam_instance_profile   = aws_iam_instance_profile.app.name
-  ipv6_address_count     = 1
+  ami                         = local.is_arm ? data.aws_ami.ubuntu_arm.id : data.aws_ami.ubuntu_x86.id
+  instance_type               = var.instance_type
+  subnet_id                   = aws_subnet.public.id
+  vpc_security_group_ids      = [aws_security_group.app.id]
+  iam_instance_profile        = aws_iam_instance_profile.app.name
+  ipv6_address_count          = 1
+  user_data_replace_on_change = true
 
   metadata_options {
     http_endpoint      = "enabled"
@@ -315,6 +321,7 @@ resource "aws_instance" "app" {
     compiler_mode            = var.compiler_enabled ? "lambda" : "local"
     compiler_lambda_arn      = var.compiler_enabled ? aws_lambda_function.compiler[0].arn : ""
     backup_bucket            = aws_s3_bucket.backup.id
+    identity_bucket          = local.identity_storage_exists ? aws_s3_bucket.identity[0].id : ""
   })
 
   tags = {
@@ -352,6 +359,51 @@ resource "aws_s3_bucket_lifecycle_configuration" "backup" {
     status = "Enabled"
     filter { prefix = "backups/${var.tenant_slug}/" }
     expiration { days = var.backup_retention_days }
+  }
+}
+
+resource "aws_s3_bucket" "identity" {
+  count         = local.identity_storage_exists ? 1 : 0
+  bucket_prefix = "eproc-${substr(var.tenant_slug, 0, 18)}-identity-"
+}
+
+resource "aws_s3_bucket_public_access_block" "identity" {
+  count                   = local.identity_storage_exists ? 1 : 0
+  bucket                  = aws_s3_bucket.identity[0].id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "identity" {
+  count  = local.identity_storage_exists ? 1 : 0
+  bucket = aws_s3_bucket.identity[0].id
+  rule {
+    apply_server_side_encryption_by_default { sse_algorithm = "AES256" }
+  }
+}
+
+resource "aws_s3_bucket_cors_configuration" "identity" {
+  count  = local.identity_storage_exists ? 1 : 0
+  bucket = aws_s3_bucket.identity[0].id
+  cors_rule {
+    allowed_headers = ["content-type"]
+    allowed_methods = ["PUT"]
+    allowed_origins = ["https://${var.domain_name}"]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 900
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "identity" {
+  count  = local.identity_storage_exists ? 1 : 0
+  bucket = aws_s3_bucket.identity[0].id
+  rule {
+    id     = "tenant-identity-retention"
+    status = "Enabled"
+    filter { prefix = "identity/" }
+    expiration { days = var.identity_retention_days }
   }
 }
 

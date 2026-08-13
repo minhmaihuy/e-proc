@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { RecordMode, parseAllowedRecordModes } from '../services/recordingPolicy.js';
 import { getCurrentTenantConfig } from '../tenantContext.js';
 import db from '../db/controlPlane.js';
+import { IdentityMode, normalizeIdentityMode } from '../services/identityPolicy.js';
 
 export interface AdminUser {
   id: number;
@@ -20,6 +21,8 @@ export interface AdminUser {
   emailEnabled?: boolean;
   emailFromName?: string | null;
   emailDailyLimit?: number;
+  identityVerification?: IdentityMode;
+  identityRetentionDays?: number | null;
 }
 
 // Extend Express Request type
@@ -64,6 +67,8 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
               t.email_enabled AS tenant_email_enabled,
               t.email_from_name AS tenant_email_from_name,
               t.email_daily_limit AS tenant_email_daily_limit
+              , t.identity_verification AS tenant_identity_verification
+              , t.identity_retention_days AS tenant_identity_retention_days
        FROM admin_users u LEFT JOIN tenants t ON t.id = u.tenant_id
        WHERE u.id = ?`,
       [payload.id],
@@ -101,6 +106,9 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       emailEnabled: isSuperAdmin ? undefined : Boolean(current.tenant_email_enabled),
       emailFromName: isSuperAdmin ? undefined : current.tenant_email_from_name,
       emailDailyLimit: isSuperAdmin ? undefined : Number(current.tenant_email_daily_limit || 200),
+      identityVerification: isSuperAdmin ? undefined : normalizeIdentityMode(current.tenant_identity_verification),
+      identityRetentionDays: isSuperAdmin ? undefined
+        : current.tenant_identity_retention_days == null ? null : Number(current.tenant_identity_retention_days),
     };
     next();
   } catch (error) {
