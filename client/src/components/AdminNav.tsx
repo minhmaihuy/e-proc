@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { LayoutDashboard, Database, FolderKanban, Settings, Users } from 'lucide-react';
+import { LayoutDashboard, Database, FolderKanban, Settings, Users, FileText, AlertCircle } from 'lucide-react';
 
 function AdminNav() {
   const { isAdmin, isSuperAdmin } = useAuth();
@@ -12,10 +12,14 @@ function AdminNav() {
   // Chặn tại nguồn để lỗi không quay lại khi có trang superadmin mới.
   if (isSuperAdmin) return null;
 
+  // /admin/practice và /admin/issues từng không có mục nào ở đây, nên hai trang đó chỉ
+  // tới được bằng cách gõ URL — thực tế là không ai dùng tới.
   const navItems = [
     { path: '/admin/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { path: '/admin/questions', label: 'Question Bank', icon: Database },
     { path: '/admin/batches', label: 'Batches', icon: FolderKanban },
+    { path: '/admin/practice', label: 'Practice', icon: FileText },
+    { path: '/admin/issues', label: 'Issues', icon: AlertCircle },
     { path: '/admin/settings', label: 'AI Settings', icon: Settings },
   ];
 

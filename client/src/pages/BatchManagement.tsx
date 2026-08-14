@@ -5,105 +5,39 @@ import { useAuth } from '../contexts/AuthContext';
 import AdminNav from '../components/AdminNav';
 import { ArrowLeft, FolderKanban, ListChecks, Plus } from 'lucide-react';
 
-const BATCH_PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
-type BatchPageSize = typeof BATCH_PAGE_SIZE_OPTIONS[number];
+import ValidatedInput from './batch/ValidatedInput';
+import BlueprintModeToggle from './batch/BlueprintModeToggle';
+import BatchSourceToggle from './batch/BatchSourceToggle';
+import PracticeExamSelect from './batch/PracticeExamSelect';
+import QuestionBankStatsPanel from './batch/QuestionBankStatsPanel';
+import QuestionBankTypeStatsPanel from './batch/QuestionBankTypeStatsPanel';
+import {
+  BATCH_PAGE_SIZE_OPTIONS,
+  BatchPageSize,
+  BatchSource,
+  BlueprintItem,
+  BlueprintItemByType,
+  BlueprintMode,
+  ModuleGroupOption,
+  ModuleGroupStats,
+  ModuleGroupTypeStats,
+  ModuleStats,
+  ModuleTypeStats,
+  PracticeExamOption,
+  QUESTION_TYPES,
+  QuestionType,
+  TypeStats,
+} from './batch/types';
+import {
+  comboKey,
+  comboLabel,
+  decodeComboKey,
+  formatGMT7,
+  localToUTC,
+  newRowId,
+  utcToLocalInput,
+} from './batch/helpers';
 
-// Convert "YYYY-MM-DDTHH:mm" (treated as GMT+7 input) → UTC ISO string
-const localToUTC = (localStr: string): string => {
-  if (!localStr) return localStr;
-  // Append +07:00 so browser parses as GMT+7, then convert to UTC
-  return new Date(`${localStr}:00+07:00`).toISOString();
-};
-
-// Convert UTC ISO string → "YYYY-MM-DDTHH:mm" in GMT+7 (for datetime-local input)
-const utcToLocalInput = (utcStr: string): string => {
-  if (!utcStr) return '';
-  const date = new Date(utcStr);
-  // Shift to GMT+7
-  const gmt7 = new Date(date.getTime() + 7 * 60 * 60 * 1000);
-  return gmt7.toISOString().slice(0, 16);
-};
-
-// Format UTC ISO string → human-readable GMT+7 (for display in table)
-const formatGMT7 = (utcStr: string): string => {
-  if (!utcStr) return '';
-  return new Date(utcStr).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-};
-
-type BlueprintMode = 'module' | 'type';
-
-const QUESTION_TYPES = ['Coding', 'Conceptual', 'Fill-in', 'Debug'] as const;
-type QuestionType = typeof QUESTION_TYPES[number];
-
-interface BlueprintItem {
-  /**
-   * Khóa React ổn định, CHỈ tồn tại phía client. Các bảng blueprint xóa dòng theo
-   * index, nên nếu key cũng là index thì sau khi xóa dòng giữa React sẽ gán state DOM
-   * của dòng bị xóa cho dòng kế tiếp. Bị strip trước khi gửi lên server.
-   */
-  rowId?: string;
-  module: string;
-  /** Bộ đề: thiếu trường này thì đề sẽ trộn câu từ mọi bộ có cùng tên module. */
-  question_group?: string;
-  easy: number;
-  medium: number;
-  hard: number;
-}
-
-interface BlueprintItemByType {
-  rowId?: string;
-  module: string;
-  question_group?: string;
-  type: QuestionType;
-  easy: number;
-  medium: number;
-  hard: number;
-}
-
-interface ModuleStats {
-  module: string;
-  easy: number;
-  medium: number;
-  hard: number;
-}
-
-interface TypeStats {
-  type: string;
-  easy: number;
-  medium: number;
-  hard: number;
-}
-
-interface ModuleTypeStats {
-  module: string;
-  type: string;
-  easy: number;
-  medium: number;
-  hard: number;
-}
-
-
-/**
- * Một <option> chỉ mang được MỘT chuỗi, nhưng blueprint cần cả module lẫn bộ đề —
- * cùng tên module có thể tồn tại ở nhiều bộ và số câu có sẵn khác nhau. Nên mã hóa
- * cặp đó thành một khóa duy nhất cho dropdown.
- */
-/** Id ổn định cho một dòng blueprint (chỉ dùng phía client, xem BlueprintItem.rowId). */
-let rowIdCounter = 0;
-const newRowId = () => `row_${Date.now().toString(36)}_${rowIdCounter++}`;
-
-const comboKey = (module: string, group: string) => `${module}|||${group || ''}`;
-const decodeComboKey = (key: string) => {
-  const i = key.indexOf('|||');
-  return i === -1
-    ? { module: key, question_group: '' }
-    : { module: key.slice(0, i), question_group: key.slice(i + 3) };
-};
-const comboLabel = (module: string, group: string) => (group ? `${module} (${group})` : module);
-
-interface ModuleGroupOption { module: string; question_group: string }
-interface ModuleGroupStats extends ModuleGroupOption { easy: number; medium: number; hard: number }
-interface ModuleGroupTypeStats extends ModuleGroupStats { type: string }
 
 function BatchManagement() {
   const { isAdmin, userId } = useAuth();
@@ -130,6 +64,9 @@ function BatchManagement() {
   const [batchCurrentPage, setBatchCurrentPage] = useState(1);
   // Create form state
   const [blueprintMode, setBlueprintMode] = useState<BlueprintMode>('module');
+  // Nguồn câu hỏi của đợt thi đang tạo. Practice dùng đề .docx thay cho blueprint.
+  const [batchSource, setBatchSource] = useState<BatchSource>('question_bank');
+  const [practiceExams, setPracticeExams] = useState<PracticeExamOption[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
@@ -141,6 +78,7 @@ function BatchManagement() {
     record_mode: 'none' as 'none' | 'local' | 's3',
     exam_type: 'essay' as 'essay' | 'quiz',
     identity_verification: 'off' as 'off' | 'photo',
+    practice_exam_id: null as number | null,
   });
   // Edit form state
   const [editBlueprintMode, setEditBlueprintMode] = useState<BlueprintMode>('module');
@@ -231,6 +169,7 @@ function BatchManagement() {
       .catch(() => { /* giữ mặc định chỉ 'none' nếu không lấy được */ });
     loadBatches();
     loadModules();
+    loadPracticeExams();
     loadModuleGroups();
     loadModuleStats();
     loadTypeStats();
@@ -270,6 +209,15 @@ function BatchManagement() {
       setModuleGroupTypeStats(typeStats.data);
     } catch (error) {
       console.error('[BatchManagement] loadModuleGroups error:', error);
+    }
+  };
+
+  const loadPracticeExams = async () => {
+    try {
+      const res = await adminApi.getPracticeExams();
+      setPracticeExams(res.data);
+    } catch (error) {
+      console.error('[BatchManagement] loadPracticeExams error:', error);
     }
   };
 
@@ -495,6 +443,43 @@ function BatchManagement() {
     setLoading(true);
     setFeasibilityErrors([]);
 
+    // Đợt thi Practice dùng một đề .docx duy nhất nên KHÔNG có blueprint để thẩm định:
+    // bỏ qua toàn bộ phần kiểm tra số câu và số câu có sẵn phía dưới, gửi thẳng
+    // practice_exam_id. Backend phân biệt hai loại đợt thi đúng bằng trường này.
+    if (batchSource === 'practice') {
+      if (!formData.practice_exam_id) {
+        setFeasibilityErrors(['Chọn một đề Practice trước khi tạo đợt thi.']);
+        setLoading(false);
+        return;
+      }
+      try {
+        const res = await adminApi.createBatch({
+          name: formData.name,
+          start_time: localToUTC(formData.start_time),
+          end_time: localToUTC(formData.end_time),
+          duration: formData.duration,
+          practice_exam_id: formData.practice_exam_id,
+          record_mode: formData.record_mode,
+          exam_type: formData.exam_type,
+          identity_verification: formData.identity_verification,
+        });
+        const practiceBatchId = res.data.id;
+        setShowForm(false);
+        setFormData({ name: '', start_time: '', end_time: '', duration: 30, blueprint: [], blueprintByType: [], record_mode: 'none', exam_type: 'essay', identity_verification: 'off', practice_exam_id: null });
+        setBatchSource('question_bank');
+        loadBatches();
+        // Mời học viên ngay, giống hệt nhánh ngân hàng câu hỏi: một đợt thi chưa có
+        // học viên thì chưa dùng được, và đây là bước người dùng luôn làm tiếp theo.
+        setSelectedBatchId(practiceBatchId);
+        setShowInviteForm(true);
+      } catch (error: any) {
+        setFeasibilityErrors([error.response?.data?.error || 'Không tạo được đợt thi Practice.']);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     // Compute total based on active mode
     const activeItems = blueprintMode === 'type' ? formData.blueprintByType : formData.blueprint;
     const total = activeItems.reduce((sum, item) => sum + (item.easy || 0) + (item.medium || 0) + (item.hard || 0), 0);
@@ -535,7 +520,7 @@ function BatchManagement() {
       console.log('[BatchManagement] Response:', res.data);
       const batchId = res.data.id;
       setShowForm(false);
-      setFormData({ name: '', start_time: '', end_time: '', duration: 30, blueprint: [], blueprintByType: [], record_mode: 'none', exam_type: 'essay', identity_verification: 'off' });
+      setFormData({ name: '', start_time: '', end_time: '', duration: 30, blueprint: [], blueprintByType: [], record_mode: 'none', exam_type: 'essay', identity_verification: 'off', practice_exam_id: null });
       setBlueprintMode('module');
       loadBatches();
       setSelectedBatchId(batchId);
@@ -651,160 +636,6 @@ function BatchManagement() {
 
   /** Mod chỉ được CRUD batch của mình; admin được tất cả */
   const canEditBatch = (batch: any) => isAdmin || batch.created_by === userId;
-
-  // ─── Sub-components ─────────────────────────────────────────────────────────
-
-  /** Tab-style blueprint mode toggle */
-  const BlueprintModeToggle = ({
-    value,
-    onChange,
-  }: {
-    value: BlueprintMode;
-    onChange: (m: BlueprintMode) => void;
-  }) => (
-    <div className="mb-4 flex w-fit overflow-hidden rounded-lg border-[1.5px] border-indigo-500">
-      {(['module', 'type'] as BlueprintMode[]).map(mode => (
-        <button
-          key={mode}
-          type="button"
-          onClick={() => onChange(mode)}
-          className={`cursor-pointer border-none px-[22px] py-[7px] text-[13px] font-semibold transition-colors ${
-            value === mode ? 'bg-indigo-500 text-white' : 'bg-violet-50 text-indigo-500'
-          }`}
-        >
-          {mode === 'module' ? '🗂 By Module' : '🏷 By Type'}
-        </button>
-      ))}
-    </div>
-  );
-
-  /** Panel showing available question counts by module */
-  const QuestionBankStatsPanel = () => {
-    if (moduleStats.length === 0) return null;
-    return (
-      <div className="mb-5 rounded-[10px] border border-blue-300 bg-gradient-to-br from-blue-50 to-green-50 px-[18px] py-3.5">
-        <div className="mb-3 flex items-center gap-2">
-          <span className="text-lg">📊</span>
-          <strong className="text-sm text-blue-800">Question Bank – By Module</strong>
-          <span className="ml-1 text-xs text-slate-500">
-            — Available question counts by Module
-          </span>
-        </div>
-        <table className="w-full border-collapse text-[13px]">
-          <thead>
-            <tr className="bg-blue-500/10">
-              <th className="px-2.5 py-1.5 text-left text-slate-800">Module</th>
-              <th className="px-2.5 py-1.5 text-center text-green-700">🟢 Easy</th>
-              <th className="px-2.5 py-1.5 text-center text-amber-700">🟡 Medium</th>
-              <th className="px-2.5 py-1.5 text-center text-red-700">🔴 Hard</th>
-              <th className="px-2.5 py-1.5 text-center text-slate-700">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {moduleStats.map((stat, i) => (
-              <tr key={stat.module} className={`border-t border-slate-200 ${i % 2 === 0 ? '' : 'bg-white/50'}`}>
-                <td className="px-2.5 py-1 font-medium text-slate-800">{stat.module}</td>
-                <td className="px-2.5 py-1 text-center font-semibold text-green-800">{stat.easy}</td>
-                <td className="px-2.5 py-1 text-center font-semibold text-amber-800">{stat.medium}</td>
-                <td className="px-2.5 py-1 text-center font-semibold text-red-800">{stat.hard}</td>
-                <td className="px-2.5 py-1 text-center font-bold text-slate-700">
-                  {stat.easy + stat.medium + stat.hard}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  };
-
-  /** Panel showing available question counts by module × type */
-  const QuestionBankTypeStatsPanel = () => {
-    if (moduleTypeStats.length === 0) return null;
-    const typeEmoji: Record<string, string> = { Coding: '💻', Conceptual: '🧠', 'Fill-in': '✏️', Debug: '🐛' };
-    // Group by module
-    const grouped = modules.reduce<Record<string, ModuleTypeStats[]>>((acc, m) => {
-      acc[m] = moduleTypeStats.filter(s => s.module === m);
-      return acc;
-    }, {});
-    return (
-      <div className="mb-5 rounded-[10px] border border-violet-300 bg-gradient-to-br from-violet-50 to-green-50 px-[18px] py-3.5">
-        <div className="mb-3 flex items-center gap-2">
-          <span className="text-lg">🏷</span>
-          <strong className="text-sm text-violet-700">Question Bank – By Module + Type</strong>
-          <span className="ml-1 text-xs text-slate-500">
-            — Available question counts by Module × Type
-          </span>
-        </div>
-        <table className="w-full border-collapse text-[13px]">
-          <thead>
-            <tr className="bg-violet-500/10">
-              <th className="px-2.5 py-1.5 text-left text-violet-900">Module</th>
-              <th className="px-2.5 py-1.5 text-left text-violet-900">Type</th>
-              <th className="px-2.5 py-1.5 text-center text-green-700">🟢 Easy</th>
-              <th className="px-2.5 py-1.5 text-center text-amber-700">🟡 Medium</th>
-              <th className="px-2.5 py-1.5 text-center text-red-700">🔴 Hard</th>
-              <th className="px-2.5 py-1.5 text-center text-slate-700">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {Object.entries(grouped).map(([mod, stats]) =>
-              stats.map((stat, i) => (
-                <tr key={`${mod}-${stat.type}`} className={`border-t border-slate-200 ${i % 2 === 0 ? '' : 'bg-white/50'}`}>
-                  {i === 0 && (
-                    <td rowSpan={stats.length} className="border-r border-slate-200 px-2.5 py-1 align-top font-semibold text-slate-800">
-                      {mod}
-                    </td>
-                  )}
-                  <td className="px-2.5 py-1 text-slate-700">{typeEmoji[stat.type] || '❓'} {stat.type}</td>
-                  <td className="px-2.5 py-1 text-center font-semibold text-green-800">{stat.easy}</td>
-                  <td className="px-2.5 py-1 text-center font-semibold text-amber-800">{stat.medium}</td>
-                  <td className="px-2.5 py-1 text-center font-semibold text-red-800">{stat.hard}</td>
-                  <td className="px-2.5 py-1 text-center font-bold text-slate-700">
-                    {stat.easy + stat.medium + stat.hard}
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    );
-  };
-
-  /** A number input cell with inline validation warning */
-  const ValidatedInput = ({
-    value,
-    max,
-    onChange,
-  }: {
-    value: number;
-    max: number;
-    onChange: (v: string) => void;
-  }) => {
-    const exceeded = value > max;
-    return (
-      <div className="flex flex-col items-center gap-0.5">
-        <input
-          type="number"
-          min={0}
-          max={max}
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          className={`w-[70px] rounded-md px-2 py-1.5 text-center outline-none ${
-            exceeded
-              ? 'border-2 border-red-500 bg-red-50 font-bold text-red-700'
-              : 'border border-slate-300 bg-white font-normal text-slate-900'
-          }`}
-        />
-        {exceeded && (
-          <span className="whitespace-nowrap text-[10px] text-red-500">
-            ⚠️ Max: {max}
-          </span>
-        )}
-      </div>
-    );
-  };
 
   // ─── Render ──────────────────────────────────────────────────────────────────
 
@@ -958,175 +789,192 @@ function BatchManagement() {
                 </div>
               </div>
 
-            <h4 className="mt-6 mb-3 text-base font-bold text-slate-900">Exam Blueprint (Total: {totalQuestions}/100)</h4>
+            <h4 className="mt-6 mb-3 text-base font-bold text-slate-900">Nguồn câu hỏi</h4>
 
-            {/* Blueprint Mode Toggle */}
-            <BlueprintModeToggle value={blueprintMode} onChange={switchBlueprintMode} />
+            {/* Một đợt thi hoặc sinh đề từ ngân hàng câu hỏi, hoặc dùng một đề Practice
+                .docx — không bao giờ cả hai. Backend phân biệt bằng practice_exam_id. */}
+            <BatchSourceToggle value={batchSource} onChange={setBatchSource} />
 
-            {modules.length === 0 && blueprintMode === 'module' ? (
-              <p className="error">Please import questions first to configure the blueprint.</p>
-            ) : typeStats.length === 0 && blueprintMode === 'type' ? (
-              <p className="error">Please import questions first to configure the blueprint.</p>
-            ) : blueprintMode === 'module' ? (
-              <>
-                {/* Stats panel – By Module */}
-                <QuestionBankStatsPanel />
-
-                <table className="matrix-table">
-                  <thead>
-                    <tr>
-                      <th>Module</th>
-                      <th>🟢 Easy</th>
-                      <th>🟡 Medium</th>
-                      <th>🔴 Hard</th>
-                      <th>Total</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {formData.blueprint.map((item, index) => {
-                      const stats = getStatsForModuleGroup(item.module, item.question_group || '');
-                      return (
-                        <tr key={item.rowId ?? index}>
-                          <td>
-                            <select
-                              name={`module_${index}`}
-                              id={`module_${index}`}
-                              value={comboKey(item.module, item.question_group || '')}
-                              onChange={e => {
-                                const d = decodeComboKey(e.target.value);
-                                updateBlueprintModuleGroup(index, d.module, d.question_group);
-                              }}
-                            >
-                              {moduleGroups.map(mg => (
-                                <option key={comboKey(mg.module, mg.question_group)} value={comboKey(mg.module, mg.question_group)}>
-                                  {comboLabel(mg.module, mg.question_group)}
-                                </option>
-                              ))}
-                            </select>
-                            <div className="mt-1 pl-0.5 text-[11px] text-slate-500">
-                              Available: {stats.easy}E / {stats.medium}M / {stats.hard}H
-                            </div>
-                          </td>
-                          <td>
-                            <ValidatedInput value={item.easy} max={stats.easy} onChange={v => updateBlueprint(index, 'easy', v)} />
-                          </td>
-                          <td>
-                            <ValidatedInput value={item.medium} max={stats.medium} onChange={v => updateBlueprint(index, 'medium', v)} />
-                          </td>
-                          <td>
-                            <ValidatedInput value={item.hard} max={stats.hard} onChange={v => updateBlueprint(index, 'hard', v)} />
-                          </td>
-                          <td className="text-center font-semibold">
-                            {Number(item.easy) + Number(item.medium) + Number(item.hard)}
-                          </td>
-                          <td>
-                            <button type="button" onClick={() => removeBlueprintRow(index)} className="btn btn-danger px-2.5 py-1 text-xs">
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-                <button type="button" onClick={addBlueprintRow} className="btn btn-secondary mt-2.5">
-                  + Add Module
-                </button>
-              </>
+            {batchSource === 'practice' ? (
+              <PracticeExamSelect
+                practiceExams={practiceExams}
+                value={formData.practice_exam_id}
+                onChange={(practiceExamId) => setFormData(prev => ({ ...prev, practice_exam_id: practiceExamId }))}
+              />
             ) : (
               <>
-                {/* Stats panel – By Module + Type */}
-                <QuestionBankTypeStatsPanel />
+              <h4 className="mt-6 mb-3 text-base font-bold text-slate-900">Exam Blueprint (Total: {totalQuestions}/100)</h4>
 
-                <table className="matrix-table">
-                  <thead>
-                    <tr>
-                      <th>Module</th>
-                      <th>Type</th>
-                      <th>🟢 Easy</th>
-                      <th>🟡 Medium</th>
-                      <th>🔴 Hard</th>
-                      <th>Total</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {formData.blueprintByType.map((item, index) => {
-                      const stats = getStatsForModuleGroupType(item.module, item.question_group || '', item.type);
-                      // Combos used by OTHER rows
-                      const otherCombos = formData.blueprintByType
-                        .filter((_, i) => i !== index)
-                        .map(i => `${i.module}||${i.type}`);
-                      return (
-                        <tr key={item.rowId ?? index}>
-                          <td className="min-w-[8.75rem]">
-                            <select
-                              value={comboKey(item.module, item.question_group || '')}
-                              onChange={e => {
-                                const d = decodeComboKey(e.target.value);
-                                updateTypeBlueprintModuleGroup(index, d.module, d.question_group);
-                              }}
-                            >
-                              {moduleGroups.map(mg => (
-                                <option key={comboKey(mg.module, mg.question_group)} value={comboKey(mg.module, mg.question_group)}>
-                                  {comboLabel(mg.module, mg.question_group)}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-                          <td className="min-w-[7.5rem]">
-                            <select
-                              value={item.type}
-                              onChange={e => updateTypeBlueprint(index, 'type', e.target.value as QuestionType)}
-                            >
-                              {QUESTION_TYPES.map(t => {
-                                const combo = `${item.module}||${t}`;
-                                const isUsed = otherCombos.includes(combo);
-                                return (
-                                  <option key={t} value={t} disabled={isUsed}>
-                                    {t}{isUsed ? ' (selected)' : ''}
+              {/* Blueprint Mode Toggle */}
+              <BlueprintModeToggle value={blueprintMode} onChange={switchBlueprintMode} />
+
+              {modules.length === 0 && blueprintMode === 'module' ? (
+                <p className="error">Please import questions first to configure the blueprint.</p>
+              ) : typeStats.length === 0 && blueprintMode === 'type' ? (
+                <p className="error">Please import questions first to configure the blueprint.</p>
+              ) : blueprintMode === 'module' ? (
+                <>
+                  {/* Stats panel – By Module */}
+                  <QuestionBankStatsPanel moduleStats={moduleStats} />
+
+                  <table className="matrix-table">
+                    <thead>
+                      <tr>
+                        <th>Module</th>
+                        <th>🟢 Easy</th>
+                        <th>🟡 Medium</th>
+                        <th>🔴 Hard</th>
+                        <th>Total</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {formData.blueprint.map((item, index) => {
+                        const stats = getStatsForModuleGroup(item.module, item.question_group || '');
+                        return (
+                          <tr key={item.rowId ?? index}>
+                            <td>
+                              <select
+                                name={`module_${index}`}
+                                id={`module_${index}`}
+                                value={comboKey(item.module, item.question_group || '')}
+                                onChange={e => {
+                                  const d = decodeComboKey(e.target.value);
+                                  updateBlueprintModuleGroup(index, d.module, d.question_group);
+                                }}
+                              >
+                                {moduleGroups.map(mg => (
+                                  <option key={comboKey(mg.module, mg.question_group)} value={comboKey(mg.module, mg.question_group)}>
+                                    {comboLabel(mg.module, mg.question_group)}
                                   </option>
-                                );
-                              })}
-                            </select>
-                            <div className="mt-1 pl-0.5 text-[11px] text-slate-500">
-                              Available: {stats.easy}E / {stats.medium}M / {stats.hard}H
-                            </div>
-                          </td>
-                          <td>
-                            <ValidatedInput value={item.easy} max={stats.easy} onChange={v => updateTypeBlueprint(index, 'easy', v)} />
-                          </td>
-                          <td>
-                            <ValidatedInput value={item.medium} max={stats.medium} onChange={v => updateTypeBlueprint(index, 'medium', v)} />
-                          </td>
-                          <td>
-                            <ValidatedInput value={item.hard} max={stats.hard} onChange={v => updateTypeBlueprint(index, 'hard', v)} />
-                          </td>
-                          <td className="text-center font-semibold">
-                            {Number(item.easy) + Number(item.medium) + Number(item.hard)}
-                          </td>
-                          <td>
-                            <button type="button" onClick={() => removeTypeBlueprintRow(index)} className="btn btn-danger px-2.5 py-1 text-xs">
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-                <button
-                  type="button"
-                  onClick={addTypeBlueprintRow}
-                  disabled={!nextAvailableModuleType}
-                  className="btn btn-secondary mt-2.5"
-                  title={!nextAvailableModuleType ? 'All combinations have been added' : ''}
-                >
-                  + Add Module / Type
-                </button>
+                                ))}
+                              </select>
+                              <div className="mt-1 pl-0.5 text-[11px] text-slate-500">
+                                Available: {stats.easy}E / {stats.medium}M / {stats.hard}H
+                              </div>
+                            </td>
+                            <td>
+                              <ValidatedInput value={item.easy} max={stats.easy} onChange={v => updateBlueprint(index, 'easy', v)} />
+                            </td>
+                            <td>
+                              <ValidatedInput value={item.medium} max={stats.medium} onChange={v => updateBlueprint(index, 'medium', v)} />
+                            </td>
+                            <td>
+                              <ValidatedInput value={item.hard} max={stats.hard} onChange={v => updateBlueprint(index, 'hard', v)} />
+                            </td>
+                            <td className="text-center font-semibold">
+                              {Number(item.easy) + Number(item.medium) + Number(item.hard)}
+                            </td>
+                            <td>
+                              <button type="button" onClick={() => removeBlueprintRow(index)} className="btn btn-danger px-2.5 py-1 text-xs">
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <button type="button" onClick={addBlueprintRow} className="btn btn-secondary mt-2.5">
+                    + Add Module
+                  </button>
+                </>
+              ) : (
+                <>
+                  {/* Stats panel – By Module + Type */}
+                  <QuestionBankTypeStatsPanel modules={modules} moduleTypeStats={moduleTypeStats} />
+
+                  <table className="matrix-table">
+                    <thead>
+                      <tr>
+                        <th>Module</th>
+                        <th>Type</th>
+                        <th>🟢 Easy</th>
+                        <th>🟡 Medium</th>
+                        <th>🔴 Hard</th>
+                        <th>Total</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {formData.blueprintByType.map((item, index) => {
+                        const stats = getStatsForModuleGroupType(item.module, item.question_group || '', item.type);
+                        // Combos used by OTHER rows
+                        const otherCombos = formData.blueprintByType
+                          .filter((_, i) => i !== index)
+                          .map(i => `${i.module}||${i.type}`);
+                        return (
+                          <tr key={item.rowId ?? index}>
+                            <td className="min-w-[8.75rem]">
+                              <select
+                                value={comboKey(item.module, item.question_group || '')}
+                                onChange={e => {
+                                  const d = decodeComboKey(e.target.value);
+                                  updateTypeBlueprintModuleGroup(index, d.module, d.question_group);
+                                }}
+                              >
+                                {moduleGroups.map(mg => (
+                                  <option key={comboKey(mg.module, mg.question_group)} value={comboKey(mg.module, mg.question_group)}>
+                                    {comboLabel(mg.module, mg.question_group)}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="min-w-[7.5rem]">
+                              <select
+                                value={item.type}
+                                onChange={e => updateTypeBlueprint(index, 'type', e.target.value as QuestionType)}
+                              >
+                                {QUESTION_TYPES.map(t => {
+                                  const combo = `${item.module}||${t}`;
+                                  const isUsed = otherCombos.includes(combo);
+                                  return (
+                                    <option key={t} value={t} disabled={isUsed}>
+                                      {t}{isUsed ? ' (selected)' : ''}
+                                    </option>
+                                  );
+                                })}
+                              </select>
+                              <div className="mt-1 pl-0.5 text-[11px] text-slate-500">
+                                Available: {stats.easy}E / {stats.medium}M / {stats.hard}H
+                              </div>
+                            </td>
+                            <td>
+                              <ValidatedInput value={item.easy} max={stats.easy} onChange={v => updateTypeBlueprint(index, 'easy', v)} />
+                            </td>
+                            <td>
+                              <ValidatedInput value={item.medium} max={stats.medium} onChange={v => updateTypeBlueprint(index, 'medium', v)} />
+                            </td>
+                            <td>
+                              <ValidatedInput value={item.hard} max={stats.hard} onChange={v => updateTypeBlueprint(index, 'hard', v)} />
+                            </td>
+                            <td className="text-center font-semibold">
+                              {Number(item.easy) + Number(item.medium) + Number(item.hard)}
+                            </td>
+                            <td>
+                              <button type="button" onClick={() => removeTypeBlueprintRow(index)} className="btn btn-danger px-2.5 py-1 text-xs">
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <button
+                    type="button"
+                    onClick={addTypeBlueprintRow}
+                    disabled={!nextAvailableModuleType}
+                    className="btn btn-secondary mt-2.5"
+                    title={!nextAvailableModuleType ? 'All combinations have been added' : ''}
+                  >
+                    + Add Module / Type
+                  </button>
+                </>
+              )}
               </>
             )}
+
 
               {/* Validation errors */}
               {(feasibilityErrors.length > 0 || createBlueprintErrors.length > 0) && (
@@ -1543,7 +1391,7 @@ function BatchManagement() {
                   <div className="p-4 bg-red-50 text-red-700 rounded-xl border border-red-200">No modules available</div>
                 ) : (
                   <>
-                    <QuestionBankStatsPanel />
+                    <QuestionBankStatsPanel moduleStats={moduleStats} />
                     <div className="overflow-x-auto bg-white rounded-xl border border-blue-100 shadow-sm">
                       <table className="w-full text-left text-sm text-slate-600">
                         <thead className="bg-blue-50 text-blue-800 border-b border-blue-100">
@@ -1626,7 +1474,7 @@ function BatchManagement() {
                   <div className="p-4 bg-red-50 text-red-700 rounded-xl border border-red-200">No type data available</div>
                 ) : (
                   <>
-                    <QuestionBankTypeStatsPanel />
+                    <QuestionBankTypeStatsPanel modules={modules} moduleTypeStats={moduleTypeStats} />
                     <div className="overflow-x-auto bg-white rounded-xl border border-blue-100 shadow-sm">
                       <table className="w-full text-left text-sm text-slate-600">
                         <thead className="bg-blue-50 text-blue-800 border-b border-blue-100">

@@ -126,3 +126,40 @@ test('AdminNav tự ẩn với superadmin', async () => {
   assert.match(nav, /isSuperAdmin/, 'AdminNav phải biết vai trò superadmin');
   assert.match(nav, /if \(isSuperAdmin\) return null;/, 'AdminNav phải trả null cho superadmin');
 });
+
+/**
+ * Chốt lại ba điểm tích hợp của tính năng Practice.
+ *
+ * Backend có đủ route practice từ lâu, PracticeManagement.tsx và StudentPractice.tsx
+ * cũng có — nhưng BatchManagement.tsx và Results.tsx CHƯA BAO GIỜ được nối vào
+ * (`git log -S practice_exam_id` trên hai file đó trả về rỗng). Hậu quả: import được
+ * đề .docx nhưng không cách nào gắn vào đợt thi, nên tính năng không dùng được, trong
+ * khi mọi mảnh riêng lẻ đều tồn tại và build vẫn xanh.
+ */
+test('tạo đợt thi có chế độ Practice', async () => {
+  const page = await read('client/src/pages/BatchManagement.tsx');
+  assert.match(page, /BatchSourceToggle/, 'thiếu công tắc chọn nguồn câu hỏi');
+  assert.match(page, /PracticeExamSelect/, 'thiếu ô chọn đề Practice');
+  assert.match(page, /practice_exam_id/, 'không gửi practice_exam_id lên server');
+});
+
+test('Practice và Issues có lối vào trong menu', async () => {
+  // Trang không có mục menu nào thì chỉ tới được bằng cách gõ URL — coi như không tồn tại.
+  const nav = await read('client/src/components/AdminNav.tsx');
+  assert.match(nav, /'\/admin\/practice'/, 'menu thiếu Practice');
+  assert.match(nav, /'\/admin\/issues'/, 'menu thiếu Issues');
+});
+
+test('component con của BatchManagement nằm ở phạm vi module', async () => {
+  // Định nghĩa lại component trong render khiến React coi mỗi lần render là một KIỂU
+  // component khác nên unmount cả cây con: ô nhập số câu bị hủy sau MỖI ký tự và mất
+  // focus. Lỗi này đã tái phát một lần vì test cũ chỉ tái hiện nguyên lý, không đọc
+  // file thật.
+  const page = await read('client/src/pages/BatchManagement.tsx');
+  const inner = [...page.matchAll(/^ {2}const (ValidatedInput|BlueprintModeToggle|QuestionBank\w*Panel|PracticeExamSelect|BatchSourceToggle)\b/gm)];
+  assert.deepEqual(
+    inner.map((m) => m[1]),
+    [],
+    'component con phải nằm ở file riêng, không định nghĩa trong render của trang',
+  );
+});
