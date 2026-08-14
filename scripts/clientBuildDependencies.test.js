@@ -163,3 +163,12 @@ test('component con của BatchManagement nằm ở phạm vi module', async () 
     'component con phải nằm ở file riêng, không định nghĩa trong render của trang',
   );
 });
+
+test('màn hình kết quả có nhánh Practice', async () => {
+  // Trước đây Results.tsx có 0 tham chiếu tới practice: chấm được bài practice là bất
+  // khả thi dù backend đã có sẵn cả endpoint chấm lẫn endpoint xuất Excel.
+  const page = await read('client/src/pages/Results.tsx');
+  assert.match(page, /isPracticeBatch/, 'không phân biệt đợt thi practice');
+  assert.match(page, /PracticeResultsTable/, 'thiếu bảng kết quả practice');
+  assert.match(page, /exportPracticeResults/, 'nút Export Excel không trỏ endpoint practice');
+});
