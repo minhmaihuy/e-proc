@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import SecretsPanel from '../components/SecretsPanel';
+import TenantIssuesPanel from './tenant/TenantIssuesPanel';
 import { Tenant, TenantConfiguration, TenantIssue, TenantProvisionJob } from '../services/api';
 import { tenantControlApi } from '../services/tenantControlApi';
 import { useAuth } from '../contexts/AuthContext';
@@ -505,69 +506,18 @@ function TenantManagement() {
                 )}
               </section>
 
-              <section className="provision-card" aria-labelledby="tenant-log-heading">
-                <div className="section-heading">
-                  <div>
-                    <span className="eyebrow">READ-ONLY OBSERVABILITY</span>
-                    <h3 id="tenant-log-heading">Operational logs</h3>
-                    <small>{selectedTenantUrl || 'Configure a dedicated tenant domain before approval.'}</small>
-                  </div>
-                  <button className="btn btn-secondary" type="button" disabled={issueLoading} onClick={() => void loadTenantIssues(selectedTenant.id)}>
-                    {issueLoading ? 'Loading...' : 'Refresh logs'}
-                  </button>
-                </div>
-                <p className="text-slate-500">
-                  Superadmin can observe safe operational failures for this tenant but cannot resolve or delete them. Tenant administrators retain issue ownership.
-                </p>
-                <div className="mb-4 flex flex-wrap items-end gap-3">
-                  <label className="field min-w-[11rem]">
-                    <span>Status</span>
-                    <select value={issueStatus} onChange={(event) => setIssueStatus(event.target.value as typeof issueStatus)}>
-                      <option value="">All</option>
-                      <option value="open">Open</option>
-                      <option value="resolved">Resolved</option>
-                      <option value="archived">Archived</option>
-                    </select>
-                  </label>
-                  <label className="field min-w-[11rem]">
-                    <span>Severity</span>
-                    <select value={issueSeverity} onChange={(event) => setIssueSeverity(event.target.value as typeof issueSeverity)}>
-                      <option value="">All</option>
-                      <option value="warning">Warning</option>
-                      <option value="error">Error</option>
-                      <option value="critical">Critical</option>
-                    </select>
-                  </label>
-                </div>
-                {issueError && <div className="notice notice-error" role="alert">{issueError}</div>}
-                <div className="overflow-x-auto">
-                  <table>
-                    <thead>
-                      <tr><th>Time</th><th>Severity</th><th>Issue</th><th>Request</th><th>Status</th></tr>
-                    </thead>
-                    <tbody>
-                      {issues.map((issue) => (
-                        <tr key={issue.id}>
-                          <td className="whitespace-nowrap align-top text-slate-600">{new Date(issue.created_at).toLocaleString()}</td>
-                          <td><strong>{issue.severity.toUpperCase()}</strong></td>
-                          <td>
-                            <div><code>{issue.code}</code> · {issue.source}</div>
-                            <div className="max-w-md break-words text-slate-800">{issue.message}</div>
-                            <small className="text-slate-500">Request ID: {issue.request_id || 'n/a'}</small>
-                            {issue.metadata && <details><summary>Safe metadata</summary><pre>{JSON.stringify(issue.metadata, null, 2)}</pre></details>}
-                          </td>
-                          <td><code>{issue.http_method || '-'} {issue.request_path || '-'}</code><div>{issue.http_status || '-'}</div></td>
-                          <td>{issue.status}</td>
-                        </tr>
-                      ))}
-                      {!issueLoading && !issueError && issues.length === 0 && (
-                        <tr><td colSpan={5} className="py-10 text-center text-slate-500">No issues match these filters.</td></tr>
-                      )}
-                      {issueLoading && <tr><td colSpan={5} className="py-10 text-center text-slate-500">Loading tenant log database…</td></tr>}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
+              {/* Nhật ký vận hành — tách sang tenant/TenantIssuesPanel.tsx */}
+              <TenantIssuesPanel
+                tenantUrl={selectedTenantUrl}
+                issues={issues}
+                status={issueStatus}
+                severity={issueSeverity}
+                loading={issueLoading}
+                error={issueError}
+                onStatusChange={setIssueStatus}
+                onSeverityChange={setIssueSeverity}
+                onRefresh={() => void loadTenantIssues(selectedTenant.id)}
+              />
             </section>
           )}
         </div>

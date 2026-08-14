@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import ImportCard from './questionBank/ImportCard';
 import { Link } from 'react-router-dom';
 import { adminApi } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import AdminNav from '../components/AdminNav';
-import { Database, ArrowLeft, Upload, FileSpreadsheet, Trash2, Search, Filter, AlertCircle, FileQuestion, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Database, ArrowLeft, Trash2, Search, Filter, FileQuestion, ChevronLeft, ChevronRight } from 'lucide-react';
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
 type PageSize = typeof PAGE_SIZE_OPTIONS[number];
@@ -226,65 +227,16 @@ function QuestionBank() {
 
       <AdminNav />
 
-      {/* ── Import card ── */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-8">
-        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-          <h3 className="font-bold text-slate-900 m-0 border-none pb-0 flex items-center gap-2">
-            <Upload size={18} className="text-slate-500" />
-            Import Questions from Excel
-          </h3>
-        </div>
-        <div className="p-6">
-          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center mb-4">
-            <div className="relative flex-1 max-w-md">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".xlsx,.xls"
-                onChange={e => setFile(e.target.files?.[0] || null)}
-                className="block w-full text-sm text-slate-500
-                  file:mr-4 file:py-2.5 file:px-4
-                  file:rounded-lg file:border-0
-                  file:text-sm file:font-medium
-                  file:bg-blue-50 file:text-blue-700
-                  hover:file:bg-blue-100
-                  border border-slate-200 rounded-lg bg-slate-50 cursor-pointer"
-              />
-            </div>
-            <div className="flex gap-2">
-              <button 
-                onClick={() => handleImport('essay')} 
-                disabled={!file || loading} 
-                className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg font-medium text-sm hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50"
-              >
-                <FileSpreadsheet size={16} />
-                {loading ? 'Importing...' : 'Import Essay'}
-              </button>
-              <button 
-                onClick={() => handleImport('quiz')} 
-                disabled={!file || loading} 
-                className="inline-flex items-center gap-2 px-4 py-2.5 bg-white text-slate-700 border border-slate-300 rounded-lg font-medium text-sm hover:bg-slate-50 transition-colors shadow-sm disabled:opacity-50"
-              >
-                <FileQuestion size={16} />
-                {loading ? 'Importing...' : 'Import Quiz'}
-              </button>
-            </div>
-          </div>
-          
-          <div className="bg-slate-50 rounded-lg p-3 border border-slate-100 inline-block w-full md:w-auto">
-            <p className="text-xs text-slate-500 m-0 flex items-center gap-1.5">
-              <AlertCircle size={14} className="text-slate-400" />
-              <span className="font-semibold text-slate-700">Quiz template:</span> ID | Type (SingleChoice/MultipleChoice) | Level | Topic | Question Sample | Option A…F | Correct | Score
-            </p>
-          </div>
-          
-          {message && (
-            <div className={`mt-4 p-3 rounded-lg text-sm font-medium border ${isError ? 'bg-red-50 text-red-700 border-red-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
-              {message}
-            </div>
-          )}
-        </div>
-      </div>
+      {/* Khối nhập Excel — tách sang questionBank/ImportCard.tsx */}
+      <ImportCard
+        fileInputRef={fileInputRef}
+        file={file}
+        loading={loading}
+        message={message}
+        isError={isError}
+        onFileChange={setFile}
+        onImport={handleImport}
+      />
 
       {/* ── Questions card ── */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
