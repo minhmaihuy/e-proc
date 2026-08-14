@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { StudentRecordings, adminApi } from '../services/api';
 import AdminNav from '../components/AdminNav';
+import PracticeResultsTable, { PracticeResultRow } from './results/PracticeResultsTable';
 import { ArrowLeft, Download, Search, AlertCircle, FileText, CheckCircle2, FileJson, X, Settings2, ShieldAlert, Cpu, KeyRound } from 'lucide-react';
 import DOMPurify from 'dompurify';
 
@@ -63,7 +64,11 @@ function Results() {
     }
   };
   const [results, setResults] = useState<any[]>([]);
+  // Đợt thi Practice có hình dạng kết quả khác hẳn: một dòng mỗi học viên thay vì
+  // một khối câu hỏi mỗi học viên, nên giữ riêng chứ không nhồi vào `results`.
+  const [practiceResults, setPracticeResults] = useState<PracticeResultRow[]>([]);
   const [batch, setBatch] = useState<any>(null);
+  const isPracticeBatch = Boolean(batch?.practice_exam_id);
   const [selectedStudent, setSelectedStudent] = useState<any>(null);
   const [editScore, setEditScore] = useState<number | null>(null);
   const [editFeedback, setEditFeedback] = useState('');
@@ -81,9 +86,25 @@ function Results() {
     try {
       const res = await adminApi.getBatch(parseInt(id!));
       setBatch(res.data);
+      // Chỉ đợt thi Practice mới có practice_exam_id; đợt thường bỏ qua hẳn lời gọi này.
+      if (res.data?.practice_exam_id) await loadPracticeResults();
     } catch (error) {
       console.error(error);
     }
+  };
+
+  const loadPracticeResults = async () => {
+    try {
+      const res = await adminApi.getPracticeResults(parseInt(id!));
+      setPracticeResults(res.data);
+    } catch (error) {
+      console.error('[Results] loadPracticeResults error:', error);
+    }
+  };
+
+  const handleSavePracticeScore = async (studentId: number, score: number, feedback: string) => {
+    await adminApi.updatePracticeResult(studentId, { trainer_score: score, trainer_feedback: feedback });
+    await loadPracticeResults();
   };
 
   const loadResults = async () => {
@@ -99,11 +120,15 @@ function Results() {
 
   const handleExport = async () => {
     try {
-      const res = await adminApi.exportResults(parseInt(id!));
+      // Hai loại đợt thi có hình dạng file khác nhau: practice là một sheet, mỗi học
+      // viên một dòng; đợt thường là mỗi học viên một sheet, mỗi câu một dòng.
+      const res = isPracticeBatch
+        ? await adminApi.exportPracticeResults(parseInt(id!))
+        : await adminApi.exportResults(parseInt(id!));
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `results-${id}.xlsx`);
+      link.setAttribute('download', `${isPracticeBatch ? 'practice-results' : 'results'}-${id}.xlsx`);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -168,10 +193,10 @@ function Results() {
       <AdminNav />
 
       <div className="flex justify-between items-center mb-6">
-        <h2 className="text-lg font-bold text-slate-800 m-0 border-none pb-0">Student Results ({results.length})</h2>
+        <h2 className="text-lg font-bold text-slate-800 m-0 border-none pb-0">Student Results ({isPracticeBatch ? practiceResults.length : results.length})</h2>
         <button
           onClick={handleExport}
-          disabled={results.length === 0}
+          disabled={(isPracticeBatch ? practiceResults.length : results.length) === 0}
           className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium text-sm hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50"
         >
           <Download size={16} />
@@ -184,6 +209,9 @@ function Results() {
           <div className="w-8 h-8 border-4 border-slate-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
           <p className="text-slate-500 font-medium">Loading results...</p>
         </div>
+      ) : isPracticeBatch ? (
+        // Đề .docx là một bài duy nhất nên không có khung xem theo từng câu hỏi.
+        <PracticeResultsTable rows={practiceResults} onSave={handleSavePracticeScore} />
       ) : (
         <>
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-8">
