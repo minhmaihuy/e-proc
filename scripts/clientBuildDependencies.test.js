@@ -56,3 +56,53 @@ test('EC2 bootstrap installs a supported Node.js release', async () => {
     assert.doesNotMatch(userdata, /setup_(?:18|20)\.x/);
   }
 });
+
+/**
+ * Giá trị bí mật trong .env do bootstrap sinh ra phải được bọc nháy kép.
+ *
+ * `dotenv` coi `#` là bắt đầu comment và cắt bỏ phần sau nó khi giá trị không được
+ * trích dẫn. Mật khẩu `Abc12345#2nf` vì thế bị ứng dụng đọc thành `Abc12345` và băm
+ * đúng phần cụt đó, trong khi người dùng gõ nguyên chuỗi nên không đăng nhập được.
+ * Không có lỗi nào được in ra: seed chạy xong, tài khoản tồn tại, chỉ là mật khẩu
+ * không phải cái ai cũng nghĩ. Đã xảy ra thật ngày 2026-08-14 trên production.
+ */
+test('bootstrap .env bọc nháy kép mọi giá trị bí mật', async () => {
+  const source = await read('terraform-ipv6/userdata.sh');
+  const secretKeys = [
+    'GEMINI_API_KEY',
+    'JWT_SECRET',
+    'SESSION_SECRET',
+    'SUPERADMIN_PASSWORD',
+    'FSA_TENANT_ADMIN_PASSWORD',
+  ];
+  const unquoted = [];
+  for (const key of secretKeys) {
+    const line = source.split('\n').find((l) => l.startsWith(`${key}=`));
+    assert.ok(line, `userdata.sh không còn ghi ${key}`);
+    if (!/^[A-Z_]+="\$\{[a-z_]+\}"$/.test(line.trim())) unquoted.push(key);
+  }
+  assert.deepEqual(
+    unquoted,
+    [],
+    'giá trị không bọc nháy kép sẽ bị dotenv cắt tại dấu # mà không báo lỗi',
+  );
+});
+
+test('mật khẩu seed và jwt_secret bị chặn khi chứa ký tự phá cú pháp', async () => {
+  // Bọc nháy kép giữ được `#`, nhưng `"` và `\` lại phá chính lớp bọc đó. Chặn ở
+  // plan để hỏng ngay, thay vì sinh ra .env sai rồi mới phát hiện lúc đăng nhập.
+  const variables = await read('terraform-ipv6/variables.tf');
+  for (const name of ['superadmin_password', 'fsa_tenant_admin_password', 'jwt_secret']) {
+    // Cắt đúng khối `variable "<name>" { ... }` rồi soi bên trong, thay vì dựng regex
+    // khớp cả biểu thức Terraform — chuỗi đó chứa nháy kép và gạch chéo ngược nên phải
+    // escape qua ba tầng và rất dễ viết sai thành test luôn xanh.
+    const start = variables.indexOf(`variable "${name}" {`);
+    assert.ok(start >= 0, `không tìm thấy biến ${name}`);
+    const block = variables.slice(start, variables.indexOf('\n}\n', start));
+
+    assert.ok(
+      block.includes('!can(regex('),
+      `thiếu validate chặn ký tự phá cú pháp cho ${name}`,
+    );
+  }
+});
