@@ -106,3 +106,23 @@ test('mật khẩu seed và jwt_secret bị chặn khi chứa ký tự phá cú 
     );
   }
 });
+
+/**
+ * Thanh điều hướng /admin/* không được xuất hiện ở chế độ superadmin.
+ *
+ * Mọi mục trong AdminNav trỏ vào /admin/dashboard, /admin/questions, /admin/batches,
+ * /admin/settings — đúng những route mà superadmin CỐ TÌNH bị cấm
+ * (requireTenantDataAdmin loại trừ superadmin). Trang /tenants từng render thanh này,
+ * nên superadmin nhìn thấy bốn liên kết mà bấm vào chỉ nhận 403.
+ */
+test('trang quản lý tenant không render thanh điều hướng của tenant', async () => {
+  const page = await read('client/src/pages/TenantManagement.tsx');
+  assert.ok(!page.includes('AdminNav'), 'TenantManagement không được dùng AdminNav');
+});
+
+test('AdminNav tự ẩn với superadmin', async () => {
+  // Chặn tại nguồn để lỗi không quay lại khi có trang superadmin mới.
+  const nav = await read('client/src/components/AdminNav.tsx');
+  assert.match(nav, /isSuperAdmin/, 'AdminNav phải biết vai trò superadmin');
+  assert.match(nav, /if \(isSuperAdmin\) return null;/, 'AdminNav phải trả null cho superadmin');
+});

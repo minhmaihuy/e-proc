@@ -1,5 +1,4 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import AdminNav from '../components/AdminNav';
 import SecretsPanel from '../components/SecretsPanel';
 import { Tenant, TenantConfiguration, TenantIssue, TenantProvisionJob } from '../services/api';
 import { tenantControlApi } from '../services/tenantControlApi';
@@ -348,8 +347,6 @@ function TenantManagement() {
           <button className="btn btn-secondary" onClick={logout}>Sign out</button>
         </div>
       </header>
-
-      <AdminNav />
 
       {error && <div className="notice notice-error" role="alert">{error}</div>}
       {success && <div className="notice notice-success" role="status">{success}</div>}
