@@ -137,6 +137,11 @@ variable "jwt_secret" {
     condition     = length(var.jwt_secret) >= 32
     error_message = "jwt_secret phải dài ít nhất 32 ký tự."
   }
+
+  validation {
+    condition     = !can(regex("[\"\\\\]", var.jwt_secret))
+    error_message = "jwt_secret không được chứa dấu nháy kép hoặc gạch chéo ngược."
+  }
 }
 
 # --- Tài khoản seed ---
@@ -168,6 +173,13 @@ variable "superadmin_password" {
     condition     = length(var.superadmin_password) >= 12
     error_message = "superadmin_password phải dài ít nhất 12 ký tự."
   }
+
+  # Giá trị được ghi vào .env dưới dạng bọc nháy kép, nên nháy kép hoặc gạch chéo ngược
+  # trong mật khẩu sẽ phá cú pháp và khiến dotenv đọc sai. Chặn ở plan.
+  validation {
+    condition     = !can(regex("[\"\\\\]", var.superadmin_password))
+    error_message = "superadmin_password không được chứa dấu nháy kép hoặc gạch chéo ngược."
+  }
 }
 
 variable "fsa_tenant_admin_username" {
@@ -184,6 +196,11 @@ variable "fsa_tenant_admin_password" {
   validation {
     condition     = length(var.fsa_tenant_admin_password) >= 12
     error_message = "fsa_tenant_admin_password phải dài ít nhất 12 ký tự."
+  }
+
+  validation {
+    condition     = !can(regex("[\"\\\\]", var.fsa_tenant_admin_password))
+    error_message = "fsa_tenant_admin_password không được chứa dấu nháy kép hoặc gạch chéo ngược."
   }
 }
 

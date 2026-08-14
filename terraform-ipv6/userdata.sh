@@ -177,23 +177,34 @@ LOG_DATABASE_URL=${log_database_url}
 # Tenant identification
 TENANT_SLUG=${tenant_slug}
 
-GEMINI_API_KEY=${gemini_api_key}
+GEMINI_API_KEY="${gemini_api_key}"
 
 # Ký JWT admin/học viên. Thiếu khóa này server thoát ngay lúc khởi động.
-JWT_SECRET=${jwt_secret}
-SESSION_SECRET=${session_secret}
+JWT_SECRET="${jwt_secret}"
+SESSION_SECRET="${session_secret}"
 
 # Database dùng khi tạo các database còn thiếu (npm run db:ensure)
 DATABASE_MAINTENANCE_DB=${maintenance_db}
+
+# Giá trị bí mật PHẢI bọc trong nháy kép.
+#
+# `dotenv` coi `#` là bắt đầu comment và cắt bỏ toàn bộ phần sau nó khi giá trị không
+# được trích dẫn. Mật khẩu dạng `Abc12345#2nf` vì thế bị ứng dụng đọc thành `Abc12345`
+# và băm đúng phần cụt đó, trong khi người dùng gõ nguyên chuỗi nên không đăng nhập
+# được. Không có thông báo lỗi nào: seed chạy thành công, tài khoản tồn tại, chỉ là mật
+# khẩu không phải cái ai cũng nghĩ. Đã xảy ra thật ngày 2026-08-14.
+#
+# Bọc nháy kép giữ nguyên `#`. Đổi lại, giá trị không được chứa `"` hay `\` — có
+# validate chặn ở variables.tf để hỏng thì hỏng ngay lúc plan.
 
 # Tài khoản seed cho lần khởi tạo control-plane ĐẦU TIÊN.
 # Thiếu bốn khóa này thì ứng dụng rơi về mặc định nằm sẵn trong source (và trong lịch
 # sử git), nghĩa là máy production chạy một quãng bằng mật khẩu ai cũng đọc được.
 # Trên database đã có tài khoản, hàm seed cố ý không ghi đè — xem controlPlane.ts.
 SUPERADMIN_USERNAME=${superadmin_username}
-SUPERADMIN_PASSWORD=${superadmin_password}
+SUPERADMIN_PASSWORD="${superadmin_password}"
 FSA_TENANT_ADMIN_USERNAME=${fsa_tenant_admin_username}
-FSA_TENANT_ADMIN_PASSWORD=${fsa_tenant_admin_password}
+FSA_TENANT_ADMIN_PASSWORD="${fsa_tenant_admin_password}"
 
 USE_SQLITE=false
 ALLOWED_ORIGINS=https://${domain_name}
