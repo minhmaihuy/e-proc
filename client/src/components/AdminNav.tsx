@@ -3,8 +3,14 @@ import { useAuth } from '../contexts/AuthContext';
 import { LayoutDashboard, Database, FolderKanban, Settings, Users } from 'lucide-react';
 
 function AdminNav() {
-  const { isAdmin } = useAuth();
+  const { isAdmin, isSuperAdmin } = useAuth();
   const location = useLocation();
+
+  // Mọi mục trong thanh này trỏ vào /admin/* — đúng những route mà superadmin CỐ TÌNH
+  // không được vào (requireTenantDataAdmin loại trừ superadmin). Hiện chúng ra ở trang
+  // quản lý tenant nghĩa là mời người dùng bấm vào bốn liên kết chỉ trả về 403.
+  // Chặn tại nguồn để lỗi không quay lại khi có trang superadmin mới.
+  if (isSuperAdmin) return null;
 
   const navItems = [
     { path: '/admin/dashboard', label: 'Dashboard', icon: LayoutDashboard },
