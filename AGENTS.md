@@ -345,6 +345,36 @@ A second exam mode, fully independent of the question-bank/blueprint pipeline:
 - **Routes are code-split.** `client/src/App.tsx` loads every page through `lazy()` behind one `<Suspense fallback={<RouteFallback />}>`. Before this, all pages were static imports, so a candidate opening the exam downloaded the entire admin console in a single ~1 MB bundle. Student first load went from 375 KB to 86 KB gzip.
 - **`src/App.tsx` MUST stay in the obfuscator `exclude` list** (`client/vite.config.ts`). `stringArrayThreshold: 1` encodes every string literal, including the module specifier inside `import('./pages/X')`. Rollup then cannot resolve those imports statically, silently emits **no page chunks at all**, and the build still reports success — the app 404s on the first navigation. Verified: with App.tsx obfuscated the build transforms 90 modules and emits 2 JS files; excluded, it transforms 176 and emits 25. Anti-cheat code stays obfuscated either way (the `StudentExam` chunk contains no plaintext `suspicious_paste`/`fullscreen_exit`).
 - **Error boundaries exist now.** `client/src/components/ErrorBoundary.tsx` wraps the whole route tree, and `/exam` plus `/practice` get their own boundary with `reassureSavedWork` so a render crash mid-exam explains that answers are already on the server instead of showing a white screen. Keep the exam boundaries separate from the app-level one; the reassurance text is wrong for admin pages.
+### Quy ước tách component theo trang (2026-08-14)
+
+- Component chỉ phục vụ MỘT trang thì đặt trong thư mục cùng tên trang:
+  `client/src/pages/batch/**` cho `BatchManagement.tsx`, `client/src/pages/results/**`
+  cho `Results.tsx`. Component dùng chung nhiều trang mới đặt ở `client/src/components/`.
+  Mục đích là đọc được cây thư mục là biết ai dùng cái gì, và đổi một trang không kéo
+  theo rủi ro cho trang khác.
+- Kiểu dữ liệu và hàm thuần của trang tách thành `types.ts` / `helpers.ts` trong cùng
+  thư mục đó. Hàm thuần tách ra thì test được mà không cần dựng React.
+- Component con nhận dữ liệu qua **props**, không đọc state của cha. Đây không phải sở
+  thích: nó là điều kiện để component nằm được ở phạm vi module thay vì bị định nghĩa
+  lại trong render.
+- Đã tách: `BatchManagement.tsx` (1813 → 1590) sang `pages/batch/` gồm `types.ts`,
+  `helpers.ts`, `ValidatedInput`, `BlueprintModeToggle`, hai panel thống kê,
+  `BatchSourceToggle`, `PracticeExamSelect`; và `Results.tsx` (683 → 616) sang
+  `pages/results/` gồm `PracticeResultsTable`, `ViolationDetailModal`.
+- **Còn phải tách**, theo thứ tự ưu tiên và rủi ro:
+  | File | Dòng | Ghi chú |
+  |---|---|---|
+  | `BatchManagement.tsx` | ~1660 | Còn form tạo, form sửa, form mời, bảng danh sách nằm inline |
+  | `CodeEditor.tsx` | ~1326 | Chứa intercept clipboard và phát hiện dán bất thường — đọc mục Anti-Cheat trước khi đụng |
+  | `StudentExam.tsx` | ~1244 | **Rủi ro cao**: logic chống gian lận, và mọi thay đổi phải áp dụng cho cả `StudentPractice.tsx` |
+  | `StudentPractice.tsx` | ~709 | Nhân bản có chủ đích của `StudentExam.tsx` |
+  | `TenantManagement.tsx` | ~600 | Trang superadmin, rủi ro thấp |
+  | `QuestionBank.tsx` | ~529 | Rủi ro thấp |
+- Ba file học viên (`StudentExam`, `StudentPractice`, `CodeEditor`) **không được tách
+  nếu chỉ kiểm chứng bằng type-check và test**. Chúng chứa đường đi chống gian lận mà
+  test hiện tại không phủ; phải chạy thật một lượt thi trên trình duyệt và xác nhận các
+  vi phạm vẫn được ghi nhận trước khi bàn giao.
+
 - **Never define a component inside another component's render.** `BatchManagement.tsx` used to declare `ValidatedInput`, `ModuleGroupSelect`, `BlueprintModeToggle`, and both stats panels inline. Each parent render produced a new component type, so React unmounted and remounted the subtree — the blueprint number inputs were destroyed after every keystroke and lost focus, forcing the admin to click back into the field. All five now live at module scope and receive what they need as props. `client/src/pages/BatchManagement.regression.test.tsx` pins the lesson by asserting both the correct and the broken shape.
 - **Client dependencies must stay declared.** `JSCPP` (browser C/C++ runner) and `monaco-editor` are imported directly by `client/src` but were dropped from `client/package.json` by merge `ed8b5aa`; builds kept working only because stale `node_modules` still held them. On a clean `npm ci` — which is exactly what `deploy/scripts/deploy.sh` runs — `npm run build:client` fails with "Rollup failed to resolve import \"JSCPP\"". Both are declared again. When a merge touches `client/package.json`, re-run a clean install before trusting a green build.
 - **Client test tooling is a real dependency, not scaffolding.** Vitest, jsdom and the Testing Library packages were dropped by the same merge while the test files stayed, so `npm test` silently disappeared. They are declared again alongside the `test` / `test:watch` scripts.
