@@ -121,3 +121,31 @@ test('nút phá hủy và nút mờ phải có nền hoặc viền riêng', () =
     assert.ok(isDefined(css, name), `thiếu .${name}`);
   }
 });
+
+/**
+ * Quy ước tách component theo trang.
+ *
+ * Component chỉ phục vụ một trang thì nằm trong thư mục cùng tên trang; component con
+ * nhận dữ liệu qua props nên đặt được ở phạm vi module. Điều kiện thứ hai mới là thứ
+ * ngăn lỗi mất focus quay lại — component định nghĩa trong render bị React coi là kiểu
+ * mới sau mỗi lần cha render nên cả cây con bị dựng lại.
+ */
+test('không trang nào định nghĩa component bên trong render', () => {
+  const offenders = [];
+  for (const file of collectTsxFiles(CLIENT_SRC)) {
+    const source = fs.readFileSync(file, 'utf8');
+    const ownName = path.basename(file, '.tsx');
+    // `  const Xxx = (` hoặc `  function Xxx(` thụt lề 2 dấu cách = nằm trong một hàm khác.
+    for (const match of source.matchAll(/^ {2}(?:const|function) ([A-Z][A-Za-z0-9]*)\s*[=(]/gm)) {
+      // Component chính của file có thể bị thụt lề hợp lệ khi bọc trong forwardRef/memo;
+      // đó không phải component lồng trong render của ai khác.
+      if (match[1] === ownName) continue;
+      offenders.push(`${path.basename(file)}:${match[1]}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'component định nghĩa trong render sẽ bị dựng lại sau mỗi lần cha render, làm input mất focus',
+  );
+});

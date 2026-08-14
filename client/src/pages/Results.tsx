@@ -3,7 +3,8 @@ import { useParams, Link } from 'react-router-dom';
 import { StudentRecordings, adminApi } from '../services/api';
 import AdminNav from '../components/AdminNav';
 import PracticeResultsTable, { PracticeResultRow } from './results/PracticeResultsTable';
-import { ArrowLeft, Download, Search, AlertCircle, FileText, CheckCircle2, FileJson, X, Settings2, ShieldAlert, Cpu, KeyRound } from 'lucide-react';
+import ViolationDetailModal from './results/ViolationDetailModal';
+import { ArrowLeft, Download, Search, FileText, CheckCircle2, FileJson, X, Settings2, ShieldAlert, Cpu, KeyRound } from 'lucide-react';
 import DOMPurify from 'dompurify';
 
 function Results() {
@@ -512,84 +513,16 @@ function Results() {
         </>
       )}
 
-      {/* Forensic popup: chi tiết từng lần vi phạm kèm nội dung paste (500 ký tự) */}
+      {/* Popup pháp chứng: chi tiết từng lần vi phạm kèm nội dung dán. Tách sang
+          results/ViolationDetailModal.tsx để trang này chỉ còn phần điều phối. */}
       {violationDetail && (
-        <div
-          onClick={() => setViolationDetail(null)}
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden"
-          >
-            <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <h3 className="font-bold text-slate-900 m-0 flex items-center gap-2 border-none pb-0">
-                <AlertCircle size={20} className="text-red-500" />
-                Violation Details <span className="text-slate-500 font-normal text-sm ml-2">{violationDetail.email}</span>
-              </h3>
-              <button
-                onClick={() => setViolationDetail(null)}
-                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="p-6 overflow-y-auto space-y-4">
-              {violationDetail.events.length === 0 ? (
-                <div className="text-center py-8 text-slate-500">
-                  <ShieldAlert size={48} className="mx-auto text-slate-300 mb-3" />
-                  <p>No detailed records found.</p>
-                </div>
-              ) : (
-                violationDetail.events.map((ev: any, i: number) => (
-                  <div key={i} className="border border-slate-200 rounded-xl overflow-hidden bg-white">
-                    <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-100 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-                      <span className="font-bold text-orange-700 flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-orange-500"></span> {ev.type}
-                      </span>
-                      <span className="text-slate-500 flex items-center gap-1">
-                        {new Date(ev.created_at).toLocaleString()}
-                      </span>
-                      {ev.text_length != null && (
-                        <span className="px-1.5 py-0.5 bg-slate-200 text-slate-700 rounded font-mono">
-                          {ev.text_length} chars
-                        </span>
-                      )}
-                      {ev.question_id && (
-                        <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded font-mono">
-                          Q: {ev.question_id}
-                        </span>
-                      )}
-                      {ev.metadata_json && (() => {
-                        try {
-                          const metadata = typeof ev.metadata_json === 'string'
-                            ? JSON.parse(ev.metadata_json)
-                            : ev.metadata_json;
-                          return (
-                            <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded font-mono">
-                              {Object.entries(metadata).map(([key, value]) => `${key}=${value}`).join(' · ')}
-                            </span>
-                          );
-                        } catch (_) {
-                          return null;
-                        }
-                      })()}
-                    </div>
-                    {ev.content_preview && (
-                      <div className="p-0">
-                        <pre className="m-0 whitespace-pre-wrap break-words text-xs font-mono bg-slate-900 text-slate-300 p-4 max-h-[300px] overflow-y-auto">
-                          {ev.content_preview}
-                        </pre>
-                      </div>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
+        <ViolationDetailModal
+          email={violationDetail.email}
+          events={violationDetail.events}
+          onClose={() => setViolationDetail(null)}
+        />
       )}
+
       {/* Xem lại video ghi màn hình (S3) của một học viên */}
       {identityFor && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" role="presentation" onMouseDown={() => setIdentityFor(null)}>
