@@ -203,14 +203,52 @@ chmod 600 /opt/eaudit/.env
 echo ">>> .env created successfully"
 
 # =============================================================================
-# STEP 4: Configure Nginx
+# STEP 4: Configure Nginx (HTTPS via Cloudflare Origin Certificate)
 # =============================================================================
-echo ">>> Configuring Nginx..."
+echo ">>> Configuring Nginx with HTTPS..."
+
+# --- Tạo thư mục chứa placeholder cert để Nginx không crash khi khởi động ---
+# (Certificate thật sẽ được admin dán vào sau khi tạo trên Cloudflare Dashboard)
+mkdir -p /etc/ssl/eaudit
+
+# Tạo self-signed cert tạm để Nginx khởi động được ngay
+# (Nginx sẽ dùng cert này cho đến khi admin dán Cloudflare Origin Cert thật vào)
+if [ ! -f /etc/ssl/eaudit/origin.crt ]; then
+  openssl req -x509 -nodes -newkey rsa:2048 \
+    -keyout /etc/ssl/eaudit/origin.key \
+    -out /etc/ssl/eaudit/origin.crt \
+    -days 365 \
+    -subj "/CN=${domain_name}" 2>/dev/null
+  echo ">>> Self-signed cert created (replace with Cloudflare Origin Cert!)"
+fi
+chmod 600 /etc/ssl/eaudit/origin.key
+
 cat > /etc/nginx/sites-available/eaudit << 'NGINXEOF'
+# --- HTTP: Redirect all to HTTPS ---
 server {
     listen 80;
     listen [::]:80;
-    server_name ${domain_name}${www_domain_name != "" ? " " : ""}${www_domain_name};
+    server_name ${domain_name};
+    return 301 https://$host$request_uri;
+}
+
+# --- HTTPS: Main server block ---
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${domain_name};
+
+    # SSL Certificate (Cloudflare Origin Certificate)
+    # To install: paste your cert from Cloudflare Dashboard into:
+    #   /etc/ssl/eaudit/origin.crt
+    #   /etc/ssl/eaudit/origin.key
+    ssl_certificate /etc/ssl/eaudit/origin.crt;
+    ssl_certificate_key /etc/ssl/eaudit/origin.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
 
     # Security headers
     add_header X-Frame-Options "SAMEORIGIN" always;
@@ -264,6 +302,17 @@ NGINXEOF
 ln -sf /etc/nginx/sites-available/eaudit /etc/nginx/sites-enabled/eaudit
 rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl restart nginx
+echo ">>> Nginx configured with HTTPS"
+echo ""
+echo ">>> ========================================================"
+echo ">>> ACTION REQUIRED: Install Cloudflare Origin Certificate"
+echo ">>> 1. Go to Cloudflare Dashboard -> SSL/TLS -> Origin Server"
+echo ">>> 2. Create Certificate for ${domain_name}"
+echo ">>> 3. Paste the certificate into: /etc/ssl/eaudit/origin.crt"
+echo ">>> 4. Paste the private key into:  /etc/ssl/eaudit/origin.key"
+echo ">>> 5. Run: sudo nginx -t && sudo systemctl reload nginx"
+echo ">>> ========================================================"
+
 
 # =============================================================================
 # STEP 5: Create Helper Scripts
