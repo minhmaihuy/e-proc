@@ -43,12 +43,26 @@ variable "db_instance_class" {
 }
 
 variable "backup_retention_days" {
-  description = "Always-on RDS and S3 backup retention in days."
+  description = "RDS automated backup retention in days. 0 disables RDS-managed backups (AWS Free Tier caps this value)."
   type        = number
   default     = 14
+
+  # Cho phép 0 vì AWS Free Tier CHẶN retention cao và trả FreeTierRestrictionError ngay
+  # ở CreateDBInstance — không phải lúc plan, nên chỉ lộ ra sau khi apply đã chạy được
+  # một đoạn. Chặn 0 ở tầng validate nghĩa là tài khoản Free Tier không apply nổi, và
+  # người đang kẹt sẽ sửa vội thẳng vào file này dưới áp lực, dễ đụng nhầm cả
+  # deletion_protection ngay bên dưới.
+  #
+  # ⚠ Đặt 0 là TẮT HOÀN TOÀN snapshot tự động và point-in-time recovery. Khi đó bản
+  # dump lên S3 (scripts/backup-db.sh) là lớp sao lưu DUY NHẤT, không còn là lớp phụ —
+  # phải mở bucket xem có object thật, đừng tin cron đã chạy.
+  #
+  # deletion_protection và skip_final_snapshot KHÔNG bị Free Tier giới hạn. Giữ nguyên
+  # trong mọi trường hợp: chính hai tham số đó ngăn một lần destroy xoá sạch dữ liệu mà
+  # không để lại snapshot nào — đúng chuyện đã xảy ra ngày 2026-08-13.
   validation {
-    condition     = var.backup_retention_days >= 1 && var.backup_retention_days <= 35
-    error_message = "backup_retention_days must be between 1 and 35."
+    condition     = var.backup_retention_days >= 0 && var.backup_retention_days <= 35
+    error_message = "backup_retention_days must be between 0 and 35 (0 disables RDS-managed backups)."
   }
 }
 

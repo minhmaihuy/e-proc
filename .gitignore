@@ -38,3 +38,6 @@ data/terraform-validator/
 # Private key: KHONG BAO GIO commit. Terraform sinh ra .pem khi provision.
 *.pem
 *.key
+
+# Báo cáo do scripts/run-code-harness.py sinh ra, không phải nguồn
+.harness-report/
