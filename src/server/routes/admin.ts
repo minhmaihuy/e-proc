@@ -331,21 +331,49 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    // Database CSV exports are UTF-8 without necessarily carrying a BOM. Without
+    // an explicit codepage SheetJS may decode Vietnamese text as Windows-1252.
+    // Excel workbooks ignore this option, so the existing template remains valid.
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer', codepage: 65001 });
     const sheetName = workbook.SheetNames[0];
     const rawData = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1 }) as any[][];
     
-    if (rawData.length < 3) {
+    if (rawData.length < 2) {
       return res.status(400).json({ error: 'Invalid file format' });
     }
 
     const header = rawData[0];
-    const rubricHeader = rawData[1];
+    const normalizedHeader = header.map((col) => col?.toString().trim().toLowerCase());
+    const isDatabaseCsv = normalizedHeader.includes('question_sample');
+    const dataStartRow = isDatabaseCsv ? 1 : 2;
+    const rubricHeader = isDatabaseCsv ? undefined : rawData[1];
     
     const colIndex: Record<string, number> = {};
     header.forEach((col, i) => {
       if (col) colIndex[col.toString().trim()] = i;
     });
+
+    // Database exports use snake_case and a single header row. Keep accepting the
+    // original two-row Excel template while mapping exported CSV columns to the
+    // same canonical names. XLSX can parse CSV buffers, so no separate parser is
+    // required and quoted commas/newlines/HTML remain intact.
+    if (isDatabaseCsv) {
+      const csvAliases: Record<string, string> = {
+        id: 'ID',
+        type: 'Type',
+        level: 'Level',
+        module: 'Module',
+        question_group: 'QuestionGroup',
+        question_sample: 'Question Sample',
+        rubric_must_have: 'Rubric (Must-have) (70%)',
+        rubric_nice_to_have: 'Nice-to-have (20%)',
+        rubric_optional: 'Optional (10%)',
+      };
+      normalizedHeader.forEach((col, i) => {
+        const canonicalName = csvAliases[col];
+        if (canonicalName) colIndex[canonicalName] = i;
+      });
+    }
 
     let rubricMustHaveCol = colIndex['Rubric (Must-have) (70%)'] ?? 5;
     let rubricNiceCol = colIndex['Nice-to-have (20%)'] ?? 6;
@@ -361,7 +389,7 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
     let updated = 0;
     let skipped = 0;
 
-    for (let i = 2; i < rawData.length; i++) {
+    for (let i = dataStartRow; i < rawData.length; i++) {
       const row = rawData[i];
       if (!row || row.length === 0) continue;
       
@@ -468,7 +496,7 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer', codepage: 65001 });
     const sheetName = workbook.SheetNames[0];
     const rawData = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1 }) as any[][];
 

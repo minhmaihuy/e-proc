@@ -73,6 +73,20 @@ test('import đọc cột bộ đề từ Excel, nếu không thì mọi câu đ
   assert.match(source, /QuestionGroup/, 'không đọc cột QuestionGroup thì khóa kép trở nên vô nghĩa');
 });
 
+test('import nhận database CSV một dòng header mà không bỏ mất câu đầu tiên', () => {
+  const source = readSource('src', 'server', 'routes', 'admin.ts');
+  assert.equal(
+    [...source.matchAll(/codepage: 65001/g)].length,
+    2,
+    'cả import tự luận và quiz phải đọc CSV UTF-8 để không làm hỏng tiếng Việt',
+  );
+  assert.match(source, /normalizedHeader\.includes\('question_sample'\)/);
+  assert.match(source, /const dataStartRow = isDatabaseCsv \? 1 : 2/);
+  assert.match(source, /question_sample: 'Question Sample'/);
+  assert.match(source, /rubric_must_have: 'Rubric \(Must-have\) \(70%\)'/);
+  assert.match(source, /question_group: 'QuestionGroup'/);
+});
+
 test('SQLite chạy .all() cho INSERT ... RETURNING', () => {
   // Nếu đi qua .run(), rows luôn rỗng → students/import đọc được undefined rồi bỏ qua
   // học viên, tạo tài khoản mà không gán câu hỏi nào.
