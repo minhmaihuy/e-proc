@@ -2,14 +2,13 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
 import db from '../db/postgres.js';
-// Tài khoản quản trị sống ở control-plane, không phải data-plane khảo thí.
+// Control-plane chỉ giữ tenant settings/audit; tenant admin identities sống trong db.
 import controlDb from '../db/controlPlane.js';
 import mammoth from 'mammoth';
 import { normalizeUnicode, stripHtml, sanitizeFilename, buildContentDisposition } from '../../utils/string.js';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import { authMiddleware, requireTenantDataAdmin, requireTenantUserManager } from '../middleware/auth.js';
-import { canManageTenantUser } from '../tenantContext.js';
 import crypto from 'crypto';
 import { parseBlueprintCompat } from '../services/blueprint.js';
 import { resolveBatchRecordMode } from '../services/recordingPolicy.js';
@@ -34,12 +33,9 @@ router.use(authMiddleware);
 
 // ── Quản lý người dùng trong tenant ─────────────────────────────
 //
-// Phải dùng controlDb, KHÔNG dùng db (data-plane). Tài khoản sống ở control-plane;
-// bản sao trong data-plane chỉ còn để rollback và không ai đọc nữa. Trước đây cả
-// bốn route này đều ghi nhầm sang data-plane, nên:
-//   - danh sách luôn rỗng dù tenant có tài khoản thật,
-//   - tài khoản tạo ra không đăng nhập được,
-//   - và nguy hiểm nhất: xoá báo thành công nhưng tài khoản thật vẫn đăng nhập được.
+// Mỗi tenant host có assessment database riêng; tài khoản tenant_admin/admin sống
+// cùng question/batch/student trong database đó. Control-plane không phải nguồn xác
+// thực cho tenant users và không được dùng cho CRUD bên dưới.
 //
 // Vai trò hợp lệ trong một tenant: `tenant_admin` (quản lý người dùng) và `admin`
 // (giáo viên / cộng tác viên). `superadmin` là toàn cục và không bao giờ được tạo
@@ -62,10 +58,10 @@ function passwordProblem(password: unknown): string | null {
 }
 
 /** Đếm số tenant_admin còn lại, trừ một id. Dùng để không xóa/hạ cấp người cuối cùng. */
-async function otherTenantAdminCount(tenantId: number, excludeId: number): Promise<number> {
-  const result = await controlDb.query(
-    "SELECT COUNT(*) AS count FROM admin_users WHERE role = 'tenant_admin' AND tenant_id = ? AND id <> ?",
-    [tenantId, excludeId],
+async function otherTenantAdminCount(excludeId: number): Promise<number> {
+  const result = await db.query(
+    "SELECT COUNT(*) AS count FROM admin_users WHERE role = 'tenant_admin' AND id <> ?",
+    [excludeId],
   );
   return Number(result.rows[0]?.count ?? 0);
 }
@@ -73,20 +69,17 @@ async function otherTenantAdminCount(tenantId: number, excludeId: number): Promi
 /** Nạp mục tiêu và kiểm tra người gọi có quyền quản lý nó không. */
 async function loadManageableUser(req: Request, targetId: number) {
   const actor = req.adminUser!;
-  const result = await controlDb.query(
-    'SELECT id, username, role, tenant_id FROM admin_users WHERE id = ?',
+  const result = await db.query(
+    'SELECT id, username, role FROM admin_users WHERE id = ?',
     [targetId],
   );
   const target = result.rows[0];
   if (!target) return { error: { status: 404, message: 'User not found' } } as const;
 
-  // canManageTenantUser chốt ba điều: người gọi là tenant_admin, cùng tenant với mục
-  // tiêu, và mục tiêu không phải superadmin.
-  if (!canManageTenantUser(
-    { role: actor.role, tenantId: actor.tenantId },
-    { role: String(target.role), tenantId: target.tenant_id === null ? null : Number(target.tenant_id) },
-  )) {
-    return { error: { status: 403, message: 'Forbidden: account belongs to another tenant' } } as const;
+  // Database hiện tại chính là tenant boundary. Không chấp nhận role ngoài tenant
+  // kể cả khi một hàng legacy bị chèn nhầm vào data-plane.
+  if (actor.role !== 'tenant_admin' || !isTenantRole(target.role)) {
+    return { error: { status: 403, message: 'Forbidden: account is not a tenant user' } } as const;
   }
   return { target } as const;
 }
@@ -94,14 +87,13 @@ async function loadManageableUser(req: Request, targetId: number) {
 // GET /api/admin/users — liệt kê người dùng CỦA TENANT HIỆN TẠI
 router.get('/users', requireTenantUserManager, async (req: Request, res: Response) => {
   try {
-    const result = await controlDb.query(
-      `SELECT id, username, role, tenant_id, created_at
+    const result = await db.query(
+      `SELECT id, username, role, created_at
          FROM admin_users
-        WHERE tenant_id = ? AND role <> 'superadmin'
+        WHERE role IN ('tenant_admin', 'admin')
         ORDER BY id ASC`,
-      [req.adminUser!.tenantId],
     );
-    return res.json(result.rows);
+    return res.json(result.rows.map((row: any) => ({ ...row, tenant_id: req.adminUser!.tenantId })));
   } catch (err: any) {
     console.error('[Users] list error:', err);
     return res.status(500).json({ error: 'Unable to load tenant users.' });
@@ -127,7 +119,7 @@ router.post('/users', requireTenantUserManager, async (req: Request, res: Respon
       return res.status(400).json({ error: 'Role must be "tenant_admin" or "admin".' });
     }
 
-    const existing = await controlDb.query(
+    const existing = await db.query(
       'SELECT id FROM admin_users WHERE LOWER(username) = LOWER(?)',
       [trimmed],
     );
@@ -135,12 +127,11 @@ router.post('/users', requireTenantUserManager, async (req: Request, res: Respon
       return res.status(409).json({ error: 'Username already exists' });
     }
 
-    // tenant_id lấy từ JWT của người gọi, KHÔNG lấy từ body: nếu tin body thì một
-    // tenant_admin có thể tự tạo tài khoản sang tenant khác.
+    // Không có tenant_id: kết nối DATABASE_URL hiện tại chính là tenant boundary.
     const passwordHash = await bcrypt.hash(password, 12);
-    await controlDb.query(
-      'INSERT INTO admin_users (username, password_hash, role, tenant_id) VALUES (?, ?, ?, ?)',
-      [trimmed, passwordHash, role, req.adminUser!.tenantId],
+    await db.query(
+      'INSERT INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)',
+      [trimmed, passwordHash, role],
     );
     console.log('[Users] created', trimmed, 'role', role, 'tenant', req.adminUser!.tenantId);
     return res.status(201).json({ success: true });
@@ -179,11 +170,11 @@ router.put('/users/:id', requireTenantUserManager, async (req: Request, res: Res
       if (
         target.role === 'tenant_admin'
         && role !== 'tenant_admin'
-        && (await otherTenantAdminCount(Number(target.tenant_id), targetId)) === 0
+        && (await otherTenantAdminCount(targetId)) === 0
       ) {
         return res.status(400).json({ error: 'Cannot demote the last tenant administrator' });
       }
-      await controlDb.query(
+      await db.query(
         'UPDATE admin_users SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [role, targetId],
       );
@@ -198,7 +189,7 @@ router.put('/users/:id', requireTenantUserManager, async (req: Request, res: Res
         return res.status(400).json({ error: 'Use change-password for your own account' });
       }
       const passwordHash = await bcrypt.hash(password, 12);
-      await controlDb.query(
+      await db.query(
         'UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [passwordHash, targetId],
       );
@@ -229,12 +220,12 @@ router.delete('/users/:id', requireTenantUserManager, async (req: Request, res: 
     // không quản lý được người dùng của tenant nên không ai dựng lại được.
     if (
       target.role === 'tenant_admin'
-      && (await otherTenantAdminCount(Number(target.tenant_id), targetId)) === 0
+      && (await otherTenantAdminCount(targetId)) === 0
     ) {
       return res.status(400).json({ error: 'Cannot delete the last tenant administrator' });
     }
 
-    await controlDb.query('DELETE FROM admin_users WHERE id = ?', [targetId]);
+    await db.query('DELETE FROM admin_users WHERE id = ?', [targetId]);
     console.log('[Users] deleted', targetId, 'by', req.adminUser?.id);
     return res.json({ success: true });
   } catch (err: any) {

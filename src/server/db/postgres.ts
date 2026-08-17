@@ -202,10 +202,14 @@ async function initPostgres() {
       await client.query(`ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS ${col} ${def}`);
     } catch (_) { /* already exists */ }
   }
-  // Migration: người upload question (FK → admin_users). Question cũ để NULL.
+  // Ownership constraints are installed only after tenant identities have been
+  // migrated back from the control-plane (see ensureTenantOwnershipConstraints).
   try {
-    await client.query('ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS uploaded_by INTEGER REFERENCES admin_users(id) ON DELETE SET NULL');
-  } catch (_) { /* already exists */ }
+    await client.query('ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS uploaded_by INTEGER');
+  } catch (err) {
+    console.error('[DB] question_bank ownership migration error:', err);
+    throw err;
+  }
   console.log('[DB] question_bank ready');
 
 await client.query(`
@@ -237,10 +241,13 @@ await client.query(`
   try {
     await client.query("ALTER TABLE batches ADD COLUMN IF NOT EXISTS exam_type TEXT DEFAULT 'essay'");
   } catch (_) { /* already exists */ }
-  // Migration: người tạo batch (FK → admin_users). Batch cũ để NULL.
+  // Migration: người tạo batch là data-plane tenant admin ID. Batch cũ để NULL.
   try {
-    await client.query('ALTER TABLE batches ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES admin_users(id) ON DELETE SET NULL');
-  } catch (_) { /* already exists */ }
+    await client.query('ALTER TABLE batches ADD COLUMN IF NOT EXISTS created_by INTEGER');
+  } catch (err) {
+    console.error('[DB] batches ownership migration error:', err);
+    throw err;
+  }
   
   const seqCheck = await client.query("SELECT COALESCE(MAX(id), 0) + 1 as next_id FROM batches");
   await client.query(`SELECT setval('batches_id_seq', ${seqCheck.rows[0].next_id})`);
@@ -896,6 +903,55 @@ export async function closeDatabase(): Promise<void> {
   }
 }
 
+/** Reset the SERIAL sequence after preserving explicit legacy/control-plane IDs. */
+export async function syncAdminUserSequence(): Promise<void> {
+  if (!pgPool) return;
+  await pgPool.query(
+    "SELECT setval(pg_get_serial_sequence('admin_users', 'id'), GREATEST(COALESCE((SELECT MAX(id) FROM admin_users), 1), 1), COALESCE((SELECT MAX(id) FROM admin_users), 0) > 0)",
+  );
+}
+
+/**
+ * Install ownership FKs only after tenant users are present in this tenant DB.
+ * Fail on orphan IDs rather than silently erasing audit ownership.
+ */
+export async function ensureTenantOwnershipConstraints(): Promise<void> {
+  if (!pgPool) return;
+  const orphanQuestions = await pgPool.query(`
+    SELECT COUNT(*)::int AS count FROM question_bank q
+    WHERE q.uploaded_by IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM admin_users u WHERE u.id = q.uploaded_by)
+  `);
+  const orphanBatches = await pgPool.query(`
+    SELECT COUNT(*)::int AS count FROM batches b
+    WHERE b.created_by IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM admin_users u WHERE u.id = b.created_by)
+  `);
+  if (Number(orphanQuestions.rows[0]?.count || 0) > 0 || Number(orphanBatches.rows[0]?.count || 0) > 0) {
+    throw new Error('Tenant ownership migration found admin IDs that are absent from the tenant data-plane.');
+  }
+  await pgPool.query(`
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'question_bank_uploaded_by_fkey'
+          AND conrelid = 'question_bank'::regclass
+      ) THEN
+        ALTER TABLE question_bank ADD CONSTRAINT question_bank_uploaded_by_fkey
+          FOREIGN KEY (uploaded_by) REFERENCES admin_users(id) ON DELETE SET NULL;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'batches_created_by_fkey'
+          AND conrelid = 'batches'::regclass
+      ) THEN
+        ALTER TABLE batches ADD CONSTRAINT batches_created_by_fkey
+          FOREIGN KEY (created_by) REFERENCES admin_users(id) ON DELETE SET NULL;
+      END IF;
+    END $$
+  `);
+}
+
 interface DbResult {
   rows: any[];
   rowCount: number;
@@ -994,4 +1050,12 @@ export function getPool() {
   return pgPool;
 }
 
-export default { initDatabase, closeDatabase, query, withTransaction, getPool };
+export default {
+  initDatabase,
+  closeDatabase,
+  query,
+  withTransaction,
+  getPool,
+  syncAdminUserSequence,
+  ensureTenantOwnershipConstraints,
+};

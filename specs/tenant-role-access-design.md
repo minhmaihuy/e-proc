@@ -13,12 +13,10 @@ production tới 2026-08-12, và không cổng kiểm tra nào bắt được:
    có lớp xác thực nào chặn. Bất kỳ ai cũng ghi được một hàng vào `admin_users` của
    database production.
 
-2. **Toàn bộ CRUD `/users` thao tác nhầm database plane.** `admin.ts` import `db` từ
-   `postgres.js` (data-plane khảo thí) trong khi tài khoản sống ở control-plane. Danh
-   sách người dùng luôn rỗng; tài khoản tạo ra không đăng nhập được; và nguy hiểm nhất
-   là **xóa báo thành công nhưng người đó vẫn đăng nhập bình thường**. `PUT /users/:id`
-   còn không tồn tại dù client vẫn gọi, nên đổi vai trò và đặt lại mật khẩu đều nhận 404
-   trong im lặng.
+2. **Tenant identity từng bị đặt nhầm ở control-plane.** Điều này làm
+   `question_bank.uploaded_by`/`batches.created_by` không thể tham chiếu đúng tài khoản
+   tạo dữ liệu trong tenant DB và CSV import lỗi FK. Tenant login, session reload,
+   password và CRUD phải cùng dùng `postgres.js` của tenant hiện tại.
 
 3. **Đảo ngược đặc quyền ở bốn chỗ.** Bốn kiểm tra viết `role !== 'admin'` để áp ràng
    buộc sở hữu. Nhưng `admin` là giáo viên/cộng tác viên còn `tenant_admin` mới là người
@@ -38,15 +36,17 @@ dùng thường.
 2. Không route nào trong `admin.ts` được đặt phía trên `router.use(authMiddleware)`.
    Self-service registration (`/setup`, `/is-initialized`) không được tồn tại dưới bất kỳ
    hình thức nào.
-3. Mọi truy vấn `admin_users` phải đi qua `controlPlane.ts`. Đi qua data-plane là lỗi
-   im lặng nguy hiểm nhất trong nhóm này: thu hồi quyền thất bại mà giao diện báo thành công.
+3. Truy vấn `admin_users` phải chọn plane theo role: `superadmin` qua `controlPlane.ts`;
+   `tenant_admin`/`admin` qua `postgres.ts` của tenant hiện tại. Không endpoint nào được
+   ghi một plane nhưng login/session reload lại đọc plane khác.
 4. `/api/admin/users` phải đủ bốn động từ GET/POST/PUT/DELETE, tất cả sau
    `requireTenantUserManager`.
 5. Vai trò hợp lệ khi tạo/sửa người dùng trong tenant chỉ gồm `tenant_admin` và `admin`.
    Không nhận vai trò của mô hình cũ (`mod`) — nó tạo ra tài khoản mà không guard nào
    nhận ra, tức tài khoản chết.
-6. `tenant_id` khi tạo người dùng lấy từ JWT của người gọi, **không** lấy từ body: tin
-   body cho phép một tenant_admin tạo tài khoản sang tenant khác.
+6. Tenant user CRUD không nhận `tenant_id` từ body; `DATABASE_URL` hiện tại chính là
+   tenant boundary. Tenant settings/capabilities vẫn được lấy từ trusted `TENANT_SLUG`
+   qua control-plane.
 7. Ràng buộc sở hữu (`uploaded_by`/`created_by`) áp lên `admin`, **không** áp lên
    `tenant_admin`. Viết `role !== 'admin'` là đảo ngược ý định.
 8. Không được xóa hoặc hạ cấp `tenant_admin` cuối cùng của một tenant: `superadmin` cố ý
@@ -55,8 +55,8 @@ dùng thường.
 9. Không tự xóa chính mình, không tự đổi vai trò của mình, không tự đặt lại mật khẩu của
    mình qua user CRUD (đổi mật khẩu bản thân phải qua `/change-password`, nơi có bắt nhập
    mật khẩu hiện tại).
-10. `tenant_admin` không được đụng tới `superadmin` hay người dùng của tenant khác —
-    kiểm tra qua `canManageTenantUser` trong `tenantContext.ts`.
+10. `tenant_admin` không được đụng tới `superadmin`; data-plane chỉ chấp nhận role
+    `tenant_admin`/`admin`, còn mỗi tenant database tách biệt ngăn truy cập chéo tenant.
 11. Không phân quyền theo tên đăng nhập ở bất kỳ đâu. Chỉ dựa trên `role` và `tenant_id`.
     Tên tài khoản seed mặc định chỉ được dùng làm giá trị khởi tạo, không bao giờ làm
     điều kiện cấp quyền.
@@ -67,7 +67,7 @@ dùng thường.
 ## Verification
 
 - `npm run test:tenant` xanh, gồm `adminUserRoutes.test.ts` đọc thẳng source: không route
-  nào trên `authMiddleware`; không còn `/setup`; mọi truy vấn `admin_users` qua `controlDb`;
+  nào trên `authMiddleware`; không còn `/setup`; tenant `admin_users` qua data-plane;
   đủ bốn động từ; đúng 4 chỗ ràng buộc sở hữu dạng `role === 'admin'`.
 - Kiểm chứng test thật sự bắt lỗi: đảo một kiểm tra sở hữu về `role !== 'admin'`, xác nhận
   suite đỏ, rồi khôi phục. Test chỉ xanh mà chưa từng đỏ là test vô giá trị.

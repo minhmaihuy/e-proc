@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { initDatabase } from './db/postgres.js';
 import { initControlPlaneDatabase } from './db/controlPlane.js';
 import { initLogPlaneDatabase } from './db/logPlane.js';
+import { migrateCurrentTenantAdminsToDataPlane } from './services/tenantAdminPlaneMigration.js';
 import adminRoutes from './routes/admin.js';
 import adminAuthRoutes from './routes/adminAuth.js';
 import tenantRoutes from './routes/tenants.js';
@@ -213,6 +214,8 @@ export const initialization = initDatabase()
   .then(() => console.log('Assessment data-plane initialized'))
   .then(() => initControlPlaneDatabase())
   .then(() => console.log('Tenant control-plane initialized'))
+  .then(() => migrateCurrentTenantAdminsToDataPlane())
+  .then(() => console.log('Tenant admin identities initialized in assessment data-plane'))
   .then(() => initLogPlaneDatabase())
   .then(() => console.log('Tenant issue log-plane initialized'))
   .then(() => cache.init())
