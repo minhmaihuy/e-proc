@@ -176,7 +176,7 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const result = await db.query(`
       SELECT t.*,
-        (SELECT COUNT(*) FROM admin_users u WHERE u.tenant_id = t.id AND u.role = 'tenant_admin') AS admin_count,
+        NULL AS admin_count,
         COALESCE((SELECT exams_started FROM tenant_usage x WHERE x.tenant_id = t.id AND x.period_month = ?), 0) AS usage_exams_started,
         COALESCE((SELECT ai_gradings FROM tenant_usage x WHERE x.tenant_id = t.id AND x.period_month = ?), 0) AS usage_ai_gradings,
         COALESCE((SELECT recording_minutes FROM tenant_usage x WHERE x.tenant_id = t.id AND x.period_month = ?), 0) AS usage_recording_minutes,
@@ -274,6 +274,8 @@ router.post('/', requireSuperAdmin, async (req: Request, res: Response) => {
     const tenantId = Number(created.lastInsertRowid || (await db.query('SELECT id FROM tenants WHERE slug = ?', [input.slug])).rows[0]?.id);
     try {
       const passwordHash = await bcrypt.hash(password, 12);
+      // Bootstrap handoff only: tenant runtime migrates this hash into its own
+      // assessment DB on first startup. Control-plane never authenticates this row.
       await db.query(
         'INSERT INTO admin_users (username, password_hash, role, tenant_id) VALUES (?, ?, ?, ?)',
         [username, passwordHash, 'tenant_admin', tenantId],

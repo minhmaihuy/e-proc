@@ -38,7 +38,7 @@ router.post('/logout', (_req: Request, res: Response) => res.json({ success: tru
 
 router.put('/change-password', authMiddleware, requireSuperAdmin, async (req: Request, res: Response) => {
   try {
-    await changeAdminPassword(req.adminUser!.id, req.body?.currentPassword, req.body?.newPassword);
+    await changeAdminPassword(req.adminUser!.id, req.body?.currentPassword, req.body?.newPassword, 'tenant-control');
     console.log('[Auth] Superadmin password changed:', req.adminUser!.id);
     return res.json({ success: true, message: 'Password changed successfully' });
   } catch (error) {

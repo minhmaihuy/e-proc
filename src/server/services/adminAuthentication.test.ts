@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   AdminAuthenticationError,
   AdminLoginPrincipal,
@@ -87,4 +89,21 @@ test('tenant-control login accepts only superadmin', () => {
     403,
     /remain global/,
   );
+});
+
+test('tenant auth reads identities from data-plane while superadmin stays in control-plane', () => {
+  const authentication = fs.readFileSync(
+    path.resolve(process.cwd(), 'src', 'server', 'services', 'adminAuthentication.ts'),
+    'utf8',
+  );
+  assert.match(authentication, /scope === 'tenant-control'/);
+  assert.match(authentication, /controlDb\.query\([\s\S]{0,300}role = 'superadmin'/);
+  assert.match(authentication, /dataDb\.query\([\s\S]{0,300}role IN \('admin', 'tenant_admin'\)/);
+
+  const middleware = fs.readFileSync(
+    path.resolve(process.cwd(), 'src', 'server', 'middleware', 'auth.ts'),
+    'utf8',
+  );
+  assert.match(middleware, /isSuperAdminToken[\s\S]{0,500}controlDb\.query/);
+  assert.match(middleware, /dataDb\.query\([\s\S]{0,300}role IN \('admin', 'tenant_admin'\)/);
 });

@@ -459,7 +459,7 @@ async function resetPostgresSequences() {
 }
 
 async function seedSuperAdmin() {
-  const count = Number((await query('SELECT COUNT(*) AS count FROM admin_users')).rows[0]?.count || 0);
+  const count = Number((await query("SELECT COUNT(*) AS count FROM admin_users WHERE role = 'superadmin'")).rows[0]?.count || 0);
   if (count > 0) return;
   const username = process.env.SUPERADMIN_USERNAME || 'supperadmin';
   const password = process.env.SUPERADMIN_PASSWORD || 'superadmin123#2nf';
@@ -468,86 +468,29 @@ async function seedSuperAdmin() {
   console.log('[ControlDB] Seeded initial superadmin:', username);
 }
 
+export const DEFAULT_FSA_TENANT_ADMIN_USERNAME = 'adminfsa';
+export const DEFAULT_FSA_TENANT_ADMIN_PASSWORD = 'adminfsa123#2nf';
+
 export interface TenantAdminSeedEnvironment {
   FSA_TENANT_ADMIN_USERNAME?: string;
   FSA_TENANT_ADMIN_PASSWORD?: string;
 }
 
-export type TenantAdminSeedReason =
-  | 'seed'
-  | 'tenant_admin_exists'
-  | 'username_taken';
-
-export interface TenantAdminSeedDecision {
-  shouldSeed: boolean;
-  username: string;
-  password: string;
-  reason: TenantAdminSeedReason;
-}
-
-export const DEFAULT_FSA_TENANT_ADMIN_USERNAME = 'adminfsa';
-export const DEFAULT_FSA_TENANT_ADMIN_PASSWORD = 'adminfsa123#2nf';
-
-/**
- * Quyết định có seed tài khoản tenant_admin cho FSA-CLS hay không.
- *
- * Vì sao cần: seedSuperAdmin() chỉ tạo superadmin, mà superadmin CỐ TÌNH không đọc/ghi
- * được dữ liệu khảo thí của tenant (xem requireSuperAdmin / requireTenantDataAdmin).
- * Cài mới xong là không có đường nào vào /admin/* — không có ngân hàng câu hỏi, không
- * có batch, không có kết quả. Superadmin cũng không phải người quản lý user của tenant
- * nên tự nó không tạo được tài khoản này.
- *
- * Hai điều kiện dừng, cả hai đều nhằm KHÔNG giẫm lên dữ liệu thật:
- *   - đã có bất kỳ tenant_admin nào của tenant này → hệ thống đang được dùng, đứng yên;
- *   - tên đăng nhập đã bị chiếm (kể cả bởi tenant khác hay bởi superadmin) → dừng,
- *     vì username là duy nhất toàn cục, chèn vào sẽ vi phạm ràng buộc.
- */
+/** Pure compatibility decision used by tests; the actual seed runs in data-plane. */
 export function resolveTenantAdminSeed(
   env: TenantAdminSeedEnvironment,
   existingTenantAdminCount: number,
   usernameTaken: boolean,
-): TenantAdminSeedDecision {
+) {
   const username = env.FSA_TENANT_ADMIN_USERNAME?.trim() || DEFAULT_FSA_TENANT_ADMIN_USERNAME;
   const password = env.FSA_TENANT_ADMIN_PASSWORD?.trim() || DEFAULT_FSA_TENANT_ADMIN_PASSWORD;
-
   if (existingTenantAdminCount > 0) {
-    return { shouldSeed: false, username, password, reason: 'tenant_admin_exists' };
+    return { shouldSeed: false, username, password, reason: 'tenant_admin_exists' as const };
   }
   if (usernameTaken) {
-    return { shouldSeed: false, username, password, reason: 'username_taken' };
+    return { shouldSeed: false, username, password, reason: 'username_taken' as const };
   }
-  return { shouldSeed: true, username, password, reason: 'seed' };
-}
-
-async function seedFsaTenantAdmin(tenantId: number) {
-  const existing = Number(
-    (await query(
-      "SELECT COUNT(*) AS count FROM admin_users WHERE role = 'tenant_admin' AND tenant_id = ?",
-      [tenantId],
-    )).rows[0]?.count || 0,
-  );
-  const username = process.env.FSA_TENANT_ADMIN_USERNAME?.trim() || DEFAULT_FSA_TENANT_ADMIN_USERNAME;
-  const taken = Number(
-    (await query('SELECT COUNT(*) AS count FROM admin_users WHERE LOWER(username) = LOWER(?)', [username]))
-      .rows[0]?.count || 0,
-  ) > 0;
-
-  const decision = resolveTenantAdminSeed(process.env, existing, taken);
-  if (!decision.shouldSeed) {
-    if (decision.reason === 'username_taken') {
-      console.warn(
-        `[ControlDB] Bỏ qua seed tenant admin: tên đăng nhập '${decision.username}' đã tồn tại.`,
-      );
-    }
-    return;
-  }
-
-  const passwordHash = await bcrypt.hash(decision.password, 12);
-  await query(
-    'INSERT INTO admin_users (username, password_hash, role, tenant_id) VALUES (?, ?, ?, ?)',
-    [decision.username, passwordHash, 'tenant_admin', tenantId],
-  );
-  console.log('[ControlDB] Seeded FSA-CLS tenant admin:', decision.username);
+  return { shouldSeed: true, username, password, reason: 'seed' as const };
 }
 
 export interface FsaClsLifecycleRow {
@@ -655,18 +598,6 @@ async function ensureFsaClsTenant(legacyTenantIds: number[]): Promise<number> {
     ],
   );
   await query("UPDATE admin_users SET tenant_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE role = 'superadmin' AND tenant_id IS NOT NULL");
-  if (legacyTenantIds.length > 0) {
-    await query(
-      `UPDATE admin_users SET tenant_id = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE role <> 'superadmin' AND (tenant_id IS NULL OR tenant_id IN (${placeholders(legacyTenantIds.length)}))`,
-      [tenantId, ...legacyTenantIds],
-    );
-  } else {
-    await query(
-      "UPDATE admin_users SET tenant_id = ?, updated_at = CURRENT_TIMESTAMP WHERE role <> 'superadmin' AND tenant_id IS NULL",
-      [tenantId],
-    );
-  }
   return tenantId;
 }
 
@@ -693,7 +624,13 @@ async function migrateLegacyControlPlane() {
     .map((row) => Number(row.id))
     .filter((id) => Number.isInteger(id));
 
-  await copyRowsWhenEmpty('admin_users', ADMIN_COLUMNS, legacyAdmins);
+  // Control-plane runtime owns only superadmin identities. Existing tenant rows are
+  // retained temporarily as a one-time migration source for each tenant host.
+  await copyRowsWhenEmpty(
+    'admin_users',
+    ADMIN_COLUMNS,
+    legacyAdmins.filter((row) => String(row.role || 'admin') === 'superadmin'),
+  );
   await seedSuperAdmin();
   await copyRowsWhenEmpty('tenants', TENANT_COLUMNS, legacyTenants, normalizeLegacyTenantForControlPlane);
   await copyRowsWhenEmpty('tenant_provision_jobs', JOB_COLUMNS, legacyJobs);
@@ -710,8 +647,6 @@ async function migrateLegacyControlPlane() {
       [tenantId, ...legacyFsaIds],
     );
   }
-  // Sau ensureFsaClsTenant, vì tài khoản cần tenant_id thật để gắn vào.
-  await seedFsaTenantAdmin(tenantId);
   console.log('[ControlDB] FSA-CLS tenant ready:', tenantId);
 }
 

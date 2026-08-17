@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import controlDb from '../db/controlPlane.js';
+import dataDb from '../db/postgres.js';
 import { CurrentTenantConfig, getCurrentTenantConfig } from '../tenantContext.js';
 
 export type AdminLoginScope = 'tenant-admin' | 'tenant-control';
@@ -101,20 +102,45 @@ export async function authenticateAdmin(
   scope: AdminLoginScope,
 ): Promise<AdminLoginSession> {
   const { username, password } = validateCredentialsInput(usernameInput, passwordInput);
-  const result = await controlDb.query(
-    `SELECT u.*, t.slug AS tenant_slug, t.name AS tenant_name, t.status AS tenant_status,
-            t.app_url AS tenant_app_url
-     FROM admin_users u
-     LEFT JOIN tenants t ON t.id = u.tenant_id
-     WHERE u.username = ?`,
-    [username],
-  );
-  const user = result.rows[0] as AdminLoginPrincipal | undefined;
+  const serverTenant = getCurrentTenantConfig();
+  let user: AdminLoginPrincipal | undefined;
+  if (scope === 'tenant-control') {
+    const result = await controlDb.query(
+      `SELECT u.*, NULL AS tenant_slug, NULL AS tenant_name, NULL AS tenant_status,
+              NULL AS tenant_app_url
+       FROM admin_users u
+       WHERE u.username = ? AND u.role = 'superadmin'`,
+      [username],
+    );
+    user = result.rows[0] as AdminLoginPrincipal | undefined;
+  } else {
+    const [accountResult, tenantResult] = await Promise.all([
+      dataDb.query(
+        "SELECT id, username, password_hash, role FROM admin_users WHERE username = ? AND role IN ('admin', 'tenant_admin')",
+        [username],
+      ),
+      controlDb.query(
+        'SELECT id, slug, name, status, app_url FROM tenants WHERE slug = ?',
+        [serverTenant.slug],
+      ),
+    ]);
+    const account = accountResult.rows[0];
+    const tenant = tenantResult.rows[0];
+    if (account && tenant) {
+      user = {
+        ...account,
+        tenant_id: Number(tenant.id),
+        tenant_slug: String(tenant.slug),
+        tenant_name: String(tenant.name),
+        tenant_status: String(tenant.status),
+        tenant_app_url: tenant.app_url ? String(tenant.app_url) : null,
+      } as AdminLoginPrincipal;
+    }
+  }
   if (!user || !(await bcrypt.compare(password, user.password_hash))) {
     throw new AdminAuthenticationError(401, 'Invalid username or password');
   }
 
-  const serverTenant = getCurrentTenantConfig();
   assertLoginScope(user, scope, serverTenant);
 
   const secret = process.env.JWT_SECRET;
@@ -148,6 +174,7 @@ export async function changeAdminPassword(
   userId: number,
   currentPassword: unknown,
   newPassword: unknown,
+  scope: AdminLoginScope,
 ): Promise<void> {
   if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || !currentPassword || !newPassword) {
     throw new AdminAuthenticationError(400, 'currentPassword and newPassword are required');
@@ -156,7 +183,12 @@ export async function changeAdminPassword(
     throw new AdminAuthenticationError(400, 'New password must be 8-128 characters');
   }
 
-  const result = await controlDb.query('SELECT password_hash FROM admin_users WHERE id = ?', [userId]);
+  const accountDb = scope === 'tenant-control' ? controlDb : dataDb;
+  const roleFilter = scope === 'tenant-control' ? "role = 'superadmin'" : "role IN ('admin', 'tenant_admin')";
+  const result = await accountDb.query(
+    `SELECT password_hash FROM admin_users WHERE id = ? AND ${roleFilter}`,
+    [userId],
+  );
   const user = result.rows[0] as Pick<AdminLoginPrincipal, 'password_hash'> | undefined;
   if (!user) throw new AdminAuthenticationError(404, 'User not found');
   if (!(await bcrypt.compare(currentPassword, user.password_hash))) {
@@ -164,7 +196,7 @@ export async function changeAdminPassword(
   }
 
   const newHash = await bcrypt.hash(newPassword, 10);
-  await controlDb.query(
+  await accountDb.query(
     'UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
     [newHash, userId],
   );

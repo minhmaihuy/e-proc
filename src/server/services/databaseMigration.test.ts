@@ -66,3 +66,17 @@ test('fresh assessment schemas create students before practice submissions', () 
   assert.equal(submissions.length, 2);
   assert.ok(students.every((position, index) => position < submissions[index]));
 });
+
+test('assessment ownership constraints reference tenant-local admin_users after identity migration', () => {
+  const source = fs.readFileSync(
+    path.resolve(process.cwd(), 'src', 'server', 'db', 'postgres.ts'),
+    'utf8',
+  );
+
+  assert.match(source, /ADD COLUMN IF NOT EXISTS uploaded_by INTEGER/);
+  assert.match(source, /ADD COLUMN IF NOT EXISTS created_by INTEGER/);
+  assert.match(source, /ADD CONSTRAINT question_bank_uploaded_by_fkey/);
+  assert.match(source, /ADD CONSTRAINT batches_created_by_fkey/);
+  assert.match(source, /REFERENCES admin_users\(id\) ON DELETE SET NULL/);
+  assert.doesNotMatch(source, /DROP COLUMN (?:uploaded_by|created_by)/);
+});

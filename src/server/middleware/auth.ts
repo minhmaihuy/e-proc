@@ -2,7 +2,8 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { RecordMode, parseAllowedRecordModes } from '../services/recordingPolicy.js';
 import { getCurrentTenantConfig } from '../tenantContext.js';
-import db from '../db/controlPlane.js';
+import controlDb from '../db/controlPlane.js';
+import dataDb from '../db/postgres.js';
 import { IdentityMode, normalizeIdentityMode } from '../services/identityPolicy.js';
 
 export interface AdminUser {
@@ -60,20 +61,46 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
   }
 
   try {
-    const result = await db.query(
-      `SELECT u.id, u.username, u.role, u.tenant_id, t.slug AS tenant_slug,
-              t.name AS tenant_name, t.status AS tenant_status,
-              t.allowed_record_modes AS tenant_allowed_record_modes,
-              t.email_enabled AS tenant_email_enabled,
-              t.email_from_name AS tenant_email_from_name,
-              t.email_daily_limit AS tenant_email_daily_limit
-              , t.identity_verification AS tenant_identity_verification
-              , t.identity_retention_days AS tenant_identity_retention_days
-       FROM admin_users u LEFT JOIN tenants t ON t.id = u.tenant_id
-       WHERE u.id = ?`,
-      [payload.id],
-    );
-    const current = result.rows[0];
+    const isSuperAdminToken = payload.role === 'superadmin';
+    let current: any;
+    if (isSuperAdminToken) {
+      current = (await controlDb.query(
+        "SELECT id, username, role, NULL AS tenant_id FROM admin_users WHERE id = ? AND role = 'superadmin'",
+        [payload.id],
+      )).rows[0];
+    } else {
+      const serverTenant = getCurrentTenantConfig();
+      const [accountResult, tenantResult] = await Promise.all([
+        dataDb.query(
+          "SELECT id, username, role FROM admin_users WHERE id = ? AND role IN ('admin', 'tenant_admin')",
+          [payload.id],
+        ),
+        controlDb.query(
+          `SELECT id, slug, name, status, allowed_record_modes, email_enabled,
+                  email_from_name, email_daily_limit, identity_verification,
+                  identity_retention_days
+             FROM tenants WHERE slug = ?`,
+          [serverTenant.slug],
+        ),
+      ]);
+      const account = accountResult.rows[0];
+      const tenant = tenantResult.rows[0];
+      if (account && tenant) {
+        current = {
+          ...account,
+          tenant_id: tenant.id,
+          tenant_slug: tenant.slug,
+          tenant_name: tenant.name,
+          tenant_status: tenant.status,
+          tenant_allowed_record_modes: tenant.allowed_record_modes,
+          tenant_email_enabled: tenant.email_enabled,
+          tenant_email_from_name: tenant.email_from_name,
+          tenant_email_daily_limit: tenant.email_daily_limit,
+          tenant_identity_verification: tenant.identity_verification,
+          tenant_identity_retention_days: tenant.identity_retention_days,
+        };
+      }
+    }
     if (!current || current.username !== payload.username) {
       return res.status(401).json({ error: 'Unauthorized: Account no longer exists' });
     }

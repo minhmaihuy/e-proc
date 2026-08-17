@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
-import { canManageTenantUser } from '../tenantContext.js';
 
 /**
  * Chốt lại mô hình phân quyền trong một tenant.
@@ -20,7 +19,11 @@ import { canManageTenantUser } from '../tenantContext.js';
  *      `is-initialized` trả `{"initialized":false}`, `setup` với body rỗng trả 400 —
  *      nghĩa là handler được chạy, không có lớp xác thực nào chặn.
  *
- *   2. Bốn kiểm tra sở hữu viết `role !== 'admin'`, tức giới hạn đúng người NHIỀU
+ *   2. Tenant identities từng được chuyển sang control-plane trong khi ownership FK
+ *      vẫn nằm trong tenant data-plane. Login/CRUD và `uploaded_by` vì vậy không cùng
+ *      một nguồn sự thật, làm import PostgreSQL lỗi FK.
+ *
+ *   3. Bốn kiểm tra sở hữu viết `role !== 'admin'`, tức giới hạn đúng người NHIỀU
  *      quyền hơn (`tenant_admin`) và thả cửa cho giáo viên. Đảo ngược hoàn toàn ý định.
  */
 
@@ -50,17 +53,16 @@ test('self-service registration không được sống lại', () => {
   assert.doesNotMatch(source, /is-initialized/, 'GET /is-initialized lộ trạng thái khởi tạo');
 });
 
-test('tài khoản quản trị chỉ được đọc/ghi qua control-plane', () => {
+test('tài khoản tenant chỉ được đọc/ghi qua assessment data-plane', () => {
   const source = adminRoutes();
-  assert.match(source, /import controlDb from '\.\.\/db\/controlPlane\.js'/);
+  assert.match(source, /import db from '\.\.\/db\/postgres\.js'/);
 
-  // Mọi câu lệnh chạm admin_users phải đi qua controlDb. Qua `db` (data-plane) thì
-  // xoá tài khoản báo thành công nhưng người đó vẫn đăng nhập được như thường.
+  // Mỗi DATABASE_URL là một tenant boundary; control-plane không xác thực tenant user.
   for (const [statement] of source.matchAll(/(\w+)\.query\(\s*[`'"][^`'"]*admin_users/g)) {
     assert.match(
       statement,
-      /^controlDb\./,
-      `truy vấn admin_users qua data-plane: ${statement.slice(0, 60)}`,
+      /^db\./,
+      `truy vấn tenant admin_users ngoài data-plane: ${statement.slice(0, 60)}`,
     );
   }
 });
@@ -108,35 +110,14 @@ test('tenant_admin cuối cùng không bị xóa hoặc hạ cấp', () => {
   assert.match(source, /Cannot demote the last tenant administrator/);
 });
 
-test('tenant_id lấy từ JWT chứ không từ body', () => {
+test('tenant user insert không nhận tenant_id vì DATABASE_URL là tenant boundary', () => {
   const source = adminRoutes();
   const insert = source.match(/INSERT INTO admin_users[\s\S]{0,400}?\);/);
   assert.ok(insert, 'không tìm thấy câu INSERT admin_users');
   assert.match(
     insert[0],
-    /req\.adminUser!\.tenantId/,
-    'tin tenant_id từ body cho phép tạo tài khoản sang tenant khác',
+    /INSERT INTO admin_users \(username, password_hash, role\)/,
+    'tenant data-plane không được phụ thuộc control-plane tenant_id',
   );
-});
-
-test('canManageTenantUser chặn đúng ba trường hợp', () => {
-  const owner = { role: 'tenant_admin', tenantId: 1 };
-
-  assert.equal(canManageTenantUser(owner, { role: 'admin', tenantId: 1 }), true);
-
-  assert.equal(
-    canManageTenantUser(owner, { role: 'admin', tenantId: 2 }),
-    false,
-    'không được quản lý người của tenant khác',
-  );
-  assert.equal(
-    canManageTenantUser(owner, { role: 'superadmin', tenantId: null }),
-    false,
-    'tenant admin không được đụng tới superadmin',
-  );
-  assert.equal(
-    canManageTenantUser({ role: 'admin', tenantId: 1 }, { role: 'admin', tenantId: 1 }),
-    false,
-    'giáo viên không phải người quản lý người dùng',
-  );
+  assert.doesNotMatch(insert[0], /tenant_id/);
 });
