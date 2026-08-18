@@ -1049,15 +1049,21 @@ router.post('/batches', async (req: Request, res: Response) => {
       result = await db.query(`
         INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, exam_type, identity_verification, created_by)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING id
       `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, recordFlag, recordMode, examType, identityMode, createdBy]);
     } else {
       result = await db.query(`
         INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, exam_type, identity_verification, created_by)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING id
       `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, !!recordFlag, recordMode, examType, identityMode, createdBy]);
     }
-    console.log('[CreateBatch] Success, id:', result.lastInsertRowid);
-    res.json({ success: true, id: result.lastInsertRowid || result.rows?.[0]?.id });
+    const batchId = Number(result.rows?.[0]?.id ?? result.lastInsertRowid);
+    if (!Number.isInteger(batchId) || batchId < 1) {
+      throw new Error('Created batch id was not returned');
+    }
+    console.log('[CreateBatch] Success, id:', batchId);
+    res.json({ success: true, id: batchId });
   } catch (error: any) {
     console.error('[CreateBatch] Error:', error);
     res.status(500).json({ error: error.message });

@@ -6,6 +6,23 @@ export type TenantStatus = 'pending' | 'approved' | 'suspended';
 export type TenantProvisionStatus = 'not_started' | 'queued' | 'planning' | 'planned' | 'applying' | 'active' | 'failed';
 export type AdminRole = 'admin' | 'tenant_admin' | 'superadmin';
 
+export interface CreateBatchRequest {
+  name: string;
+  start_time: string;
+  end_time: string;
+  duration: number;
+  blueprint?: unknown;
+  practice_exam_id?: number;
+  record_mode: 'none' | 'local' | 's3';
+  exam_type: 'essay' | 'quiz';
+  identity_verification: 'off' | 'photo';
+}
+
+export interface CreateBatchResponse {
+  success: true;
+  id: number;
+}
+
 export interface StudentExamQuestion {
   id: string;
   question_order: number;
@@ -363,8 +380,8 @@ export const adminApi = {
     api.post('/admin/questions/bulk-delete', { ids }),
   
   // --- Batch endpoints ---
-  createBatch: (data: any) =>
-    api.post('/admin/batches', data),
+  createBatch: (data: CreateBatchRequest) =>
+    api.post<CreateBatchResponse>('/admin/batches', data),
   
   getBatches: () =>
     api.get('/admin/batches'),
