@@ -150,6 +150,29 @@ test('Practice và Issues có lối vào trong menu', async () => {
   assert.match(nav, /'\/admin\/issues'/, 'menu thiếu Issues');
 });
 
+test('cả hai trang làm bài import CodeEditor tĩnh trước khi obfuscate', async () => {
+  // vite-plugin-javascript-obfuscator mã hóa chuỗi trong import() trước khi browser
+  // chạy. Rollup không còn phân giải được module và production sẽ gọi thẳng
+  // /components/CodeEditor, nhận index.html thay vì JavaScript. detectLanguage vốn đã
+  // là static import nên lazy() không tạo được lợi ích chia bundle thực tế.
+  for (const path of [
+    'client/src/pages/StudentExam.tsx',
+    'client/src/pages/StudentPractice.tsx',
+  ]) {
+    const page = await read(path);
+    assert.match(
+      page,
+      /import CodeEditor,\s*\{\s*detectLanguage\s*\}\s*from ['"]\.\.\/components\/CodeEditor['"]/,
+      `${path} phải import CodeEditor tĩnh`,
+    );
+    assert.doesNotMatch(
+      page,
+      /lazy\s*\(\s*\(\)\s*=>\s*import\s*\(\s*['"]\.\.\/components\/CodeEditor['"]\s*\)\s*\)/,
+      `${path} không được lazy import CodeEditor qua chuỗi sẽ bị obfuscate`,
+    );
+  }
+});
+
 test('component con của BatchManagement nằm ở phạm vi module', async () => {
   // Định nghĩa lại component trong render khiến React coi mỗi lần render là một KIỂU
   // component khác nên unmount cả cây con: ô nhập số câu bị hủy sau MỖI ký tự và mất

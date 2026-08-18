@@ -1,14 +1,14 @@
-import { useState, useEffect, useRef, useCallback, Suspense, lazy } from 'react';
+import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import DOMPurify from 'dompurify';
 import { studentApi } from '../services/api';
-import { detectLanguage } from '../components/CodeEditor';
+import CodeEditor, { detectLanguage } from '../components/CodeEditor';
 import type { CodeEditorHandle } from '../components/CodeEditor';
 import { canRunLocally, runLocally } from '../services/localRunner';
 import { RapidInsertionDetector } from '../services/rapidInsertionDetector';
 
-// Lazy-load Monaco Editor to avoid bloating the initial bundle
-const CodeEditor = lazy(() => import('../components/CodeEditor'));
+// Static import matches StudentExam. detectLanguage already loads this module, while a
+// lazy import string is mangled by the production obfuscator into /components/CodeEditor.
 
 const CLIPBOARD_VIOLATION_COOLDOWN_MS = 3000;
 const FULLSCREEN_EXIT_TIMEOUT_MS = 5000;
