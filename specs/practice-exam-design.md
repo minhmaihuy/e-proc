@@ -65,6 +65,11 @@ tab Practice và nhánh practice ở Results như đã có — agent đọc tài
     hỏng một phần hoặc đã có câu trả lời phải fail closed thay vì bị xóa. Group rỗng tường
     minh `question_group: ''` là một group hợp lệ; chỉ blueprint cũ thiếu property mới được
     match module trên mọi group.
+14. `StudentExam.tsx` và `StudentPractice.tsx` phải import default `CodeEditor` tĩnh. Không
+    được lazy-import component này bên trong page đang bị obfuscate: plugin sẽ mã hóa module
+    specifier trước khi Rollup liên kết chunk, khiến production gọi `/components/CodeEditor`
+    và nhận SPA `index.html` với MIME `text/html`. Named import `detectLanguage` đã tạo cùng
+    dependency nên lazy import không mang lại lợi ích chia bundle.
 
 ## Verification
 
@@ -84,6 +89,9 @@ tab Practice và nhánh practice ở Results như đã có — agent đọc tài
   `/student/exam/start`: cả hai phải trả redirect, không đổi status và
   `/student/practice` vẫn trả nội dung. Kiểm tra UI xử lý redirect từ GET lẫn POST.
 - Tạo một đợt thi thường trong cùng phiên và xác nhận luồng cũ không đổi.
+- Test source phải yêu cầu static default import và cấm lazy import `CodeEditor` ở cả hai
+  trang. Sau production build obfuscated, chunk `StudentPractice-*.js` phải tham chiếu tĩnh
+  `CodeEditor-<hash>.js`, không còn native `import(...)` hay đường dẫn `components/CodeEditor`.
 - Tạo đề thường có hai bộ dùng trùng `id`, start một học viên pending và khẳng định số
   câu trả về sau start bằng `questions_count`, đúng từng `question_group` đã chọn.
 - Cho một học viên `in_progress` assignment cũ có group rỗng nhưng chưa trả lời, gọi start
