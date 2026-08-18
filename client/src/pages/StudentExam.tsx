@@ -1,7 +1,11 @@
 import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import DOMPurify from 'dompurify';
-import { studentApi } from '../services/api';
+import {
+  studentApi,
+  type ExamQuestionsResponse,
+  type StudentExamQuestion,
+} from '../services/api';
 import * as examRecorder from '../services/examRecorder';
 import { getExamEnvironmentSnapshot } from '../services/examEnvironment';
 import { RapidInsertionDetector } from '../services/rapidInsertionDetector';
@@ -18,23 +22,48 @@ const VIEWPORT_SHRINK_THRESHOLD_PX = 80;
 const VIEWPORT_CHECK_INTERVAL_MS = 1500;
 const VIEWPORT_SUSTAIN_POLLS = 2;
 
-interface QuizOption {
-  key: string;
-  text: string;
+type Question = StudentExamQuestion;
+
+type BlockReason = 'timeout' | 'absent_too_long' | 'submitted' | 'concurrent_session';
+
+interface ExamRequestError {
+  status?: number;
+  reason?: unknown;
+  apiMessage?: unknown;
+  message: string;
 }
 
-interface Question {
-  id: string;
-  question_order: number;
-  question_sample: string;
-  module: string;
-  level: string;
-  type: string;
-  answer?: string;
-  options?: QuizOption[];
+function readExamRequestError(error: unknown): ExamRequestError {
+  const message = error instanceof Error ? error.message : 'Unable to load the exam.';
+  if (typeof error !== 'object' || error === null || !('response' in error)) return { message };
+  const response = (error as { response?: unknown }).response;
+  if (typeof response !== 'object' || response === null) return { message };
+  const status = 'status' in response && typeof response.status === 'number' ? response.status : undefined;
+  const data = 'data' in response ? response.data : undefined;
+  if (typeof data !== 'object' || data === null) return { status, message };
+  return {
+    status,
+    reason: 'reason' in data ? data.reason : undefined,
+    apiMessage: 'error' in data ? data.error : undefined,
+    message,
+  };
 }
 
-type BlockReason = 'timeout' | 'absent_too_long' | 'submitted';
+function normalizeBlockReason(reason: unknown): BlockReason {
+  return reason === 'timeout'
+    || reason === 'absent_too_long'
+    || reason === 'concurrent_session'
+    || reason === 'submitted'
+    ? reason
+    : 'submitted';
+}
+
+function hasPracticeRedirect(data: unknown): data is { redirect: 'practice' } {
+  return typeof data === 'object'
+    && data !== null
+    && 'redirect' in data
+    && (data as { redirect?: unknown }).redirect === 'practice';
+}
 
 function StudentExam() {
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -110,12 +139,12 @@ function StudentExam() {
 
         // Học viên thuộc batch Practice vào nhầm /exam (bookmark/cache cũ) —
         // server báo chuyển hướng sang trang thi practice
-        if (data.redirect === 'practice') {
-          navigate('/practice');
+        if (hasPracticeRedirect(data)) {
+          navigate('/practice', { replace: true });
           return;
         }
 
-        const existingQuestions = data.questions ?? data; // compat với format cũ
+        const existingQuestions = Array.isArray(data) ? data : data.questions;
         console.log('[Exam] Step 1 done, questions:', existingQuestions.length);
 
         if (existingQuestions.length > 0) {
@@ -130,23 +159,37 @@ function StudentExam() {
 
         console.log('[Exam] Start result:', res.data);
 
-        if (res.data.success) {
-          setStarted(true);
-          // Sau khi start, gọi getQuestions để lấy time_remaining
-          const qRes = await studentApi.getQuestions();
-          loadQuestions(qRes.data);
+        if (hasPracticeRedirect(res.data)) {
+          navigate('/practice', { replace: true });
+          return;
         }
-      } catch (error: any) {
+
+        if (!res.data.success) {
+          throw new Error('The exam could not be started. Please contact your administrator.');
+        }
+
+        setStarted(true);
+        // Sau khi start, gọi getQuestions để lấy time_remaining
+        const qRes = await studentApi.getQuestions();
+        if (hasPracticeRedirect(qRes.data)) {
+          navigate('/practice', { replace: true });
+          return;
+        }
+        loadQuestions(qRes.data);
+      } catch (error: unknown) {
         console.error('[Exam] Error:', error);
+        const requestError = readExamRequestError(error);
         // Xử lý trường hợp bị block (410 Gone)
-        if (error.response?.status === 410) {
-          const reason: BlockReason = error.response.data?.reason ?? 'submitted';
-          setBlockedReason(reason);
+        if (requestError.status === 410) {
+          setBlockedReason(normalizeBlockReason(requestError.reason));
           setLoading(false);
           document.exitFullscreen().catch(() => { });
           return;
         }
-        alert('Error: ' + (error.response?.data?.error || error.message));
+        const alertMessage = typeof requestError.apiMessage === 'string'
+          ? requestError.apiMessage
+          : requestError.message;
+        alert('Error: ' + alertMessage);
         navigate('/');
       }
     };
@@ -640,57 +683,43 @@ function StudentExam() {
   }, []);
 
 
-  const loadQuestions = async (prefetchedData?: any) => {
-    try {
-      let data = prefetchedData;
-      if (!data) {
-        const res = await studentApi.getQuestions(); // [C-4] token tự động
-        data = res.data;
+  const loadQuestions = (data: Exclude<ExamQuestionsResponse, { redirect: 'practice' }>) => {
+    // Server trả về { questions, time_remaining } hoặc array (compat cũ)
+    const q = Array.isArray(data) ? data : data.questions;
+    const serverTimeRemaining = Array.isArray(data) ? null : data.time_remaining;
+    if (q.length === 0) {
+      throw new Error('No questions were assigned to this exam. Please contact your administrator.');
+    }
+
+    setQuestions(q);
+    const savedAnswers: { [key: number]: string } = {};
+    q.forEach((question) => {
+      if (question.answer) savedAnswers[question.question_order] = question.answer;
+    });
+    setAnswers(savedAnswers);
+
+    // Set timer từ server (ưu tiên server, fallback sang localStorage)
+    if (serverTimeRemaining !== null) {
+      const wasAlreadyStarted = timeLeft > 0;
+      setTimeLeft(Math.max(0, serverTimeRemaining));
+      setTimerReady(true);
+      // Nếu đây là resume (đã có timeLeft trước đó khác với giá trị mặc định)
+      // và thời gian còn lại khác với duration đầy đủ → hiện thông báo resume
+      const fullDuration = parseInt(localStorage.getItem('duration') || '30') * 60;
+      if (wasAlreadyStarted || serverTimeRemaining < fullDuration - 5) {
+        setResumeInfo({ timeLeft: serverTimeRemaining });
       }
+    } else {
+      // Fallback: server chưa có deadline (DB cũ chưa migrate)
+      const duration = parseInt(localStorage.getItem('duration') || '30');
+      setTimeLeft(duration * 60);
+      setTimerReady(true);
+    }
 
-      // Server trả về { questions, time_remaining } hoặc array (compat cũ)
-      const q: Question[] = data.questions ?? data;
-      const serverTimeRemaining: number | null = data.time_remaining ?? null;
+    setLoading(false);
 
-      setQuestions(q);
-      const savedAnswers: { [key: number]: string } = {};
-      q.forEach((question: Question) => {
-        if (question.answer) savedAnswers[question.question_order] = question.answer;
-      });
-      setAnswers(savedAnswers);
-
-      // Set timer từ server (ưu tiên server, fallback sang localStorage)
-      if (serverTimeRemaining !== null) {
-        const wasAlreadyStarted = timeLeft > 0;
-        setTimeLeft(Math.max(0, serverTimeRemaining));
-        setTimerReady(true);
-        // Nếu đây là resume (đã có timeLeft trước đó khác với giá trị mặc định)
-        // và thời gian còn lại khác với duration đầy đủ → hiện thông báo resume
-        const fullDuration = parseInt(localStorage.getItem('duration') || '30') * 60;
-        if (wasAlreadyStarted || serverTimeRemaining < fullDuration - 5) {
-          setResumeInfo({ timeLeft: serverTimeRemaining });
-        }
-      } else if (serverTimeRemaining === null) {
-        // Fallback: server chưa có deadline (DB cũ chưa migrate)
-        const duration = parseInt(localStorage.getItem('duration') || '30');
-        setTimeLeft(duration * 60);
-        setTimerReady(true);
-      }
-
-      setLoading(false);
-
-      if (editorRef.current) {
-        editorRef.current.focus();
-      }
-    } catch (error: any) {
-      if (error.response?.status === 410) {
-        const reason: BlockReason = error.response.data?.reason ?? 'submitted';
-        setBlockedReason(reason);
-        setLoading(false);
-        document.exitFullscreen().catch(() => { });
-        return;
-      }
-      console.error(error);
+    if (editorRef.current) {
+      editorRef.current.focus();
     }
   };
 
@@ -869,6 +898,11 @@ function StudentExam() {
         icon: '✅',
         title: 'Exam Already Submitted',
         message: 'Your exam has already been submitted. You cannot re-enter the exam.'
+      },
+      concurrent_session: {
+        icon: '🚫',
+        title: 'Concurrent Session Detected',
+        message: 'Another active session was detected. Your exam has been automatically submitted.'
       }
     };
     const { icon, title, message } = blockedMessages[blockedReason];

@@ -1259,7 +1259,7 @@ async function pickQuestions(opts: {
     conditions.push('LOWER(type) = ?');
     params.push(type.toLowerCase().trim());
   }
-  if (questionGroup) {
+  if (questionGroup !== undefined) {
     conditions.push("LOWER(COALESCE(question_group, '')) = ?");
     params.push(questionGroup.toLowerCase().trim());
   }
@@ -1284,12 +1284,16 @@ router.post('/batches/:id/check-feasibility', async (req: Request, res: Response
         const count = item[level.toLowerCase() as 'easy' | 'medium' | 'hard'];
         if (count > 0) {
           const typeSql = blueprintMode === 'type' ? 'AND LOWER(type) = LOWER(?)' : '';
+          const hasQuestionGroup = typeof item.question_group === 'string';
+          const questionGroupSql = hasQuestionGroup
+            ? "AND LOWER(COALESCE(question_group, '')) = LOWER(?)"
+            : '';
           const params = blueprintMode === 'type'
-            ? [item.module, level, item.type]
-            : [item.module, level];
+            ? [item.module, level, item.type, ...(hasQuestionGroup ? [item.question_group] : [])]
+            : [item.module, level, ...(hasQuestionGroup ? [item.question_group] : [])];
           const result = await db.query(`
             SELECT COUNT(*) as count FROM question_bank
-            WHERE LOWER(module) = LOWER(?) AND LOWER(level) = LOWER(?) ${typeSql}
+            WHERE LOWER(module) = LOWER(?) AND LOWER(level) = LOWER(?) ${typeSql} ${questionGroupSql}
           `, params);
 
           const available = parseInt(result.rows[0].count);
@@ -1440,7 +1444,7 @@ router.post('/batches/:id/students/import', async (req: Request, res: Response) 
         const medium = item.medium || 0;
         const hard   = item.hard   || 0;
         // Blueprint cũ không có trường này → undefined → lọc theo module như trước.
-        const questionGroup = item.question_group || '';
+        const questionGroup = typeof item.question_group === 'string' ? item.question_group : undefined;
 
         if (blueprintMode === 'type') {
           // By Module + Type: query WHERE module = ? AND type = ? AND level = ?

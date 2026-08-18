@@ -48,6 +48,19 @@ tab Practice và nhánh practice ở Results như đã có — agent đọc tài
 10. `StudentPractice.tsx` là bản nhân bản có chủ đích của `StudentExam.tsx` về logic chống
     gian lận. Mọi thay đổi hành vi chống gian lận phải áp dụng cho **cả hai file**.
 11. Xóa một đề Practice phải bị chặn khi còn đợt thi tham chiếu tới nó.
+12. Nếu một token Practice đi nhầm vào `GET /student/exam/questions` hoặc
+    `POST /student/exam/start` (tab cũ, bookmark, bundle cache cũ), backend phải trả
+    `{ redirect: 'practice' }` trước khi sinh câu hỏi hay đổi trạng thái. Frontend phải
+    xử lý redirect ở cả bước kiểm tra ban đầu, bước start và lần tải câu hỏi sau start;
+    payload rỗng/không hợp lệ không được giữ spinner vô hạn.
+13. Luồng đề thường phải bảo toàn danh tính kép `(id, question_group)` từ lúc chọn câu,
+    ghi `exam_questions`, cho tới lúc `GET /student/exam/questions` join trả câu hỏi.
+    `questions_count` báo thành công phải khớp số câu thực tế có thể tải lại và đúng group
+    trong blueprint. Khi resume, các assignment cũ hoàn toàn không đọc được và chưa có câu
+    trả lời được phép sinh lại nhưng phải giữ nguyên deadline/trạng thái recording; dữ liệu
+    hỏng một phần hoặc đã có câu trả lời phải fail closed thay vì bị xóa. Group rỗng tường
+    minh `question_group: ''` là một group hợp lệ; chỉ blueprint cũ thiếu property mới được
+    match module trên mọi group.
 
 ## Verification
 
@@ -59,6 +72,14 @@ tab Practice và nhánh practice ở Results như đã có — agent đọc tài
   học viên đăng nhập bằng mã truy cập và được đưa tới `/practice` → nộp bài → giảng viên
   chấm → xuất Excel. Đây là bước duy nhất chứng minh ba điểm tích hợp thực sự nối với nhau;
   type-check và test đọc source không thay thế được.
+- Với cùng token Practice, gọi trực tiếp cả `/student/exam/questions` và
+  `/student/exam/start`: cả hai phải trả redirect, không đổi status và
+  `/student/practice` vẫn trả nội dung. Kiểm tra UI xử lý redirect từ GET lẫn POST.
 - Tạo một đợt thi thường trong cùng phiên và xác nhận luồng cũ không đổi.
+- Tạo đề thường có hai bộ dùng trùng `id`, start một học viên pending và khẳng định số
+  câu trả về sau start bằng `questions_count`, đúng từng `question_group` đã chọn.
+- Cho một học viên `in_progress` assignment cũ có group rỗng nhưng chưa trả lời, gọi start
+  lại và xác nhận đề được sửa trong khi deadline không đổi; assignment hỏng một phần/đã trả
+  lời phải bị từ chối và giữ nguyên dữ liệu.
 - `npx tsc --noEmit` cả hai phía, `cd client && npm test`, build production và xác nhận số
   chunk không giảm (tách file không được làm vỡ code-splitting).

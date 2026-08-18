@@ -31,6 +31,30 @@ test('exam_questions lưu kèm question_group để join không mơ hồ', () =>
   assert.match(source, /ALTER TABLE exam_questions ADD COLUMN question_group/);
 });
 
+test('atomic exam start mang question_group từ lúc chọn tới lúc gán câu', () => {
+  const source = readSource('src', 'server', 'routes', 'student.ts');
+  const start = source.slice(
+    source.indexOf('async function startExamAtomically'),
+    source.indexOf('async function enforceConcurrentSession'),
+  );
+
+  assert.match(start, /SELECT id, question_group, type, options FROM question_bank/);
+  assert.match(start, /LOWER\(COALESCE\(question_group, ''\)\) = LOWER\(\?\)/);
+  assert.match(start, /hasOwnProperty\.call\(item, 'question_group'\)/);
+  assert.match(start, /COUNT\(q\.id\) AS retrievable_count/);
+  assert.match(start, /AS answered_count/);
+  assert.match(start, /assignedCount === retrievableCount/);
+  assert.match(start, /cache\.getCachedAnswers\(studentId\)\.size/);
+  assert.match(start, /retrievableCount > 0 \|\| answeredCount > 0 \|\| bufferedAnswerCount > 0/);
+  assert.match(start, /picked\.length !== expectedQuestionCount/);
+  assert.match(start, /if \(repairingStartedExam\)[\s\S]*UPDATE students SET disconnected_at = NULL/);
+  assert.match(
+    start,
+    /INSERT INTO exam_questions \(student_id, question_id, question_group, question_order, option_order\)/,
+  );
+  assert.match(start, /\[studentId, q\.id, q\.question_group, i \+ 1, optionOrder\]/);
+});
+
 test('cả hai route import đều upsert theo cặp, không theo id đơn lẻ', () => {
   const source = readSource('src', 'server', 'routes', 'admin.ts');
   const pairConflicts = [...source.matchAll(/ON CONFLICT \(id, question_group\)/g)];
@@ -57,7 +81,10 @@ test('mọi join exam_questions → question_bank đều so khớp question_grou
   ];
   for (const segments of files) {
     const source = readSource(...segments);
-    const joins = [...source.matchAll(/JOIN question_bank q ON eq\.question_id = q\.id([\s\S]{0,120})/g)];
+    const joins = [...source.matchAll(
+      /JOIN question_bank q ON\s+(?:eq\.question_id\s*=\s*q\.id|q\.id\s*=\s*eq\.question_id)([\s\S]{0,160})/g,
+    )];
+    assert.ok(joins.length > 0, `${segments.join('/')}: không tìm thấy join question bank để kiểm tra`);
     for (const [, tail] of joins) {
       assert.match(
         tail,
@@ -121,6 +148,7 @@ test('blueprint chọn câu theo cặp (module, bộ đề), không chỉ theo m
     /LOWER\(COALESCE\(question_group, ''\)\) = \?/,
     'chọn câu không lọc theo bộ đề → một module ở hai bộ sẽ cho đề trộn lẫn',
   );
-  // Blueprint cũ không có trường này vẫn phải chạy được.
-  assert.match(admin, /item\.question_group \|\| ''/, 'phải tương thích blueprint cũ');
+  // Blueprint cũ thiếu property vẫn chạy theo module; group rỗng tường minh phải lọc đúng group rỗng.
+  assert.match(admin, /questionGroup !== undefined/, 'group rỗng không được bị coi như thiếu group');
+  assert.match(admin, /typeof item\.question_group === 'string'/, 'phải tương thích blueprint cũ');
 });
