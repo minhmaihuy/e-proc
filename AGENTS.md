@@ -243,6 +243,19 @@ When debugging student exam state, inspect:
   - frontend debounces saves (2-second debounce)
   - backend buffers answers through `src/server/cache.ts`
   - buffered answers are flushed periodically or on submit
+- `POST /api/student/exam/start` must carry the composite `(question_id, question_group)`
+  from blueprint-filtered selection into `exam_questions`; `GET /api/student/exam/questions`
+  joins on the same pair. Resume validates raw assignments against that join. Fully unreadable,
+  unanswered rows from the legacy bug may be regenerated without resetting deadline/recording
+  state; partial or answered corruption fails closed. A success count that cannot be loaded back
+  is a start failure, not an empty exam. Blueprint property presence matters: an explicit
+  `question_group: ''` filters the valid blank group; only an absent property keeps legacy
+  module-wide matching.
+- A Practice student may reach `/exam` from a stale tab, bookmark, or cached bundle. Both
+  regular-exam endpoints (`POST /exam/start` and `GET /exam/questions`) detect
+  `batches.practice_exam_id` server-side and return `{ redirect: 'practice' }` before
+  changing status or parsing a blueprint. `StudentExam.tsx` handles the redirect from the
+  initial GET, POST start, and follow-up GET; it must never leave an empty payload spinning.
 - Violations are reported from the frontend through `studentApi.reportViolation(type)` and stored in the `violations` table
 - Accepted violation types (server-enforced whitelist in `src/server/routes/student.ts`, `validTypes`): `tab_switch`, `fullscreen_exit`, `copy_attempt`, `cut_attempt`, `paste_attempt`, `devtools_open`, `extension_panel`, `screenshot_attempt`, `print_attempt`, `suspicious_paste`, `focus_lost`, `recording_stopped`
 - Locking occurs when `violation_count >= 2` for any single type or `total_violations >= 2`. **As of 2026-07-29 the log-only exemption was removed** — `suspicious_paste` and `focus_lost` are now lockable like every other type and count toward `total_violations` (see Anti-Cheat v2 section for the rationale behind the change). **`recording_stopped` is a special case: it locks the exam on the FIRST occurrence** (see Screen recording section) — stopping the screen share is treated as deliberate evasion.
@@ -673,7 +686,7 @@ Batches support two blueprint formats for question assignment:
 - The frontend build uses hashed filenames, so any manual static sync to `public/` must update `public/index.html` to the new hash.
 - There is no lint script. Tenant/provisioning/compiler regression coverage runs through `npm run test:tenant`; all other areas still rely on both TypeScript checks, full build, and targeted runtime verification.
 - For frontend changes that affect actual exam behavior, verify against the runtime path being served, not just against source edits or `client/dist` output.
-- **Known question-group hazard:** `POST /student/exam/start` currently deletes preassigned questions for a pending student and regenerates them by module without carrying `question_group`; its insert also omits `exam_questions.question_group`. This conflicts with the composite `(id, question_group)` design used by admin student import. Any work on exam start/assignment must reconcile these paths and add regression tests before relying on cross-group isolation.
+- **Exam-start question-group invariant:** `POST /student/exam/start` must filter on a blueprint item's non-empty `question_group`, carry that group into `exam_questions`, and count only assignments retrievable through the composite join when resuming. Legacy fully unreadable/unanswered assignments may be rebuilt inside the transaction while preserving the original timer and recording state; never silently discard a partial/answered attempt.
 - **Known fresh-Postgres initialization risk:** `practice_submissions` is created before `students` in the PostgreSQL initialization sequence even though it references `students(id)`. Existing upgraded databases may hide this ordering issue; verify initialization against a brand-new PostgreSQL database when changing schema startup.
 - **Known approval gap:** tenant `pending` status gates Terraform but is not rejected by admin login/auth middleware; only `suspended` is blocked. If approved-only application access is required, enforce it server-side and test both new and existing JWTs. (FSA-CLS itself is self-healed to `approved` at startup — see the tenant lifecycle bullet in the security model.)
 - **Bí mật của Terraform chỉ sống trong `terraform.tfvars`.** Root `.gitignore` chặn `*.tfvars`, `*.pem`, `*.key` cho mọi thư mục module, với ngoại lệ `!*.tfvars.example`. File `.example` được commit nhưng chỉ chứa placeholder — nó đã từng chứa mật khẩu database production thật. Không liệt kê tên file cụ thể trong `.gitignore`: bản cũ ghi `eaudit-key-ipv6.pem` trong khi `local_file.private_key` tạo ra `eaudit-key.pem`, sai tên nên khóa SSH riêng bị commit vào repo.

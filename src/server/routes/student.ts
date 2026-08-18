@@ -10,7 +10,7 @@ import controlDb from '../db/controlPlane.js';
 import { createIdentityUploadUrls, createRecordingUploadUrl, finalizeIdentityObjects, inspectRecordingObject, isIdentityS3Configured, isS3Configured } from '../services/s3.js';
 import rateLimit from 'express-rate-limit';
 import { sessionTracker, detectConcurrentSession } from '../middleware/sessionTracker.js';
-import { getExamContext, assertCanStart, computeExamDeadline, sendExamGuardError, ExamGuardError } from '../services/examGuard.js';
+import { getExamContext, assertCanStart, assertInProgress, computeExamDeadline, sendExamGuardError, ExamGuardError } from '../services/examGuard.js';
 import { parseBlueprintCompat } from '../services/blueprint.js';
 import { runCode } from '../coderunner.js';
 import { getPracticeCompilerMode, runCodeWithLambda } from '../services/lambdaCompiler.js';
@@ -152,23 +152,50 @@ async function submitExamAtomically(
   return transition;
 }
 
-async function startExamAtomically(studentId: number): Promise<{ success: true; questions_count: number; resume?: boolean }> {
+type StartExamResult =
+  | { success: true; questions_count: number; resume?: boolean }
+  | { success: false; redirect: 'practice' };
+
+async function startExamAtomically(studentId: number): Promise<StartExamResult> {
   return db.withTransaction(async (tx) => {
     const context = await getExamContext(studentId, tx);
+    if (context.practice_exam_id) {
+      return { success: false, redirect: 'practice' };
+    }
     assertCanStart(context, new Date(), USE_SQLITE || process.env.SKIP_TIME_CHECK === 'true');
 
     const locked = (await tx.query(
-      `SELECT s.*, b.duration, b.end_time, b.blueprint, b.exam_type
+      `SELECT s.*, b.duration, b.end_time, b.blueprint, b.exam_type, b.practice_exam_id
        FROM students s JOIN batches b ON b.id = s.batch_id
        WHERE s.id = ?${USE_SQLITE ? '' : ' FOR UPDATE'}`,
       [studentId]
     )).rows[0];
+    if (locked.practice_exam_id) {
+      return { success: false, redirect: 'practice' };
+    }
     assertCanStart({ ...context, status: locked.status }, new Date(), USE_SQLITE || process.env.SKIP_TIME_CHECK === 'true');
-    const existing = await tx.query('SELECT COUNT(*) AS count FROM exam_questions WHERE student_id = ?', [studentId]);
-    const existingCount = Number(existing.rows[0]?.count || 0);
-    if (locked.status === 'in_progress' && existingCount > 0) {
-      await tx.query('UPDATE students SET disconnected_at = NULL WHERE id = ?', [studentId]);
-      return { success: true, questions_count: existingCount, resume: true };
+    const existing = await tx.query(`
+      SELECT COUNT(*) AS assigned_count, COUNT(q.id) AS retrievable_count,
+             COALESCE(SUM(CASE WHEN eq.answer IS NOT NULL AND eq.answer <> '' THEN 1 ELSE 0 END), 0) AS answered_count
+      FROM exam_questions eq
+      LEFT JOIN question_bank q ON eq.question_id = q.id
+        AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
+      WHERE eq.student_id = ?
+    `, [studentId]);
+    const assignedCount = Number(existing.rows[0]?.assigned_count || 0);
+    const retrievableCount = Number(existing.rows[0]?.retrievable_count || 0);
+    const answeredCount = Number(existing.rows[0]?.answered_count || 0);
+    const bufferedAnswerCount = cache.getCachedAnswers(studentId).size;
+    const repairingStartedExam = locked.status === 'in_progress';
+    if (repairingStartedExam) {
+      assertInProgress({ ...context, status: locked.status, exam_deadline: locked.exam_deadline }, new Date());
+      if (assignedCount > 0 && assignedCount === retrievableCount) {
+        await tx.query('UPDATE students SET disconnected_at = NULL WHERE id = ?', [studentId]);
+        return { success: true, questions_count: retrievableCount, resume: true };
+      }
+      if (retrievableCount > 0 || answeredCount > 0 || bufferedAnswerCount > 0) {
+        throw new ExamGuardError(409, 'assignment_corrupt', 'Exam assignments require administrator review');
+      }
     }
 
     await tx.query('DELETE FROM exam_questions WHERE student_id = ?', [studentId]);
@@ -180,7 +207,8 @@ async function startExamAtomically(studentId: number): Promise<{ success: true; 
     const typeFilterSql = examType === 'quiz'
       ? `AND type IN ('SingleChoice', 'MultipleChoice')`
       : `AND type NOT IN ('SingleChoice', 'MultipleChoice')`;
-    const picked: { id: string; type: string; options: string | null }[] = [];
+    const picked: { id: string; question_group: string; type: string; options: string | null }[] = [];
+    let expectedQuestionCount = 0;
 
     for (const item of blueprintItems) {
       if (!item || typeof item.module !== 'string' || !item.module.trim()) {
@@ -192,17 +220,36 @@ async function startExamAtomically(studentId: number): Promise<{ success: true; 
       for (const level of ['Easy', 'Medium', 'Hard'] as const) {
         const count = Number(item[level.toLowerCase()] || 0);
         if (count <= 0) continue;
+        expectedQuestionCount += count;
         const blueprintTypeSql = blueprintMode === 'type' ? 'AND LOWER(type) = LOWER(?)' : '';
+        const hasQuestionGroup = Object.prototype.hasOwnProperty.call(item, 'question_group')
+          && typeof item.question_group === 'string';
+        const questionGroup = hasQuestionGroup ? item.question_group!.trim() : '';
+        const questionGroupSql = hasQuestionGroup
+          ? "AND LOWER(COALESCE(question_group, '')) = LOWER(?)"
+          : '';
         const queryParams = blueprintMode === 'type'
-          ? [item.module.trim(), level, item.type!.trim(), count]
-          : [item.module.trim(), level, count];
+          ? [item.module.trim(), level, item.type!.trim(), ...(hasQuestionGroup ? [questionGroup] : []), count]
+          : [item.module.trim(), level, ...(hasQuestionGroup ? [questionGroup] : []), count];
         const available = await tx.query(`
-          SELECT id, type, options FROM question_bank
-          WHERE LOWER(module) = LOWER(?) AND LOWER(level) = LOWER(?) ${blueprintTypeSql} ${typeFilterSql}
+          SELECT id, question_group, type, options FROM question_bank
+          WHERE LOWER(module) = LOWER(?) AND LOWER(level) = LOWER(?)
+            ${blueprintTypeSql} ${questionGroupSql} ${typeFilterSql}
           ORDER BY RANDOM() LIMIT ?
         `, queryParams);
-        for (const q of available.rows) picked.push({ id: q.id, type: q.type, options: q.options ?? null });
+        for (const q of available.rows) {
+          picked.push({
+            id: q.id,
+            question_group: q.question_group ?? '',
+            type: q.type,
+            options: q.options ?? null,
+          });
+        }
       }
+    }
+
+    if (expectedQuestionCount === 0 || picked.length !== expectedQuestionCount) {
+      throw new ExamGuardError(422, 'insufficient_questions', 'The exam does not have enough available questions');
     }
 
     for (let i = picked.length - 1; i > 0; i--) {
@@ -223,14 +270,18 @@ async function startExamAtomically(studentId: number): Promise<{ success: true; 
         } catch {}
       }
       await tx.query(
-        'INSERT INTO exam_questions (student_id, question_id, question_order, option_order) VALUES (?, ?, ?, ?)',
-        [studentId, q.id, i + 1, optionOrder]
+        'INSERT INTO exam_questions (student_id, question_id, question_group, question_order, option_order) VALUES (?, ?, ?, ?, ?)',
+        [studentId, q.id, q.question_group, i + 1, optionOrder]
       );
     }
 
+    if (repairingStartedExam) {
+      await tx.query('UPDATE students SET disconnected_at = NULL WHERE id = ?', [studentId]);
+      return { success: true, questions_count: picked.length, resume: true };
+    }
+
     const now = new Date();
-    const batchEnd = new Date(locked.end_time);
-    const deadline = computeExamDeadline(now, Number(locked.duration || 30), batchEnd);
+    const deadline = computeExamDeadline(now, Number(locked.duration || 30), new Date(locked.end_time));
     await tx.query(
       `UPDATE students SET status = 'in_progress', exam_started_at = ?, exam_deadline = ?,
        disconnected_at = NULL, recording_finalized_at = NULL, recording_final_part_index = NULL,
@@ -503,6 +554,7 @@ router.post('/exam/start', studentAuthMiddleware, async (req: Request, res: Resp
     const student_id = req.studentPayload!.studentId;
     if (!(await requireStudentIdentity(student_id, res))) return;
     const startedExam = await startExamAtomically(student_id);
+    if (!startedExam.success) return res.json(startedExam);
     const startedAt = (await db.query('SELECT exam_started_at FROM students WHERE id = ?', [student_id])).rows[0]?.exam_started_at;
     await enqueueUsageEvent(`exam-start:${student_id}`, 'exams_started', 1, new Date(startedAt));
     return res.json(startedExam);
@@ -639,7 +691,7 @@ router.get('/exam/questions', studentAuthMiddleware, sessionTracker, async (req:
 
     // === SERVER-SIDE TIMER GUARD ===
     const studentResult = await db.query(`
-      SELECT s.status, s.exam_deadline, s.disconnected_at, b.duration
+      SELECT s.status, s.exam_deadline, s.disconnected_at, b.duration, b.practice_exam_id
       FROM students s
       JOIN batches b ON s.batch_id = b.id
       WHERE s.id = ?
@@ -648,6 +700,12 @@ router.get('/exam/questions', studentAuthMiddleware, sessionTracker, async (req:
 
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
+    }
+
+    // Một tab/bundle cũ có thể đưa học viên Practice vào /exam. Chuyển hướng trước
+    // khi endpoint đề thường trả mảng rỗng hoặc thay đổi trạng thái bài làm.
+    if (student.practice_exam_id) {
+      return res.json({ redirect: 'practice', questions: [], time_remaining: null });
     }
 
     if (student.status === 'submitted') {
@@ -804,6 +862,7 @@ router.post('/exam/answer', studentAuthMiddleware, sessionTracker, async (req: R
     const assigned = (await db.query(`
       SELECT q.type, q.options
       FROM exam_questions eq JOIN question_bank q ON q.id = eq.question_id
+        AND COALESCE(eq.question_group, '') = COALESCE(q.question_group, '')
       WHERE eq.student_id = ? AND eq.question_order = ?
     `, [parseInt(studentId), questionOrder])).rows[0];
     if (!assigned) return res.status(404).json({ error: 'Question is not assigned to this student' });

@@ -6,6 +6,30 @@ export type TenantStatus = 'pending' | 'approved' | 'suspended';
 export type TenantProvisionStatus = 'not_started' | 'queued' | 'planning' | 'planned' | 'applying' | 'active' | 'failed';
 export type AdminRole = 'admin' | 'tenant_admin' | 'superadmin';
 
+export interface StudentExamQuestion {
+  id: string;
+  question_order: number;
+  question_sample: string;
+  module: string;
+  level: string;
+  type: string;
+  answer?: string;
+  options?: { key: string; text: string }[];
+}
+
+export interface PracticeRedirectResponse {
+  redirect: 'practice';
+}
+
+export type StartExamResponse =
+  | { success: true; questions_count: number; resume?: boolean }
+  | ({ success: false } & PracticeRedirectResponse);
+
+export type ExamQuestionsResponse =
+  | { questions: StudentExamQuestion[]; time_remaining: number | null }
+  | (PracticeRedirectResponse & { questions: []; time_remaining: null })
+  | StudentExamQuestion[];
+
 /** Trạng thái AWS Secrets Manager — chỉ chứa TÊN khóa, không bao giờ có giá trị. */
 export interface AppSecretsStatus {
   enabled: boolean;
@@ -433,11 +457,11 @@ export const studentApi = {
     api.post<{ status: 'captured' }>('/student/identity/complete', {}),
 
   startExam: (studentId: number) =>
-    api.post('/student/exam/start', { student_id: studentId }),
+    api.post<StartExamResponse>('/student/exam/start', { student_id: studentId }),
 
   // [C-4] Không còn truyền studentId - token tự động gắn qua interceptor
   getQuestions: () =>
-    api.get('/student/exam/questions'),
+    api.get<ExamQuestionsResponse>('/student/exam/questions'),
 
   saveAnswer: (questionOrder: number, answer: string) =>
     api.post('/student/exam/answer', { question_order: questionOrder, answer }),

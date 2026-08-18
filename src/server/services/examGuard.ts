@@ -12,6 +12,7 @@ export interface ExamContext {
   duration: number;
   record_mode: 'none' | 'local' | 's3';
   record_enabled: boolean;
+  practice_exam_id: number | null;
 }
 
 export class ExamGuardError extends Error {
@@ -23,7 +24,7 @@ export class ExamGuardError extends Error {
 export async function getExamContext(studentId: number, executor: DbExecutor = db): Promise<ExamContext> {
   const result = await executor.query(`
     SELECT s.id, s.batch_id, s.status, s.exam_started_at, s.exam_deadline, s.active_jti,
-           b.start_time, b.end_time, b.duration, b.record_mode, b.record_enabled
+           b.start_time, b.end_time, b.duration, b.record_mode, b.record_enabled, b.practice_exam_id
     FROM students s
     JOIN batches b ON b.id = s.batch_id
     WHERE s.id = ?
