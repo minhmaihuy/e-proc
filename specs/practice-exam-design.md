@@ -28,9 +28,13 @@ tab Practice và nhánh practice ở Results như đã có — agent đọc tài
    độ Practice thay **toàn bộ** khối blueprint bằng `batch/PracticeExamSelect.tsx` và gửi
    `practice_exam_id` thay `blueprint`.
 3. Đợt thi Practice **bỏ qua hoàn toàn** thẩm định blueprint (tổng số câu, số câu có sẵn
-   theo module/độ khó). Đề `.docx` là một bài duy nhất, không có gì để phân bổ.
+   theo module/độ khó). Đề `.docx` là một bài duy nhất, không có gì để phân bổ. Trạng
+   thái disabled của nút tạo phải theo nguồn đề: Practice chỉ yêu cầu đã chọn
+   `practice_exam_id`; không được tiếp tục khóa nút vì tổng số câu blueprint bằng 0.
 4. Sau khi tạo đợt thi Practice vẫn mở form mời học viên, giống nhánh ngân hàng câu hỏi:
-   đợt thi chưa có học viên thì chưa dùng được.
+   đợt thi chưa có học viên thì chưa dùng được. `POST /admin/batches` phải trả ID số của
+   row vừa tạo trong cả SQLite lẫn PostgreSQL; câu INSERT dùng `RETURNING id` để frontend
+   không nhận `undefined` sau khi database đã ghi thành công.
 5. Khi chưa có đề nào, ô chọn đề phải nói rõ phải làm gì và trỏ tới `/admin/practice`,
    thay vì hiện một dropdown rỗng khiến người dùng tưởng tính năng hỏng.
 6. `Results.tsx` phải nhận biết đợt thi Practice và hiện bảng một dòng mỗi học viên
@@ -72,6 +76,10 @@ tab Practice và nhánh practice ở Results như đã có — agent đọc tài
   học viên đăng nhập bằng mã truy cập và được đưa tới `/practice` → nộp bài → giảng viên
   chấm → xuất Excel. Đây là bước duy nhất chứng minh ba điểm tích hợp thực sự nối với nhau;
   type-check và test đọc source không thay thế được.
+- Render form tạo batch thật trong React test, chọn Practice + một đề đã nhập, xác nhận
+  nút Create được bật dù blueprint có 0 câu, request có `practice_exam_id` và không có
+  `blueprint`. Test backend phải chốt cả hai INSERT trả `RETURNING id` và response luôn
+  chứa `id` số để bước mời học viên mở được.
 - Với cùng token Practice, gọi trực tiếp cả `/student/exam/questions` và
   `/student/exam/start`: cả hai phải trả redirect, không đổi status và
   `/student/practice` vẫn trả nội dung. Kiểm tra UI xử lý redirect từ GET lẫn POST.

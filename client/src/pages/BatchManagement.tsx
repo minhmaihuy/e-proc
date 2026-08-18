@@ -603,6 +603,19 @@ function BatchManagement() {
     ? validateTypesBlueprintAgainstStats(formData.blueprintByType)
     : validateBlueprintAgainstStats(formData.blueprint);
 
+  // Practice không dùng blueprint. Chỉ yêu cầu chọn một đề .docx; các giới hạn số
+  // câu/module bên dưới chỉ thuộc luồng Question Bank.
+  const createValidationErrors = batchSource === 'practice'
+    ? feasibilityErrors
+    : [...feasibilityErrors, ...createBlueprintErrors.filter(error => !feasibilityErrors.includes(error))];
+  const createButtonDisabled = loading || (batchSource === 'practice'
+    ? !formData.practice_exam_id
+    : totalQuestions < 1
+      || totalQuestions > 100
+      || (blueprintMode === 'module' && modules.length === 0)
+      || (blueprintMode === 'type' && moduleTypeStats.length === 0)
+      || createBlueprintErrors.length > 0);
+
   const editBlueprintErrors = editBlueprintMode === 'type'
     ? validateTypesBlueprintAgainstStats((editingBatch?.blueprintByType || []) as BlueprintItemByType[])
     : validateBlueprintAgainstStats(editingBatch?.blueprint || []);
@@ -977,15 +990,15 @@ function BatchManagement() {
 
 
               {/* Validation errors */}
-              {(feasibilityErrors.length > 0 || createBlueprintErrors.length > 0) && (
+              {createValidationErrors.length > 0 && (
                 <div className="p-4 bg-red-50 border border-red-200 rounded-xl space-y-2">
                   <strong className="text-red-800 text-sm flex items-center gap-2">
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                     </svg>
-                    Blueprint Errors:
+                    Validation Errors:
                   </strong>
-                  {[...feasibilityErrors, ...createBlueprintErrors.filter(e => !feasibilityErrors.includes(e))].map((err, i) => (
+                  {createValidationErrors.map((err, i) => (
                     <p key={i} className="text-red-700 text-sm ml-6">{err}</p>
                   ))}
                 </div>
@@ -994,14 +1007,7 @@ function BatchManagement() {
               <div className="pt-6 border-t border-slate-100 flex justify-end">
                 <button
                   type="submit"
-                  disabled={
-                    loading ||
-                    totalQuestions < 1 ||
-                    totalQuestions > 100 ||
-                    (blueprintMode === 'module' && modules.length === 0) ||
-                    (blueprintMode === 'type' && moduleTypeStats.length === 0) ||
-                    createBlueprintErrors.length > 0
-                  }
+                  disabled={createButtonDisabled}
                   className="inline-flex items-center justify-center gap-2 px-8 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors shadow-md shadow-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {loading ? (
