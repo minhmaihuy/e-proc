@@ -313,7 +313,7 @@ function StudentExam() {
           extension_panel: 'A browser extension panel was detected',
           screenshot_attempt: 'You attempted to take a screenshot',
           print_attempt: 'You attempted to print or capture the page',
-          // [Anti-Cheat v2] log-only types — hiển warning nhưng không lock
+          // [Anti-Cheat v2] Lockable signals with type-specific warning text.
           suspicious_paste: 'A large text insertion was detected (possible external paste)',
           focus_lost: 'Browser window lost focus for an extended period',
         };

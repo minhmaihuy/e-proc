@@ -291,14 +291,21 @@ Two new detection layers were added to handle vectors that bypass existing clipb
 
 Maccy and Windows built-in clipboard history (`Win+V`) inject text via the OS Accessibility API, bypassing Monaco's `addCommand()` keyboard intercept entirely. The text appears in the editor as if typed, but Monaco still fires `onDidChangeModelContent` with a large `change.text.length`.
 
-Detection in `client/src/components/CodeEditor.tsx` (`handleEditorMount`):
-- Attaches `editor.onDidChangeModelContent` listener (only when prop `onSuspiciousPaste` is provided)
-- Skips `isFlush: true` events (fired when value prop is set externally, e.g. resume exam load)
+Detection in `client/src/components/CodeEditor.tsx` (`handleEditorChange`):
+- Inspects the content-change event delivered through `@monaco-editor/react`'s public `onChange`
+  callback (only when prop `onSuspiciousPaste` is provided)
+- Skips `isFlush: true` events; controlled value synchronization is excluded by the wrapper
+  itself, including its non-flush `executeEdits` replacement
 - **Threshold: 300 characters per single change event** (lowered from 1200 on 2026-07-29 — the old 1200 let typical Notes-copied answers of 300–800 chars slip through, which was the actual bypass being exploited)
   - **⚠️ False-positive caveat:** the larger IntelliSense snippets (`SpringController` 366, `JpaEntity` 422, `MockMvcTest` 403, `HandlerInterceptor` 546, `WebMvcConfigurer` 869, `GlobalExceptionHandler` 1093) now exceed the threshold and **would be flagged if typed**. This is currently safe **only because those snippets are not in use**. If they are re-enabled, the length-only check must be paired with a snippet exclusion (e.g. check whether the Monaco suggest widget is open at the time of the change) before keeping the 300 threshold. Snippets still safely below threshold: `psvm` (~30), `hashequals` (220).
 - On trigger, passes the first 500 chars of `change.text` and the true `change.text.length` to `onSuspiciousPaste(preview, textLength)`
 - 10-second cooldown to avoid duplicate reports from the same paste action
 - Calls `onSuspiciousPaste(preview, length)` prop → `handleSuspiciousPaste()` in `StudentExam.tsx` → `handleViolation('suspicious_paste', { contentPreview, textLength, questionId })`
+- Question review is normal exam navigation. Restoring another question's controlled answer
+  must not emit `suspicious_paste`, even when it is 300+ characters. `@monaco-editor/react`
+  applies controlled values with `executeEdits`, whose raw Monaco event has `isFlush: false`;
+  therefore detection runs from the wrapper's public `onChange` (which suppresses controlled
+  synchronization), never from a raw `onDidChangeModelContent` listener or `isFlush` alone.
 - Backend: **lockable** (as of 2026-07-29 — no longer log-only); the paste preview is stored in `violation_events.content_preview`
 
 **2. `focus_lost` — window focus heartbeat (macOS Split View / Notes alongside exam)**
@@ -748,7 +755,7 @@ Batches support two blueprint formats for question assignment:
 - Leaving fullscreen for more than 5 seconds records `fullscreen_exit`. A second fullscreen exit after the first violation triggers force-submit from the client.
 - Chrome side-panel extensions (e.g. Monica AI) opened during a fullscreen exam are detected as `extension_panel` via a `document.documentElement` width-shrink heuristic — see "Extension side-panel detection" above. Do not use `window.innerWidth`/`window.screen.width` for this; they don't change when a side panel is open.
 - Violation locking threshold: `violation_count >= 2` for any single type OR `total_violations >= 2`, applied uniformly to **every** type. The former `suspicious_paste`/`focus_lost` log-only exemption (`isLogOnly`/`LOG_ONLY_TYPES`) was **removed on 2026-07-29** — both are now lockable and count toward the total.
-- `suspicious_paste` is detected via Monaco `onDidChangeModelContent` with threshold ≥ **300 chars** per change event (lowered from 1200 on 2026-07-29 to catch Notes-copied answers; see Anti-Cheat v2 section). **Do not raise it back or re-enable large IntelliSense snippets** without pairing the length check with a snippet exclusion — the larger snippets in `useMonacoJavaCompletions.ts` (up to `GlobalExceptionHandler` at 1093 chars) now exceed 300 and would false-positive if typed; they are only safe because they are currently unused.
+- `suspicious_paste` is inspected through `@monaco-editor/react`'s public `onChange` with threshold ≥ **300 chars** per change event (lowered from 1200 on 2026-07-29 to catch Notes-copied answers; see Anti-Cheat v2 section). The wrapper intentionally suppresses `onChange` while restoring a controlled answer during question navigation; raw `executeEdits` events are non-flush and must not be classified by `isFlush` alone. **Do not raise the threshold back or re-enable large IntelliSense snippets** without pairing the length check with a snippet exclusion — the larger snippets in `useMonacoJavaCompletions.ts` (up to `GlobalExceptionHandler` at 1093 chars) now exceed 300 and would false-positive if typed; they are only safe because they are currently unused.
 - `focus_lost` is detected via `window` `blur`/`focus` events with a **3-second grace timer** (rewritten 2026-07-29, replacing the old 5s×3 polling heartbeat). A `blur` starts the timer; a `focus` before it fires cancels it; if it fires with focus still lost, the violation is reported. Event-based rather than polling to avoid aliasing short focus-losses.
 - Each violation report also appends a row to `violation_events` (timestamp, type, `text_length`, `content_preview` ≤ 500 chars for `suspicious_paste`, `question_id`). Admins review these via the "🔍 Xem chi tiết" popup on the Results page.
 - Server auto-submits the exam when the deadline passes (detected on `GET /exam/questions` → returns `410 Gone`, `reason: 'timeout'`).

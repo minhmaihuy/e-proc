@@ -133,6 +133,8 @@ E-Audit Platform là hệ thống tự động hóa quy trình phỏng vấn/ki�
 
 - **Auto Fullscreen:** Yêu cầu fullscreen khi vào
 - **One-by-One View:** Hiển thị 1 câu, có Prev/Next
+- **Review Answered Questions:** Có thể dùng Prev/Next hoặc số câu để xem và sửa lại
+  đáp án đã lưu; việc ứng dụng nạp lại đáp án không được tính là vi phạm.
 - **Autosave:** Debounce 2 giây, buffer answers
 - **Timer:** Đếm ngược, auto submit khi hết giờ
 
