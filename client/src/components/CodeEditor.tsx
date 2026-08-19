@@ -98,6 +98,7 @@ const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(
   ) {
     const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
     const monacoRef = useRef<typeof Monaco | null>(null);
+    const suspiciousPasteLastFiredRef = useRef(0);
     const [monacoInstance, setMonacoInstance] = useState<typeof Monaco | null>(null);
     const [language, setLanguage] = useState<SupportedLanguage>(defaultLanguage);
     const [showGuide, setShowGuide] = useState(false);
@@ -1036,6 +1037,30 @@ const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(
       setMonacoInstance(monaco);
     }, []);
 
+    // @monaco-editor/react suppresses this callback while it synchronizes a new
+    // controlled `value` with executeEdits. That distinction is load-bearing:
+    // direct Monaco model listeners receive the same synchronization with
+    // `isFlush: false`, so a saved answer restored during question navigation
+    // would otherwise look exactly like a large user paste.
+    const handleEditorChange = useCallback((
+      nextValue: string | undefined,
+      event: Monaco.editor.IModelContentChangedEvent
+    ) => {
+      onChange(nextValue ?? '');
+      if (!onSuspiciousPaste || event.isFlush) return;
+
+      const now = Date.now();
+      if (now - suspiciousPasteLastFiredRef.current < 10000) return;
+
+      for (const change of event.changes) {
+        if (change.text.length >= 300) {
+          suspiciousPasteLastFiredRef.current = now;
+          onSuspiciousPaste(change.text.slice(0, 500), change.text.length);
+          break;
+        }
+      }
+    }, [onChange, onSuspiciousPaste]);
+
     // ── On mount: bind anti-cheat commands ────────────────────────────────
     //
     // IMPORTANT — Anti-cheat approach with Monaco:
@@ -1121,47 +1146,10 @@ const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(
           }
         });
 
-        // ── [Anti-Cheat] Suspicious paste detection ───────────────────────
-        //
-        // Maccy (macOS) và Win+V (Windows clipboard history) inject text
-        // qua Accessibility API, bỏ qua keyboard intercept hoàn toàn.
-        // Monaco vẫn nhận event qua onDidChangeModelContent với text.length lớn.
-        //
-        // Threshold 300 ký tự: bắt được cả câu trả lời copy từ Notes (300–800 ký tự)
-        // vốn lọt lưới với ngưỡng 1200 cũ.
-        //
-        // ⚠️ CẢNH BÁO false positive: các snippet IntelliSense lớn trong
-        // useMonacoJavaCompletions.ts (SpringController=366 … GlobalExceptionHandler=1093)
-        // sẽ bị flag oan NẾU được gõ ra. Hiện các snippet này KHÔNG được sử dụng nên
-        // an toàn. Nếu sau này bật lại chúng, phải kèm điều kiện loại snippet
-        // (vd: check suggest widget đang mở) trước khi giữ ngưỡng 300.
-        //
-        // isFlush: bỏ qua khi resume exam (setAnswers → value prop thay đổi)
-        if (onSuspiciousPaste) {
-          let suspiciousPasteLastFired = 0;
-
-          editor.onDidChangeModelContent((e) => {
-            // Bỏ qua flush: xảy ra khi value prop được set từ bên ngoài
-            if (e.isFlush) return;
-
-            const now = Date.now();
-            // Cooldown 10s: tránh report nhiều lần từ cùng 1 paste action
-            if (now - suspiciousPasteLastFired < 10000) return;
-
-            for (const change of e.changes) {
-              if (change.text.length >= 300) {
-                suspiciousPasteLastFired = now;
-                onSuspiciousPaste(change.text.slice(0, 500), change.text.length);
-                break;
-              }
-            }
-          });
-        }
-
         // Auto-focus
         editor.focus();
       },
-      [onCopyAttempt, onCutAttempt, onPasteAttempt, onSuspiciousPaste]
+      [onCopyAttempt, onCutAttempt, onPasteAttempt]
     );
 
     // ── Language change handler ────────────────────────────────────────────
@@ -1310,7 +1298,7 @@ const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(
             }}
             beforeMount={handleBeforeMount}
             onMount={handleEditorMount}
-            onChange={(val) => onChange(val ?? '')}
+            onChange={handleEditorChange}
             loading={
               <div className="code-editor-loading">
                 <span>Loading editor...</span>
