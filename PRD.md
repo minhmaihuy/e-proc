@@ -134,7 +134,8 @@ E-Audit Platform là hệ thống tự động hóa quy trình phỏng vấn/ki�
 - **Auto Fullscreen:** Yêu cầu fullscreen khi vào
 - **One-by-One View:** Hiển thị 1 câu, có Prev/Next
 - **Review Answered Questions:** Có thể dùng Prev/Next hoặc số câu để xem và sửa lại
-  đáp án đã lưu; việc ứng dụng nạp lại đáp án không được tính là vi phạm.
+  đáp án đã lưu. Click chuột vào các điều khiển này và việc ứng dụng nạp lại đáp án
+  không được cảnh báo hay tính là vi phạm; các thao tác copy/cut/paste thực tế vẫn bị chặn.
 - **Autosave:** Debounce 2 giây, buffer answers
 - **Timer:** Đếm ngược, auto submit khi hết giờ
 
@@ -146,6 +147,12 @@ E-Audit Platform là hệ thống tự động hóa quy trình phỏng vấn/ki�
 | Violation 2 | Lock exam, auto submit |
 
 - **Violation Types:** `fullscreen_exit`, `tab_switch`
+- **Whole-page Clipboard Guard:** Trong cả Exam và Practice đang hoạt động, chặn và
+  ghi đúng loại vi phạm cho Ctrl/Cmd+C, Ctrl+Insert, Ctrl/Cmd+X, Shift+Delete,
+  Ctrl/Cmd+V (kể cả biến thể paste-as-plain-text) và Shift+Insert ở mọi vùng của
+  trang. Sự kiện copy/cut/paste native từ menu trình duyệt hoặc chuột cũng bị chặn;
+  một thao tác vật lý chỉ tạo một báo cáo. Ctrl+Shift+C và Cmd+Option+C vẫn thuộc
+  `devtools_open`.
 
 #### 3.2.4 Submit
 

@@ -11,6 +11,7 @@ import { getExamEnvironmentSnapshot } from '../services/examEnvironment';
 import { RapidInsertionDetector } from '../services/rapidInsertionDetector';
 import CodeEditor, { detectLanguage } from '../components/CodeEditor';
 import type { CodeEditorHandle } from '../components/CodeEditor';
+import { useExamClipboardProtection } from '../hooks/useExamClipboardProtection';
 
 // Static import: `detectLanguage` was already imported statically above, so Monaco was
 // always in the main bundle — lazy() gave no real split. Static import also avoids the
@@ -747,13 +748,16 @@ function StudentExam() {
 
     clipboardCooldownRef.current[type] = now;
     void handleViolation(type);
-  }, [locked, showClipboardWarning, started, submitting]);
+  }, [handleViolation, locked, showClipboardWarning, started, submitting]);
 
-  // NOTE: Clipboard shortcuts (Ctrl+C/X/V) are now intercepted INSIDE the
-  // CodeEditor component via Monaco's addCommand() API. This is required because
-  // Monaco stops DOM event propagation internally, so React synthetic keyboard
-  // events on a wrapper div never fire for shortcuts handled by Monaco.
-  // The CodeEditor calls these callbacks directly:
+  // Own keyboard and native clipboard events at document capture so question text,
+  // navigation, and the editor share one protection boundary. Monaco-level commands
+  // remain in CodeEditor as a fallback when that component is used elsewhere.
+  useExamClipboardProtection({
+    active: started && !locked && !submitting,
+    onAttempt: handleClipboardAttempt,
+  });
+
   const handleCopyAttempt  = useCallback(() => handleClipboardAttempt('copy_attempt'),  [handleClipboardAttempt]);
   const handleCutAttempt   = useCallback(() => handleClipboardAttempt('cut_attempt'),   [handleClipboardAttempt]);
   const handlePasteAttempt = useCallback(() => handleClipboardAttempt('paste_attempt'), [handleClipboardAttempt]);

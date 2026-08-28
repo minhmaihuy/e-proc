@@ -1061,18 +1061,45 @@ const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(
       }
     }, [onChange, onSuspiciousPaste]);
 
+    // Monaco stops clipboard events before they bubble out of its DOM tree, but
+    // capture-phase handlers on this component run first. These handlers cover
+    // browser/native clipboard commands (including mouse-driven UI), while the
+    // Monaco commands below cover editor keybindings.
+    const handleNativeCopy = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onCopyAttempt();
+    }, [onCopyAttempt]);
+
+    const handleNativeCut = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onCutAttempt();
+    }, [onCutAttempt]);
+
+    const handleNativePaste = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onPasteAttempt();
+    }, [onPasteAttempt]);
+
+    const handleEditorContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+    }, []);
+
     // ── On mount: bind anti-cheat commands ────────────────────────────────
     //
     // IMPORTANT — Anti-cheat approach with Monaco:
     // Monaco intercepts keyboard events internally via its own keybinding system.
-    // Standard React synthetic events (onCopy/onCut/onPaste on the div wrapper)
-    // do NOT fire when the user copies inside the Monaco editor because Monaco
-    // calls e.stopPropagation() before events bubble up to the DOM.
+    // Standard bubbling React handlers do NOT fire when the user copies inside
+    // Monaco because the editor stops propagation. Capture-phase DOM handlers
+    // above still run first and cover native/browser clipboard events.
     //
-    // Solution: Override Monaco's built-in copy/cut/paste commands via
-    // editor.addCommand() and editor.addAction(). This hooks into Monaco's
-    // keybinding layer BEFORE the clipboard action executes, allowing us to
-    // prevent it and trigger our violation logic.
+    // addCommand() hooks into Monaco's keybinding layer before keyboard clipboard
+    // actions execute. Do not use addAction() with a built-in action id here:
+    // standalone Monaco registers a separate action instead of replacing the
+    // original context-menu command.
     //
     const handleEditorMount: OnMount = useCallback(
       (editor, monaco) => {
@@ -1110,33 +1137,6 @@ const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(
         // ── Override Shift+Insert (paste shortcut) ────────────────────────
         editor.addCommand(KeyMod.Shift | KeyCode.Insert, () => {
           onPasteAttempt();
-        });
-
-        // ── Override right-click context menu ────────────────────────────
-        // Remove copy/cut/paste from Monaco's context menu
-        // Monaco uses action IDs to register context menu items.
-        // We override the three clipboard actions to no-ops so they
-        // don't appear or don't work via context menu.
-        editor.addAction({
-          id: 'editor.action.clipboardCopyAction',
-          label: 'Copy (disabled)',
-          run() {
-            onCopyAttempt();
-          },
-        });
-        editor.addAction({
-          id: 'editor.action.clipboardCutAction',
-          label: 'Cut (disabled)',
-          run() {
-            onCutAttempt();
-          },
-        });
-        editor.addAction({
-          id: 'editor.action.clipboardPasteAction',
-          label: 'Paste (disabled)',
-          run() {
-            onPasteAttempt();
-          },
         });
 
         // ── Disable drag-and-drop (another paste vector) ──────────────────
@@ -1242,6 +1242,10 @@ const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(
         {/* ── Monaco Editor ────────────────────────────────────────────── */}
         <div
           className="code-editor-container"
+          onCopyCapture={handleNativeCopy}
+          onCutCapture={handleNativeCut}
+          onPasteCapture={handleNativePaste}
+          onContextMenuCapture={handleEditorContextMenu}
           // Intercept native drag-drop paste at DOM level as a safety net
           onDrop={(e) => {
             e.preventDefault();
@@ -1282,7 +1286,8 @@ const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(
               bracketPairColorization: { enabled: true },
               guides: { bracketPairs: true, indentation: true },
               // Disable built-in clipboard integration at editor config level
-              // (commands are already overridden above, but this adds extra protection)
+              // (commands and capture-phase native events are blocked above)
+              contextmenu: false,
               emptySelectionClipboard: false,
               copyWithSyntaxHighlighting: false,
               // Accessibility
