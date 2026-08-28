@@ -6,6 +6,7 @@ import CodeEditor, { detectLanguage } from '../components/CodeEditor';
 import type { CodeEditorHandle } from '../components/CodeEditor';
 import { canRunLocally, runLocally } from '../services/localRunner';
 import { RapidInsertionDetector } from '../services/rapidInsertionDetector';
+import { useExamClipboardProtection } from '../hooks/useExamClipboardProtection';
 
 // Static import matches StudentExam. detectLanguage already loads this module, while a
 // lazy import string is mangled by the production obfuscator into /components/CodeEditor.
@@ -277,11 +278,13 @@ function StudentPractice() {
       if (!startedRef.current || lockedRef.current || submittingRef.current) return;
 
       const isF12 = e.key === 'F12';
-      const isCtrlShiftI = e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i');
-      const isCtrlShiftJ = e.ctrlKey && e.shiftKey && (e.key === 'J' || e.key === 'j');
-      const isCtrlShiftC = e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c');
-      const isCtrlShiftK = e.ctrlKey && e.shiftKey && (e.key === 'K' || e.key === 'k');
-      const isCtrlU = e.ctrlKey && (e.key === 'u' || e.key === 'U');
+      const key = e.key.toLowerCase();
+      const isCtrlShiftI = e.ctrlKey && e.shiftKey && key === 'i';
+      const isCtrlShiftJ = e.ctrlKey && e.shiftKey && key === 'j';
+      const isCtrlShiftC = e.ctrlKey && e.shiftKey && key === 'c';
+      const isCtrlShiftK = e.ctrlKey && e.shiftKey && key === 'k';
+      const isMacDevtools = e.metaKey && e.altKey && ['i', 'j', 'c'].includes(key);
+      const isCtrlU = e.ctrlKey && key === 'u';
 
       if (e.key === 'F11') {
         e.preventDefault();
@@ -294,7 +297,7 @@ function StudentPractice() {
         return;
       }
 
-      if (isF12 || isCtrlShiftI || isCtrlShiftJ || isCtrlShiftC || isCtrlShiftK || isCtrlU) {
+      if (isF12 || isCtrlShiftI || isCtrlShiftJ || isCtrlShiftC || isCtrlShiftK || isMacDevtools || isCtrlU) {
         e.preventDefault();
         e.stopPropagation();
         triggerDevtoolsViolation();
@@ -409,7 +412,12 @@ function StudentPractice() {
 
     clipboardCooldownRef.current[type] = now;
     void handleViolation(type);
-  }, [locked, showClipboardWarning, started, submitting]);
+  }, [handleViolation, locked, showClipboardWarning, started, submitting]);
+
+  useExamClipboardProtection({
+    active: started && !locked && !submitting,
+    onAttempt: handleClipboardAttempt,
+  });
 
   const handleCopyAttempt  = useCallback(() => handleClipboardAttempt('copy_attempt'),  [handleClipboardAttempt]);
   const handleCutAttempt   = useCallback(() => handleClipboardAttempt('cut_attempt'),   [handleClipboardAttempt]);

@@ -256,12 +256,15 @@ When debugging student exam state, inspect:
   `batches.practice_exam_id` server-side and return `{ redirect: 'practice' }` before
   changing status or parsing a blueprint. `StudentExam.tsx` handles the redirect from the
   initial GET, POST start, and follow-up GET; it must never leave an empty payload spinning.
+- Numbered-question, Previous, and Next mouse clicks are ordinary in-page navigation. They
+  may update `currentIndex` and restore controlled answers, but must never suppress real
+  anti-cheat signals or themselves warn, report a violation, lock, or submit the exam.
 - Violations are reported from the frontend through `studentApi.reportViolation(type)` and stored in the `violations` table
 - Accepted violation types (server-enforced whitelist in `src/server/routes/student.ts`, `validTypes`): `tab_switch`, `fullscreen_exit`, `copy_attempt`, `cut_attempt`, `paste_attempt`, `devtools_open`, `extension_panel`, `screenshot_attempt`, `print_attempt`, `suspicious_paste`, `focus_lost`, `recording_stopped`
 - Locking occurs when `violation_count >= 2` for any single type or `total_violations >= 2`. **As of 2026-07-29 the log-only exemption was removed** — `suspicious_paste` and `focus_lost` are now lockable like every other type and count toward `total_violations` (see Anti-Cheat v2 section for the rationale behind the change). **`recording_stopped` is a special case: it locks the exam on the FIRST occurrence** (see Screen recording section) — stopping the screen share is treated as deliberate evasion.
 - Every violation report is additionally appended to the `violation_events` table (append-only forensic log); `suspicious_paste` events carry a `content_preview` (first 500 chars of the pasted text) — see Anti-Cheat v2 section
 - Anti-cheat behavior is concentrated in `client/src/pages/StudentExam.tsx`:
-  - clipboard attempts (`copy_attempt`, `cut_attempt`, `paste_attempt`) are intercepted inside the Monaco CodeEditor via `addCommand()` and reported as violations
+  - while Exam or Practice is active, `useExamClipboardProtection` owns standard copy/cut/paste keyboard shortcuts and native clipboard events at document capture, so question text and navigation are protected as well as Monaco. It maps Ctrl/Cmd+C and Ctrl+Insert to `copy_attempt`, Ctrl/Cmd+X and Shift+Delete to `cut_attempt`, and Ctrl/Cmd+V variants plus Shift+Insert to `paste_attempt`; Ctrl+Shift+C and Cmd+Option+C remain `devtools_open`. `CodeEditor` keeps `addCommand()` and capture handlers as defense in depth, `contextmenu: false` removes Monaco's clipboard menu, and right-click alone is not a violation. A physical action must produce only one network report.
   - fullscreen exit triggers a 5-second grace period timer; if the student stays out of fullscreen past the timer, `fullscreen_exit` is recorded and the exam is force-submitted
   - tab switching (visibilitychange) reports `tab_switch` violation
   - DevTools key shortcuts (F12, Ctrl+Shift+I/J/C/K, Ctrl+U) are blocked and report `devtools_open` violation (with 10-second cooldown)
@@ -730,6 +733,9 @@ Batches support two blueprint formats for question assignment:
 ## Files worth checking together for exam/anti-cheat work
 
 - `client/src/pages/StudentExam.tsx`
+- `client/src/pages/StudentPractice.tsx`
+- `client/src/hooks/useExamClipboardProtection.ts` (whole-page clipboard shortcut/native-event ownership)
+- `client/src/components/CodeEditor.tsx` (Monaco fallback, controlled-answer restoration, suspicious paste)
 - `client/src/pages/StudentLogin.tsx` (verify flow: access code → studentToken)
 - `client/src/pages/StudentConfirm.tsx` (stores studentToken to localStorage)
 - `client/src/services/api.ts` (request interceptors for both admin and student tokens)
@@ -751,7 +757,7 @@ Batches support two blueprint formats for question assignment:
 
 ## Notable current behavior
 
-- Clipboard attempts are counted as violations. Clipboard interception is handled inside the Monaco CodeEditor component (not via DOM events on the wrapper), because Monaco stops DOM event propagation internally.
+- Clipboard attempts are counted as violations across the active Exam/Practice document. `useExamClipboardProtection` owns standard keyboard shortcuts and native copy/cut/paste events at document capture, stops them before Monaco, and preserves DevTools overlaps; `CodeEditor` retains its Monaco and wrapper guards as fallback. Monaco's context menu is disabled, right-click alone is not a violation, and the existing cooldown prevents duplicate network reports for one physical action.
 - Leaving fullscreen for more than 5 seconds records `fullscreen_exit`. A second fullscreen exit after the first violation triggers force-submit from the client.
 - Chrome side-panel extensions (e.g. Monica AI) opened during a fullscreen exam are detected as `extension_panel` via a `document.documentElement` width-shrink heuristic — see "Extension side-panel detection" above. Do not use `window.innerWidth`/`window.screen.width` for this; they don't change when a side panel is open.
 - Violation locking threshold: `violation_count >= 2` for any single type OR `total_violations >= 2`, applied uniformly to **every** type. The former `suspicious_paste`/`focus_lost` log-only exemption (`isLogOnly`/`LOG_ONLY_TYPES`) was **removed on 2026-07-29** — both are now lockable and count toward the total.
