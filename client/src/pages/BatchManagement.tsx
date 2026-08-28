@@ -38,13 +38,34 @@ import {
   utcToLocalInput,
 } from './batch/helpers';
 
+type BatchRecordMode = 'none' | 'local' | 's3';
+type BatchIdentityMode = 'off' | 'photo';
+
+const RECORD_MODE_OPTIONS: readonly { value: BatchRecordMode; label: string }[] = [
+  { value: 'none', label: 'No recording' },
+  { value: 'local', label: "Record Local (Save on student's machine, encrypted)" },
+  { value: 's3', label: 'Record S3 (Save to AWS S3)' },
+];
+
+function recordModeLabel(mode: BatchRecordMode): string {
+  return RECORD_MODE_OPTIONS.find((option) => option.value === mode)?.label || mode;
+}
+
+function isBatchRecordMode(value: unknown): value is BatchRecordMode {
+  return RECORD_MODE_OPTIONS.some((option) => option.value === value);
+}
+
+function isBatchIdentityMode(value: unknown): value is BatchIdentityMode {
+  return value === 'off' || value === 'photo';
+}
+
 
 function BatchManagement() {
   const { isAdmin, userId } = useAuth();
   const [batches, setBatches] = useState<any[]>([]);
   // Chế độ ghi màn hình superadmin cấp cho tenant này. Backend chặn độc lập; đây chỉ để
   // không bày ra lựa chọn chắc chắn bị từ chối.
-  const [recordingConfig, setRecordingConfig] = useState<{ allowed: string[]; canChange: boolean; s3Configured: boolean; identityMode: 'off' | 'photo'; identityS3Configured: boolean }>({
+  const [recordingConfig, setRecordingConfig] = useState<{ allowed: BatchRecordMode[]; canChange: boolean; s3Configured: boolean; identityMode: 'off' | 'photo'; identityS3Configured: boolean }>({
     allowed: ['none'],
     canChange: false,
     s3Configured: false,
@@ -75,7 +96,7 @@ function BatchManagement() {
     duration: 30,
     blueprint: [] as BlueprintItem[],
     blueprintByType: [] as BlueprintItemByType[],
-    record_mode: 'none' as 'none' | 'local' | 's3',
+    record_mode: 'none' as BatchRecordMode,
     exam_type: 'essay' as 'essay' | 'quiz',
     identity_verification: 'off' as 'off' | 'photo',
     practice_exam_id: null as number | null,
@@ -628,6 +649,18 @@ function BatchManagement() {
     batches.slice((batchCurrentPage - 1) * batchPageSize, batchCurrentPage * batchPageSize),
     [batches, batchCurrentPage, batchPageSize]
   );
+  const editingRecordMode: BatchRecordMode = isBatchRecordMode(editingBatch?.record_mode)
+    ? editingBatch.record_mode
+    : 'none';
+  const editingRecordModeRevoked = Boolean(
+    editingBatch && !recordingConfig.allowed.includes(editingRecordMode),
+  );
+  const editingIdentityMode: BatchIdentityMode = isBatchIdentityMode(editingBatch?.identity_verification)
+    ? editingBatch.identity_verification
+    : 'off';
+  const editingIdentityModeRevoked = Boolean(
+    editingBatch && editingIdentityMode === 'photo' && recordingConfig.identityMode !== 'photo',
+  );
 
   const handleBatchPageSizeChange = (size: BatchPageSize) => {
     setBatchPageSize(size);
@@ -755,23 +788,26 @@ function BatchManagement() {
                     <option value="quiz">Trắc nghiệm (Quiz)</option>
                   </select>
                 </div>
-                
+
                 <div className="space-y-2">
-                  <label className="block text-sm font-bold text-slate-700">Screen Recording</label>
+                  <label htmlFor="create-batch-record-mode" className="block text-sm font-bold text-slate-700">
+                    Screen recording for this batch
+                  </label>
                   <select
+                    id="create-batch-record-mode"
+                    aria-describedby="create-batch-record-mode-help"
                     value={formData.record_mode}
                     disabled={!recordingConfig.canChange}
-                    onChange={e => setFormData(prev => ({ ...prev, record_mode: e.target.value as 'none' | 'local' | 's3' }))}
+                    onChange={e => setFormData(prev => ({ ...prev, record_mode: e.target.value as BatchRecordMode }))}
                     className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:bg-slate-100"
                   >
-                    <option value="none">Default (No recording)</option>
-                    {recordingConfig.allowed.includes('local') && (
-                      <option value="local">Record Local (Save on student's machine)</option>
-                    )}
-                    {recordingConfig.allowed.includes('s3') && (
-                      <option value="s3">Record S3 (Save to AWS S3)</option>
-                    )}
+                    {RECORD_MODE_OPTIONS
+                      .filter((option) => recordingConfig.allowed.includes(option.value))
+                      .map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                   </select>
+                  <p id="create-batch-record-mode-help" className="text-xs text-slate-500">
+                    Superadmin grants the modes available to this tenant; tenant admin chooses the recording behavior for this batch.
+                  </p>
                   {!recordingConfig.canChange && (
                     <p className="text-xs text-amber-600 font-medium">Chỉ tenant admin đổi được cấu hình này.</p>
                   )}
@@ -1355,32 +1391,64 @@ function BatchManagement() {
 
               {/* Chế độ ghi màn hình */}
               <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">Screen Recording</label>
+                <label htmlFor="edit-batch-record-mode" className="block text-sm font-bold text-slate-700 mb-1">
+                  Screen recording for this batch
+                </label>
                 <select
-                  value={editingBatch.record_mode || 'none'}
-                  disabled={!isAdmin}
-                  onChange={e => setEditingBatch({ ...editingBatch, record_mode: e.target.value })}
+                  id="edit-batch-record-mode"
+                  aria-describedby="edit-batch-record-mode-help"
+                  value={editingRecordMode}
+                  disabled={!recordingConfig.canChange}
+                  onChange={e => setEditingBatch({ ...editingBatch, record_mode: e.target.value as BatchRecordMode })}
                   className="px-4 py-2.5 rounded-xl border border-slate-300 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none text-slate-900 min-w-[300px] disabled:bg-slate-50 disabled:text-slate-500"
                 >
-                  <option value="none">Default (No recording)</option>
-                  <option value="local">Record Local (Save on student's machine, encrypted)</option>
-                  <option value="s3">Record S3 (Save to AWS S3)</option>
+                  {editingRecordModeRevoked && (
+                    <option value={editingRecordMode} disabled>
+                      {recordModeLabel(editingRecordMode)} (no longer granted by superadmin)
+                    </option>
+                  )}
+                  {RECORD_MODE_OPTIONS
+                    .filter((option) => recordingConfig.allowed.includes(option.value))
+                    .map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
-                {!isAdmin && (
-                  <p className="mt-2 text-sm text-amber-600 font-medium">Only admin accounts can change this setting.</p>
+                <p id="edit-batch-record-mode-help" className="mt-2 text-xs text-slate-500">
+                  Superadmin grants the modes available to this tenant; tenant admin chooses the recording behavior for this batch.
+                </p>
+                {editingRecordModeRevoked && (
+                  <p className="mt-2 text-xs text-amber-600 font-medium">
+                    {recordingConfig.canChange
+                      ? 'This stored mode is no longer effective. Choose an available mode before saving this batch.'
+                      : 'This stored mode is no longer effective. A tenant admin must choose an available mode.'}
+                  </p>
+                )}
+                {!recordingConfig.canChange && (
+                  <p className="mt-2 text-sm text-amber-600 font-medium">Only tenant admin accounts can change this batch setting.</p>
                 )}
               </div>
               <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">Identity verification</label>
+                <label htmlFor="edit-batch-identity-mode" className="block text-sm font-bold text-slate-700 mb-1">
+                  Identity verification for this batch
+                </label>
                 <select
-                  value={editingBatch.identity_verification || 'off'}
+                  id="edit-batch-identity-mode"
+                  value={editingIdentityMode}
                   disabled={!recordingConfig.canChange}
-                  onChange={e => setEditingBatch({ ...editingBatch, identity_verification: e.target.value })}
+                  onChange={e => setEditingBatch({ ...editingBatch, identity_verification: e.target.value as BatchIdentityMode })}
                   className="px-4 py-2.5 rounded-xl border border-slate-300 bg-white min-w-[300px] disabled:bg-slate-50"
                 >
+                  {editingIdentityModeRevoked && (
+                    <option value="photo" disabled>Manual photo review (no longer granted by superadmin)</option>
+                  )}
                   <option value="off">Off</option>
                   {recordingConfig.identityMode === 'photo' && <option value="photo">Manual photo review</option>}
                 </select>
+                {editingIdentityModeRevoked && (
+                  <p className="mt-2 text-xs text-amber-600 font-medium">
+                    {recordingConfig.canChange
+                      ? 'Stored photo verification is no longer effective. Choose Off before saving this batch.'
+                      : 'Stored photo verification is no longer effective. A tenant admin must change it to Off.'}
+                  </p>
+                )}
               </div>
             </div>
 

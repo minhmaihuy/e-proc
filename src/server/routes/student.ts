@@ -15,7 +15,12 @@ import { parseBlueprintCompat } from '../services/blueprint.js';
 import { runCode } from '../coderunner.js';
 import { getPracticeCompilerMode, runCodeWithLambda } from '../services/lambdaCompiler.js';
 import { enqueueUsageEvent } from '../services/usageOutbox.js';
-import { identitySatisfied, normalizeIdentityMode } from '../services/identityPolicy.js';
+import { identitySatisfied } from '../services/identityPolicy.js';
+import {
+  effectiveBatchIdentityMode,
+  effectiveBatchRecordMode,
+  resolveTenantEvidencePolicy,
+} from '../services/tenantEvidencePolicy.js';
 import { getCurrentTenantConfig } from '../tenantContext.js';
 
 dotenv.config();
@@ -24,25 +29,24 @@ const USE_SQLITE = process.env.USE_SQLITE === 'true' || process.env.NODE_ENV !==
 
 const router = Router();
 
-async function currentIdentityConfig() {
-  const row = (await controlDb.query('SELECT identity_verification, identity_retention_days FROM tenants WHERE slug = ?', [
+async function currentTenantEvidencePolicy() {
+  const row = (await controlDb.query(`SELECT allowed_record_modes, identity_verification,
+      identity_retention_days, recording_retention_days FROM tenants WHERE slug = ?`, [
     getCurrentTenantConfig().slug,
   ])).rows[0];
-  return {
-    mode: normalizeIdentityMode(row?.identity_verification),
-    retentionDays: row?.identity_retention_days == null ? null : Number(row.identity_retention_days),
-  };
+  return resolveTenantEvidencePolicy({
+    allowedRecordModes: row?.allowed_record_modes,
+    identityVerification: row?.identity_verification,
+    identityRetentionDays: row?.identity_retention_days,
+    recordingRetentionDays: row?.recording_retention_days,
+  });
 }
 
 async function requireStudentIdentity(studentId: number, res: Response): Promise<boolean> {
-  const tenant = await currentIdentityConfig();
+  const tenant = await currentTenantEvidencePolicy();
   const row = (await db.query(`SELECT s.identity_status, b.identity_verification
     FROM students s JOIN batches b ON b.id = s.batch_id WHERE s.id = ?`, [studentId])).rows[0];
-  const mode = normalizeIdentityMode(row?.identity_verification);
-  if (mode === 'face_match' || (mode === 'photo' && tenant.mode !== 'photo')) {
-    res.status(403).json({ error: 'Batch identity verification is not permitted by this tenant.', reason: 'identity_required' });
-    return false;
-  }
+  const mode = effectiveBatchIdentityMode(row?.identity_verification, tenant.identityVerification);
   const status = row?.identity_status;
   if (!identitySatisfied(mode, status)) {
     res.status(403).json({ error: 'Identity verification is required before the assessment.', reason: 'identity_required' });
@@ -117,6 +121,7 @@ async function submitExamAtomically(
   reason: SubmitReason,
   options: { requireCompleteRecording?: boolean } = {}
 ): Promise<{ already: boolean }> {
+  const tenantEvidence = await currentTenantEvidencePolicy();
   const transition = await db.withTransaction(async (tx) => {
     const lockSql = `
       SELECT s.status, s.exam_deadline, s.recording_finalized_at, b.record_mode, b.record_enabled
@@ -128,7 +133,11 @@ async function submitExamAtomically(
     if (row.status === 'submitted') return { already: true };
     if (row.status !== 'in_progress') throw new Error('Exam is not in progress');
 
-    const recordMode = row.record_mode || (row.record_enabled ? 's3' : 'none');
+    const recordMode = effectiveBatchRecordMode(
+      row.record_mode,
+      row.record_enabled,
+      tenantEvidence.allowedRecordModes,
+    );
     const deadlinePassed = row.exam_deadline && new Date() >= new Date(row.exam_deadline);
     const finalReason: SubmitReason = deadlinePassed ? 'timeout' : reason;
     if (options.requireCompleteRecording && !deadlinePassed && recordMode === 's3' && !row.recording_finalized_at) {
@@ -394,10 +403,16 @@ router.post('/verify', verifyRateLimit, async (req: Request, res: Response) => {
     );
 
     // Chế độ ghi màn hình: 'none' | 'local' | 's3'. record_enabled cũ vẫn được suy ra để tương thích.
-    const recordMode: string = student.record_mode || (student.record_enabled ? 's3' : 'none');
-    const tenantIdentity = await currentIdentityConfig();
-    const batchIdentityMode = normalizeIdentityMode(student.identity_verification);
-    const identityMode = batchIdentityMode === 'photo' && tenantIdentity.mode === 'photo' ? 'photo' : 'off';
+    const tenantEvidence = await currentTenantEvidencePolicy();
+    const recordMode = effectiveBatchRecordMode(
+      student.record_mode,
+      student.record_enabled,
+      tenantEvidence.allowedRecordModes,
+    );
+    const identityMode = effectiveBatchIdentityMode(
+      student.identity_verification,
+      tenantEvidence.identityVerification,
+    );
     const targetIdentityStatus = identityMode === 'off' ? 'not_required'
       : student.identity_status === 'verified' ? 'verified'
         : student.identity_status === 'captured' || student.identity_status === 'rejected' ? student.identity_status : 'pending';
@@ -426,13 +441,13 @@ router.post('/verify', verifyRateLimit, async (req: Request, res: Response) => {
       exam_end: endTime.toISOString(),
       // Batch dạng Practice → frontend điều hướng /practice thay vì /exam
       exam_kind: student.practice_exam_id ? 'practice' : 'exam',
-      record_enabled: !!student.record_enabled, // giữ để tương thích ngược
+      record_enabled: recordMode === 's3', // giữ để tương thích ngược, nhưng phản ánh capability hiệu lực
       record_mode: recordMode,
       // chỉ trả pass khi local — client dùng ngầm để mã hóa, không hiển thị
       recording_password: recordMode === 'local' ? recordingPassword : undefined,
       identity_mode: identityMode,
       identity_status: targetIdentityStatus,
-      identity_retention_days: identityMode === 'photo' ? tenantIdentity.retentionDays : undefined,
+      identity_retention_days: identityMode === 'photo' ? tenantEvidence.identityRetentionDays : undefined,
     });
   } catch (error: any) {
     if (sendExamGuardError(res, error)) return;
@@ -458,8 +473,8 @@ router.post('/select-email', async (req: Request, res: Response) => {
 
 router.post('/identity/upload-url', studentAuthMiddleware, async (req: Request, res: Response) => {
   try {
-    const mode = (await currentIdentityConfig()).mode;
-    if (mode !== 'photo') return res.status(403).json({ error: 'Photo identity verification is not enabled.' });
+    const tenantEvidence = await currentTenantEvidencePolicy();
+    if (tenantEvidence.identityVerification !== 'photo') return res.status(403).json({ error: 'Photo identity verification is not enabled.' });
     if (!isIdentityS3Configured()) return res.status(503).json({ error: 'Identity image storage is not configured.' });
     const contentType = req.body?.content_type;
     if (contentType !== 'image/jpeg') return res.status(400).json({ error: 'Identity images must be JPEG.' });
@@ -467,7 +482,7 @@ router.post('/identity/upload-url', studentAuthMiddleware, async (req: Request, 
     const student = (await db.query(`SELECT s.identity_status, b.identity_verification
       FROM students s JOIN batches b ON b.id = s.batch_id WHERE s.id = ? AND s.batch_id = ?`, [studentId, batchId])).rows[0];
     if (!student) return res.status(404).json({ error: 'Student not found.' });
-    if (normalizeIdentityMode(student.identity_verification) !== 'photo') {
+    if (effectiveBatchIdentityMode(student.identity_verification, tenantEvidence.identityVerification) !== 'photo') {
       return res.status(403).json({ error: 'Photo identity verification is not required for this batch.' });
     }
     if (!['pending', 'rejected'].includes(student.identity_status)) {
@@ -487,13 +502,13 @@ router.post('/identity/upload-url', studentAuthMiddleware, async (req: Request, 
 
 router.post('/identity/complete', studentAuthMiddleware, async (req: Request, res: Response) => {
   try {
-    const mode = (await currentIdentityConfig()).mode;
-    if (mode !== 'photo') return res.status(403).json({ error: 'Photo identity verification is not enabled.' });
+    const tenantEvidence = await currentTenantEvidencePolicy();
+    if (tenantEvidence.identityVerification !== 'photo') return res.status(403).json({ error: 'Photo identity verification is not enabled.' });
     const { studentId, batchId } = req.studentPayload!;
     const student = (await db.query(`SELECT s.identity_status, s.identity_capture_id, b.identity_verification
       FROM students s JOIN batches b ON b.id = s.batch_id WHERE s.id = ? AND s.batch_id = ?`, [studentId, batchId])).rows[0];
     if (!student) return res.status(404).json({ error: 'Student not found.' });
-    if (normalizeIdentityMode(student.identity_verification) !== 'photo') {
+    if (effectiveBatchIdentityMode(student.identity_verification, tenantEvidence.identityVerification) !== 'photo') {
       return res.status(403).json({ error: 'Photo identity verification is not required for this batch.' });
     }
     if (student.identity_status === 'verified') return res.status(409).json({ error: 'Identity was already verified.' });
@@ -530,16 +545,15 @@ router.post('/identity/complete', studentAuthMiddleware, async (req: Request, re
 router.get('/identity/status', studentAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const { studentId, batchId } = req.studentPayload!;
-    const tenant = await currentIdentityConfig();
+    const tenantEvidence = await currentTenantEvidencePolicy();
     const row = (await db.query(`SELECT s.identity_status, b.identity_verification
       FROM students s JOIN batches b ON b.id = s.batch_id WHERE s.id = ? AND s.batch_id = ?`, [studentId, batchId])).rows[0];
     if (!row) return res.status(404).json({ error: 'Student not found.' });
-    const batchMode = normalizeIdentityMode(row.identity_verification);
-    const mode = batchMode === 'photo' && tenant.mode === 'photo' ? 'photo' : 'off';
+    const mode = effectiveBatchIdentityMode(row.identity_verification, tenantEvidence.identityVerification);
     return res.json({
       mode,
       status: mode === 'off' ? 'not_required' : row.identity_status,
-      retention_days: mode === 'photo' ? tenant.retentionDays : undefined,
+      retention_days: mode === 'photo' ? tenantEvidence.identityRetentionDays : undefined,
     });
   } catch (error) {
     console.error('[Identity] Status failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
@@ -1053,13 +1067,10 @@ router.post('/violation', studentAuthMiddleware, sessionTracker, async (req: Req
 // batchId/studentId lấy từ JWT — client KHÔNG thể chỉ định để ghi đè video người khác.
 router.post('/exam/recording-url', studentAuthMiddleware, async (req: Request, res: Response) => {
   try {
-    if (!isS3Configured()) {
-      return res.status(503).json({ error: 'S3 not configured' });
-    }
-
     const studentId = req.studentPayload!.studentId;
     if (!(await requireStudentIdentity(studentId, res))) return;
     const batchId = req.studentPayload!.batchId;
+    const tenantEvidence = await currentTenantEvidencePolicy();
 
     // Chỉ cấp URL khi batch ở mode 's3' (chốt chặn server-side, tránh mod/ai lách).
     // Mode 'local' ghi ra máy học viên, không dùng S3 → không cấp URL.
@@ -1068,9 +1079,16 @@ router.post('/exam/recording-url', studentAuthMiddleware, async (req: Request, r
       FROM batches b JOIN students s ON s.batch_id = b.id
       WHERE b.id = ? AND s.id = ?
     `, [batchId, studentId]);
-    const batchMode = batchRes.rows[0]?.record_mode || (batchRes.rows[0]?.record_enabled ? 's3' : 'none');
+    const batchMode = effectiveBatchRecordMode(
+      batchRes.rows[0]?.record_mode,
+      batchRes.rows[0]?.record_enabled,
+      tenantEvidence.allowedRecordModes,
+    );
     if (batchMode !== 's3') {
       return res.status(403).json({ error: 'S3 recording not enabled for this batch' });
+    }
+    if (!isS3Configured()) {
+      return res.status(503).json({ error: 'S3 not configured' });
     }
     const submittedRecordingGrace = batchRes.rows[0]?.status === 'submitted'
       && batchRes.rows[0]?.recording_incomplete
@@ -1115,6 +1133,7 @@ router.post('/exam/recording-complete', studentAuthMiddleware, async (req: Reque
   try {
     const studentId = req.studentPayload!.studentId;
     const batchId = req.studentPayload!.batchId;
+    const tenantEvidence = await currentTenantEvidencePolicy();
     const partIndex = Number(req.body?.partIndex);
     if (!Number.isInteger(partIndex) || partIndex < 0) {
       return res.status(400).json({ error: 'Invalid recording part metadata' });
@@ -1124,7 +1143,11 @@ router.post('/exam/recording-complete', studentAuthMiddleware, async (req: Reque
       FROM students s JOIN batches b ON b.id = s.batch_id
       WHERE s.id = ? AND b.id = ?
     `, [studentId, batchId])).rows[0];
-    const recordMode = exam?.record_mode || (exam?.record_enabled ? 's3' : 'none');
+    const recordMode = effectiveBatchRecordMode(
+      exam?.record_mode,
+      exam?.record_enabled,
+      tenantEvidence.allowedRecordModes,
+    );
     const submittedRecordingGrace = exam?.status === 'submitted' && exam?.recording_incomplete && exam?.submitted_at
       && Date.now() - new Date(exam.submitted_at).getTime() <= 15 * 60_000;
     if (!exam || (exam.status !== 'in_progress' && !submittedRecordingGrace)) return res.status(409).json({ error: 'Exam is not accepting recording parts' });
@@ -1147,6 +1170,7 @@ router.post('/exam/recording-finalize', studentAuthMiddleware, async (req: Reque
   try {
     const studentId = req.studentPayload!.studentId;
     const batchId = req.studentPayload!.batchId;
+    const tenantEvidence = await currentTenantEvidencePolicy();
     const finalPartIndex = Number(req.body?.finalPartIndex);
     if (!Number.isInteger(finalPartIndex) || finalPartIndex < 0 || finalPartIndex > 1000) {
       return res.status(400).json({ error: 'Invalid finalPartIndex' });
@@ -1165,7 +1189,11 @@ router.post('/exam/recording-finalize', studentAuthMiddleware, async (req: Reque
       if (!row || (row.status !== 'in_progress' && !submittedRecordingGrace)) {
         throw Object.assign(new Error('Exam is not accepting recording finalization'), { code: 'NOT_IN_PROGRESS' });
       }
-      const mode = row.record_mode || (row.record_enabled ? 's3' : 'none');
+      const mode = effectiveBatchRecordMode(
+        row.record_mode,
+        row.record_enabled,
+        tenantEvidence.allowedRecordModes,
+      );
       if (mode !== 's3') throw Object.assign(new Error('S3 recording is not enabled'), { code: 'BAD_RECORD_MODE' });
       if (row.recording_finalized_at) {
         if (Number(row.recording_final_part_index) !== finalPartIndex) {

@@ -11,7 +11,7 @@
 - While a tenant `admin` reviews its tenant log plane, the system shall allow read-only access and shall reject every lifecycle mutation.
 - While a `tenant_admin` manages its tenant log plane, the system shall allow resolve, reopen, archive, and restore only for rows whose `tenant_slug` matches the authenticated tenant and current server.
 - When a tenant issue is archived, the system shall retain the immutable issue content and record the acting tenant administrator and timestamp instead of physically deleting operational evidence.
-- When a tenant is created or configured, the system shall derive and enforce a dedicated domain in the form `epoc.<tenant-label>.devfasttrack.com`; as a temporary compatibility exception, `fsa-cls` uses `https://epoc.devfasttrack.com/`.
+- When a tenant is created, approved, or provisioned, the system shall derive and enforce a dedicated domain in the form `epoc.<tenant-label>.devfasttrack.com`; as a temporary compatibility exception, `fsa-cls` uses `https://epoc.devfasttrack.com/`. A configuration update is a validation-free draft save and may preserve a legacy-invalid infrastructure value until approval.
 - When an existing FSA-CLS control-plane row contains a known previous E-POC domain, startup shall migrate only that known legacy domain/app URL to `epoc.devfasttrack.com` without changing assessment or log data.
 - When a future maintenance changeset is validated, the project harness command shall accept `--spec <file>`, validate that the specification exists, and include its path in static and pending judge output.
 
@@ -45,7 +45,7 @@
 - Regular tenant `admin` is read-only. Only `tenant_admin` may mutate issue lifecycle, and every update includes both issue id and trusted tenant slug in parameterized SQL.
 - Operational logging must not recursively log `/api/tenants` failures into a selected tenant's log database.
 - Deployment must grant the control-plane runtime `secretsmanager:GetSecretValue` only for managed tenant secret ARNs and network reachability to tenant log databases.
-- Terraform shall reject domain inputs outside `epoc.devfasttrack.com` and `epoc.<tenant-label>.devfasttrack.com`; backend validation additionally binds the exact domain or FSA exception to the trusted slug.
+- Terraform shall reject domain inputs outside `epoc.devfasttrack.com` and `epoc.<tenant-label>.devfasttrack.com`; backend create/approval/provisioning validation additionally binds the exact domain or FSA exception to the trusted slug, while draft update performs no business/infrastructure validation.
 
 ## Implementation plan
 

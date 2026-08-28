@@ -6,6 +6,7 @@ import db from '../db/controlPlane.js';
 import { getCurrentTenantConfig, isTenantDomainForSlug, tenantDomainForSlug } from '../tenantContext.js';
 import { validateEvidenceRetention } from './identityPolicy.js';
 import { parseAllowedRecordModes } from './recordingPolicy.js';
+import { isRoute53HostedZoneId } from './tenantConfigurationPolicy.js';
 
 const execFileAsync = promisify(execFile);
 const SLUG_PATTERN = /^[a-z][a-z0-9-]{2,30}$/;
@@ -58,6 +59,9 @@ export function validateTenantForProvisioning(tenant: ProvisionableTenant): stri
   const requiredDomain = tenantDomainForSlug(tenant.slug);
   if (!tenant.domain_name || !isTenantDomainForSlug(tenant.domain_name, tenant.slug)) {
     return `Tenant domain must be ${requiredDomain} before provisioning.`;
+  }
+  if (tenant.route53_zone_id && !isRoute53HostedZoneId(tenant.route53_zone_id)) {
+    return 'Invalid Route53 hosted zone ID.';
   }
   if (Boolean(tenant.compiler_enabled) && !ECR_IMAGE_PATTERN.test(process.env.TENANT_COMPILER_IMAGE_URI?.trim() || '')) {
     return 'TENANT_COMPILER_IMAGE_URI must be a versioned ECR image URI when Lambda compiler is enabled.';

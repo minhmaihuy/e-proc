@@ -66,8 +66,8 @@ biết làm bài.
   phải là số nguyên 1–365. Khi tenant bật `photo`, cả hai thời hạn đều bắt buộc và
   `identity_retention_days < recording_retention_days`.
 - Tenant cũ được backfill `recording_retention_days = NULL`; migration không tự chọn thời hạn
-  hay thay đổi lifecycle đang vận hành. Tenant phải cấu hình rõ trước lần lưu/approve/provision
-  tiếp theo có bật S3/photo.
+  hay thay đổi lifecycle đang vận hành. Superadmin có thể lưu draft chưa hoàn chỉnh, nhưng tenant
+  phải cấu hình rõ trước lần approve/provision tiếp theo có bật S3/photo.
 - Terraform quản lý bucket ghi màn hình riêng, private, mã hóa, CORS PUT giới hạn đúng origin,
   IAM chỉ trên `recordings/*`, và lifecycle theo `recording_retention_days`. Tắt S3/photo không
   xóa bucket đã có; thời hạn đã nhập được giữ lại để bằng chứng hiện hữu tiếp tục hết hạn.
