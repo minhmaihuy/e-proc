@@ -1,10 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { RecordMode, parseAllowedRecordModes } from '../services/recordingPolicy.js';
+import { RecordMode } from '../services/recordingPolicy.js';
 import { getCurrentTenantConfig } from '../tenantContext.js';
 import controlDb from '../db/controlPlane.js';
 import dataDb from '../db/postgres.js';
-import { IdentityMode, normalizeIdentityMode } from '../services/identityPolicy.js';
+import { EffectiveIdentityMode, resolveTenantEvidencePolicy } from '../services/tenantEvidencePolicy.js';
 
 export interface AdminUser {
   id: number;
@@ -22,7 +22,7 @@ export interface AdminUser {
   emailEnabled?: boolean;
   emailFromName?: string | null;
   emailDailyLimit?: number;
-  identityVerification?: IdentityMode;
+  identityVerification?: EffectiveIdentityMode;
   identityRetentionDays?: number | null;
 }
 
@@ -78,7 +78,7 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
         controlDb.query(
           `SELECT id, slug, name, status, allowed_record_modes, email_enabled,
                   email_from_name, email_daily_limit, identity_verification,
-                  identity_retention_days
+                  identity_retention_days, recording_retention_days
              FROM tenants WHERE slug = ?`,
           [serverTenant.slug],
         ),
@@ -98,6 +98,7 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
           tenant_email_daily_limit: tenant.email_daily_limit,
           tenant_identity_verification: tenant.identity_verification,
           tenant_identity_retention_days: tenant.identity_retention_days,
+          tenant_recording_retention_days: tenant.recording_retention_days,
         };
       }
     }
@@ -118,6 +119,13 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       return res.status(401).json({ error: 'Unauthorized: Session permissions changed. Sign in again.' });
     }
 
+    const tenantEvidence = isSuperAdmin ? null : resolveTenantEvidencePolicy({
+      allowedRecordModes: current.tenant_allowed_record_modes,
+      identityVerification: current.tenant_identity_verification,
+      identityRetentionDays: current.tenant_identity_retention_days,
+      recordingRetentionDays: current.tenant_recording_retention_days,
+    });
+
     req.adminUser = {
       id: Number(current.id),
       username: String(current.username),
@@ -127,15 +135,14 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       tenantName: isSuperAdmin ? null : String(current.tenant_name),
       // Superadmin không thuộc tenant nào nên không có allowlist; route assessment
       // của nó vốn đã bị chặn ở tầng khác.
-      allowedRecordModes: isSuperAdmin
-        ? undefined
-        : parseAllowedRecordModes(current.tenant_allowed_record_modes),
+      allowedRecordModes: tenantEvidence?.allowedRecordModes,
       emailEnabled: isSuperAdmin ? undefined : Boolean(current.tenant_email_enabled),
       emailFromName: isSuperAdmin ? undefined : current.tenant_email_from_name,
       emailDailyLimit: isSuperAdmin ? undefined : Number(current.tenant_email_daily_limit || 200),
-      identityVerification: isSuperAdmin ? undefined : normalizeIdentityMode(current.tenant_identity_verification),
-      identityRetentionDays: isSuperAdmin ? undefined
-        : current.tenant_identity_retention_days == null ? null : Number(current.tenant_identity_retention_days),
+      identityVerification: tenantEvidence?.identityVerification,
+      identityRetentionDays: tenantEvidence?.identityVerification === 'photo'
+        ? tenantEvidence.identityRetentionDays
+        : null,
     };
     next();
   } catch (error) {

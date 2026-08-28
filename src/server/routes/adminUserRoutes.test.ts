@@ -47,6 +47,42 @@ test('admin.ts không còn route nào chạy trước authMiddleware', () => {
   );
 });
 
+test('assessment routes require current-tenant access after the four user-management routes', () => {
+  const source = adminRoutes();
+  const authGuardIndex = source.indexOf('router.use(authMiddleware)');
+  const tenantDataGuardIndex = source.indexOf('router.use(requireTenantDataAdmin)', authGuardIndex + 1);
+
+  assert.ok(authGuardIndex >= 0, 'không tìm thấy authMiddleware');
+  assert.ok(tenantDataGuardIndex > authGuardIndex, 'thiếu requireTenantDataAdmin cho assessment routes');
+
+  const userRoutes = [
+    "router.get('/users', requireTenantUserManager",
+    "router.post('/users', requireTenantUserManager",
+    "router.put('/users/:id', requireTenantUserManager",
+    "router.delete('/users/:id', requireTenantUserManager",
+  ];
+  for (const signature of userRoutes) {
+    const routeIndex = source.indexOf(signature);
+    assert.ok(routeIndex > authGuardIndex, `${signature} phải nằm sau authMiddleware`);
+    assert.ok(
+      routeIndex < tenantDataGuardIndex,
+      `${signature} phải giữ guard requireTenantUserManager riêng trước assessment guard`,
+    );
+  }
+
+  const betweenAuthAndTenantGuard = source.slice(authGuardIndex, tenantDataGuardIndex);
+  const routesBeforeTenantGuard = [...betweenAuthAndTenantGuard.matchAll(/^router\.(get|post|put|delete|patch)\(([^\n]+)/gm)]
+    .map((match) => match[0]);
+  assert.equal(routesBeforeTenantGuard.length, 4, 'chỉ bốn route /users được đứng trước tenant data guard');
+  assert.ok(
+    routesBeforeTenantGuard.every((route) => route.includes("'/users")),
+    'route không thuộc user management đứng trước tenant data guard',
+  );
+
+  const guardedAssessmentRoutes = [...source.slice(tenantDataGuardIndex).matchAll(/^router\.(get|post|put|delete|patch)\(/gm)];
+  assert.ok(guardedAssessmentRoutes.length > 0, 'không còn assessment route nào sau tenant data guard');
+});
+
 test('self-service registration không được sống lại', () => {
   const source = adminRoutes();
   assert.doesNotMatch(source, /'\/setup'/, 'POST /setup cho phép tạo admin không cần đăng nhập');

@@ -127,6 +127,42 @@ test('AdminNav tự ẩn với superadmin', async () => {
   assert.match(nav, /if \(isSuperAdmin\) return null;/, 'AdminNav phải trả null cho superadmin');
 });
 
+test('cấu hình tenant-global chỉ tồn tại ở control-plane của superadmin', async () => {
+  const app = await read('client/src/App.tsx');
+  const nav = await read('client/src/components/AdminNav.tsx');
+
+  assert.match(
+    app,
+    /path="\/tenants"[^\n]*requireSuperAdmin><TenantManagement/,
+    'TenantManagement phải được khóa ở /tenants cho superadmin',
+  );
+  assert.equal(
+    (app.match(/<TenantManagement\s*\/>/g) || []).length,
+    1,
+    'không được dựng thêm workspace cấu hình tenant trong /admin/*',
+  );
+  assert.match(
+    app,
+    /path="\/admin\/tenant"[^\n]*Navigate to="\/admin\/dashboard"/,
+    'bookmark cấu hình tenant cũ phải quay về dashboard tenant',
+  );
+  assert.doesNotMatch(
+    nav,
+    /['"]\/admin\/tenant['"]/,
+    'menu tenant không được đưa chức năng control-plane trở lại',
+  );
+  assert.match(
+    app,
+    /path="\/admin\/settings"[^\n]*requirePlatformAdmin><AISettings/,
+    'AI Settings là cấu hình chấm điểm tenant-local và phải được giữ lại',
+  );
+  assert.match(
+    nav,
+    /path:\s*['"]\/admin\/settings['"],\s*label:\s*['"]AI Settings['"]/,
+    'menu tenant phải giữ lối vào AI Settings riêng biệt',
+  );
+});
+
 /**
  * Chốt lại ba điểm tích hợp của tính năng Practice.
  *

@@ -92,22 +92,6 @@ function statusLabel(status: string): string {
   return status.replace(/_/g, ' ').replace(/\b\w/g, (letter: string) => letter.toUpperCase());
 }
 
-function retentionValidationMessage(config: TenantConfiguration): string | null {
-  const s3Enabled = (config.allowed_record_modes || 'none').split(',').includes('s3');
-  if ((s3Enabled || config.identity_verification === 'photo') && config.recording_retention_days == null) {
-    return 'Enter screen-recording retention before enabling S3 recording or photo verification.';
-  }
-  if (config.identity_verification === 'photo' && config.identity_retention_days == null) {
-    return 'Enter identity-photo retention before enabling photo verification.';
-  }
-  if (config.identity_retention_days != null
-      && config.recording_retention_days != null
-      && config.identity_retention_days >= config.recording_retention_days) {
-    return 'Identity-photo retention must be shorter than screen-recording retention.';
-  }
-  return null;
-}
-
 function UsageMeter({ label, used, limit }: { label: string; used: number; limit: number | null | undefined }) {
   const ratio = limit == null ? 0 : Math.min(100, (used / limit) * 100);
   const state = limit == null ? 'Unlimited'
@@ -252,11 +236,6 @@ function TenantManagement() {
     event.preventDefault();
     if (!selectedTenant) return;
     clearMessages();
-    const retentionError = retentionValidationMessage(form);
-    if (retentionError) {
-      setError(retentionError);
-      return;
-    }
     setSaving(true);
     try {
       await tenantControlApi.updateTenant(selectedTenant.id, form);
@@ -403,8 +382,8 @@ function TenantManagement() {
                 </div>
               )}
 
-              <form className="tenant-config-card" onSubmit={handleSave}>
-                <div className="section-heading"><div><span className="eyebrow">DESIRED STATE</span><h3>Server configuration</h3></div><small>Saving requires a new approval</small></div>
+              <form className="tenant-config-card" onSubmit={handleSave} noValidate>
+                <div className="section-heading"><div><span className="eyebrow">DESIRED STATE</span><h3>Server configuration</h3></div><small>Draft save; validation runs on approval</small></div>
                 <div className="form-grid">
                   <label className="field"><span>Customer name</span><input value={form.name} onChange={(event) => handleConfigChange('name', event.target.value)} required minLength={2} maxLength={160} /></label>
                   <label className="field"><span>Contact email</span><input type="email" value={form.contact_email} onChange={(event) => handleConfigChange('contact_email', event.target.value)} required /></label>

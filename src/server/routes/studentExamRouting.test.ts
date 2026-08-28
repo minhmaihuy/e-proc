@@ -50,3 +50,41 @@ test('GET /exam/questions redirects Practice before returning pending empty ques
     /return res\.json\(\{ redirect: 'practice', questions: \[\], time_remaining: null \}\)/,
   );
 });
+
+test('all student recording gates clamp stored modes through the current effective tenant policy', () => {
+  const submit = section('async function submitExamAtomically', 'async function startExamAtomically');
+  const verify = section("router.post('/verify'", "router.post('/select-email'");
+  const recordingUrl = section("router.post('/exam/recording-url'", "router.post('/exam/recording-complete'");
+  const recordingComplete = section("router.post('/exam/recording-complete'", "router.post('/exam/recording-finalize'");
+  const recordingFinalize = section("router.post('/exam/recording-finalize'", '// PRACTICE EXAM');
+
+  for (const [name, route] of [
+    ['atomic submit', submit],
+    ['verify', verify],
+    ['recording URL', recordingUrl],
+    ['recording complete', recordingComplete],
+    ['recording finalize', recordingFinalize],
+  ] as const) {
+    assert.match(route, /effectiveBatchRecordMode\(/, `${name} dùng raw batch record_mode thay vì effective policy`);
+  }
+
+  assert.match(submit, /currentTenantEvidencePolicy\(\)/,
+    'submit phải nạp policy hiện tại để việc thu hồi S3 bỏ chặn nộp ngay');
+  assert.match(verify, /record_enabled: recordMode === 's3'/,
+    'verify compatibility flag phải phản ánh mode hiệu lực, không phản ánh cột legacy');
+});
+
+test('student identity routes use retention-qualified effective photo capability', () => {
+  const tenantPolicy = section('async function currentTenantEvidencePolicy', 'async function requireStudentIdentity');
+  const upload = section("router.post('/identity/upload-url'", "router.post('/identity/complete'");
+  const complete = section("router.post('/identity/complete'", "router.get('/identity/status'");
+  const status = section("router.get('/identity/status'", "router.post('/exam/start'");
+
+  assert.match(tenantPolicy, /allowed_record_modes/);
+  assert.match(tenantPolicy, /recording_retention_days/);
+  assert.match(tenantPolicy, /identity_retention_days/);
+  assert.match(tenantPolicy, /resolveTenantEvidencePolicy\(/);
+  for (const [name, route] of [['upload', upload], ['complete', complete], ['status', status]] as const) {
+    assert.match(route, /effectiveBatchIdentityMode\(/, `${name} không clamp batch identity theo policy hiệu lực`);
+  }
+});

@@ -86,6 +86,13 @@ test('provisioning validation requires a dedicated tenant domain', () => {
   );
 });
 
+test('provisioning validation rejects an invalid non-empty Route53 hosted zone ID', () => {
+  assert.equal(
+    validateTenantForProvisioning({ ...validTenant, route53_zone_id: 'legacy/hosted-zone' }),
+    'Invalid Route53 hosted zone ID.',
+  );
+});
+
 test('control-plane log secret permissions use an explicit validated allowlist', () => {
   assert.deepEqual(getObservedTenantSecretArns({
     CONTROL_PLANE_LOG_SECRET_ARNS: `${validTenant.secret_arn}, ${validTenant.secret_arn}`,

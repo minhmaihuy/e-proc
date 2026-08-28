@@ -22,7 +22,11 @@ test('student identity mode and object keys are server-derived from control-plan
   const s3 = source('src', 'server', 'services', 's3.ts');
   assert.match(student, /const \{ access_code \} = req\.body/);
   assert.doesNotMatch(student, /const \{ access_code, identity/);
-  assert.match(student, /SELECT identity_verification, identity_retention_days FROM tenants WHERE slug = \?/);
+  assert.match(student, /SELECT allowed_record_modes, identity_verification,[\s\S]{0,120}identity_retention_days, recording_retention_days FROM tenants WHERE slug = \?/);
+  assert.match(student, /resolveTenantEvidencePolicy\(\{/,
+    'raw validation-free draft values must be reduced to safe effective evidence capability');
+  assert.match(student, /effectiveBatchIdentityMode\(/,
+    'batch identity mode must be intersected with the current effective tenant capability');
   assert.match(student, /const \{ studentId, batchId \} = req\.studentPayload!/);
   assert.match(student, /finalizeIdentityObjects\(\{ batchId, studentId, captureId: student\.identity_capture_id \}\)/);
   assert.doesNotMatch(student, /req\.body\?\.(?:studentId|batchId|key)/);
@@ -96,14 +100,15 @@ test('photo UI explains collection, audience and retention while face_match rema
     'review actions must appear only for an unreviewed captured evidence set');
   assert.match(tenants, /Automated face matching is intentionally not available/);
   assert.match(tenants, /Screen recording retention \(days\)/);
-  assert.match(tenants, /Identity-photo retention must be shorter than screen-recording retention/);
+  assert.match(tenants, /Must be shorter than the screen-recording retention below/);
   assert.doesNotMatch(confirm, /Rekognition|identity_mismatch/);
 });
 
 test('tenant API persists both retention values and validates their ordering on the backend', () => {
   const routes = source('src', 'server', 'routes', 'tenants.ts');
-  assert.match(routes, /validateEvidenceRetention\(\{/);
-  assert.match(routes, /s3RecordingEnabled: parseAllowedRecordModes\(input\.allowedRecordModes\)\.includes\('s3'\)/);
+  const policy = source('src', 'server', 'services', 'tenantConfigurationPolicy.ts');
+  assert.match(policy, /validateEvidenceRetention\(\{/);
+  assert.match(policy, /s3RecordingEnabled: parseAllowedRecordModes\(input\.allowedRecordModes\)\.includes\('s3'\)/);
   assert.match(routes, /identity_verification, identity_retention_days, recording_retention_days/);
   assert.match(routes, /identity_verification = \?, identity_retention_days = \?, recording_retention_days = \?/);
 });

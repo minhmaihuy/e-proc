@@ -234,6 +234,12 @@ router.delete('/users/:id', requireTenantUserManager, async (req: Request, res: 
   }
 });
 
+// Từ đây trở xuống là dữ liệu khảo thí của tenant hiện tại. authMiddleware chỉ xác
+// thực JWT và cũng chấp nhận superadmin, nên phải có guard tenant-data ở cấp router;
+// ẩn các trang /admin/* trên frontend không phải là ranh giới bảo mật. Bốn route
+// /users phía trên giữ requireTenantUserManager riêng vì chúng cần tenant_admin.
+router.use(requireTenantDataAdmin);
+
 // Client gửi UTC ISO string, server chỉ cần validate và normalize
 const toStorageTime = (isoStr: string): string => {
   if (!isoStr) return isoStr;
