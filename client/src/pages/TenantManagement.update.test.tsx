@@ -76,7 +76,7 @@ describe('TenantManagement draft update', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByLabelText('Route53 zone ID')).toHaveValue('legacy/hosted-zone');
+    await waitFor(() => expect(screen.getByLabelText('Route53 zone ID')).toHaveValue('legacy/hosted-zone'));
     await user.click(screen.getByRole('checkbox', { name: /Record Local/ }));
     await user.click(screen.getByRole('button', { name: 'Save configuration' }));
 
