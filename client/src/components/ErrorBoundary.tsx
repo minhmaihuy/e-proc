@@ -68,6 +68,11 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
             đúng câu đang làm; thời gian làm bài do máy chủ giữ nên không bị mất.
           </p>
         )}
+        {Boolean(error.message?.includes('dynamically imported module')) && (
+          <p style={{ color: '#0369a1', background: '#f0f9ff', padding: '8px 12px', borderRadius: 6, fontSize: 13, margin: '10px 0' }}>
+            Hệ thống vừa có bản cập nhật mới. Nhấn <strong>Tải lại trang</strong> bên dưới để tải phiên bản mới nhất.
+          </p>
+        )}
         <p style={{ color: 'var(--text-light, #6b7280)', fontSize: 13, margin: '14px 0 18px' }}>
           Nếu tải lại vẫn lỗi, báo cho giám thị kèm nội dung sau:
         </p>
