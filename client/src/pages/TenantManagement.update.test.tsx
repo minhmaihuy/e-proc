@@ -77,6 +77,7 @@ describe('TenantManagement draft update', () => {
     );
 
     await waitFor(() => expect(screen.getByLabelText('Route53 zone ID')).toHaveValue('legacy/hosted-zone'));
+    expect(screen.getByText(/Không bắt buộc khi lưu cấu hình draft, kể cả khi bật Record S3/)).toBeInTheDocument();
     await user.click(screen.getByRole('checkbox', { name: /Record Local/ }));
     await user.click(screen.getByRole('button', { name: 'Save configuration' }));
 
