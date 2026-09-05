@@ -26,6 +26,7 @@ const StudentConfirm = lazy(() => import('./pages/StudentConfirm'));
 const StudentSubmit = lazy(() => import('./pages/StudentSubmit'));
 const TenantManagement = lazy(() => import('./pages/TenantManagement'));
 const IssueLogs = lazy(() => import('./pages/IssueLogs'));
+const LiveMonitor = lazy(() => import('./pages/LiveMonitor'));
 
 function App() {
   return (
@@ -69,6 +70,7 @@ function App() {
             <Route path="/admin/batches" element={<PrivateRoute requirePlatformAdmin><BatchManagement /></PrivateRoute>} />
             <Route path="/admin/batches/:id/students" element={<PrivateRoute requirePlatformAdmin><StudentManagement /></PrivateRoute>} />
             <Route path="/admin/batches/:id/results" element={<PrivateRoute requirePlatformAdmin><Results /></PrivateRoute>} />
+            <Route path="/admin/batches/:id/live" element={<PrivateRoute requireTenantAdmin><LiveMonitor /></PrivateRoute>} />
             <Route path="/admin/settings" element={<PrivateRoute requirePlatformAdmin><AISettings /></PrivateRoute>} />
             <Route path="/admin/practice" element={<PrivateRoute requirePlatformAdmin><PracticeManagement /></PrivateRoute>} />
             <Route path="/admin/issues" element={<PrivateRoute requirePlatformAdmin><IssueLogs /></PrivateRoute>} />

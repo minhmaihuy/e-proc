@@ -35,6 +35,7 @@ let chunkBuffer: Blob[] = [];
 let partIndex = 0;
 let partTimer: ReturnType<typeof setInterval> | null = null;
 let onRecordingStopped: (() => void) | null = null;
+const captureStreamListeners = new Set<(capture: MediaStream | null) => void>();
 let recordingStoppedFired = false;
 let active = false;
 
@@ -65,6 +66,21 @@ export function isSupported(forMode: RecordMode = 's3'): boolean {
 
 export function isActive(): boolean {
   return active;
+}
+
+function notifyCaptureStreamChanged(): void {
+  for (const listener of captureStreamListeners) listener(stream);
+}
+
+/** Reuses the screen-share permission already granted for recording; never asks twice. */
+export function getCaptureStream(): MediaStream | null {
+  return stream;
+}
+
+export function onCaptureStreamChanged(listener: (capture: MediaStream | null) => void): () => void {
+  captureStreamListeners.add(listener);
+  listener(stream);
+  return () => captureStreamListeners.delete(listener);
 }
 
 // Cho phép StudentExam đăng ký handler thật SAU khi start() (trang /exam mount sau
@@ -232,13 +248,17 @@ export async function requestSetup(forMode: RecordMode = 's3'): Promise<{ ok: bo
 
   const track = stream.getVideoTracks()[0];
   const surface = (track.getSettings() as any).displaySurface;
-  if (surface && surface !== 'monitor') {
+  // The browser may omit displaySurface on an unsupported capture. Treat that
+  // exactly like a tab/window: both local and S3 evidence require Entire Screen.
+  if (surface !== 'monitor') {
     track.stop();
     stream = null;
+    notifyCaptureStreamChanged();
     dirHandle = forMode === 'local' ? null : dirHandle;
     return { ok: false, reason: 'not_fullscreen' };
   }
 
+  notifyCaptureStreamChanged();
   return { ok: true };
 }
 
@@ -286,6 +306,7 @@ export function start(opts?: { mode?: RecordMode; password?: string | null }): v
   track.onended = () => {
     active = false;
     recordingStoppedFired = true;
+    notifyCaptureStreamChanged();
     if (onRecordingStopped) onRecordingStopped();
   };
 }
@@ -328,6 +349,7 @@ export async function stopAndSave(): Promise<void> {
   if (stream) {
     stream.getTracks().forEach((t) => t.stop());
     stream = null;
+    notifyCaptureStreamChanged();
   }
   recorder = null;
   active = false;

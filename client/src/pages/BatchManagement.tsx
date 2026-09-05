@@ -40,6 +40,7 @@ import {
 
 type BatchRecordMode = 'none' | 'local' | 's3';
 type BatchIdentityMode = 'off' | 'photo';
+type RecordingConfigStatus = 'loading' | 'ready' | 'unavailable';
 
 const RECORD_MODE_OPTIONS: readonly { value: BatchRecordMode; label: string }[] = [
   { value: 'none', label: 'No recording' },
@@ -61,7 +62,7 @@ function isBatchIdentityMode(value: unknown): value is BatchIdentityMode {
 
 
 function BatchManagement() {
-  const { isAdmin, userId } = useAuth();
+  const { isAdmin, isTenantAdmin, userId } = useAuth();
   const [batches, setBatches] = useState<any[]>([]);
   // Chế độ ghi màn hình superadmin cấp cho tenant này. Backend chặn độc lập; đây chỉ để
   // không bày ra lựa chọn chắc chắn bị từ chối.
@@ -72,6 +73,7 @@ function BatchManagement() {
     identityMode: 'off',
     identityS3Configured: false,
   });
+  const [recordingConfigStatus, setRecordingConfigStatus] = useState<RecordingConfigStatus>('loading');
   const [modules, setModules] = useState<string[]>([]);
   // Cặp (module, bộ đề) — dropdown blueprint phải chọn theo cặp, không chỉ module.
   const [moduleGroups, setModuleGroups] = useState<ModuleGroupOption[]>([]);
@@ -187,7 +189,8 @@ function BatchManagement() {
         identityMode: res.data.identity_verification === 'photo' ? 'photo' : 'off',
         identityS3Configured: Boolean(res.data.identity_s3_configured),
       }))
-      .catch(() => { /* giữ mặc định chỉ 'none' nếu không lấy được */ });
+      .then(() => setRecordingConfigStatus('ready'))
+      .catch(() => setRecordingConfigStatus('unavailable'));
     loadBatches();
     loadModules();
     loadPracticeExams();
@@ -797,7 +800,7 @@ function BatchManagement() {
                     id="create-batch-record-mode"
                     aria-describedby="create-batch-record-mode-help"
                     value={formData.record_mode}
-                    disabled={!recordingConfig.canChange}
+                    disabled={!recordingConfig.canChange || recordingConfig.allowed.length <= 1}
                     onChange={e => setFormData(prev => ({ ...prev, record_mode: e.target.value as BatchRecordMode }))}
                     className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:bg-slate-100"
                   >
@@ -806,14 +809,20 @@ function BatchManagement() {
                       .map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                   </select>
                   <p id="create-batch-record-mode-help" className="text-xs text-slate-500">
-                    Superadmin grants the modes available to this tenant; tenant admin chooses the recording behavior for this batch.
+                    No recording nghĩa là bài thi không ghi màn hình. Local lưu bản ghi đã mã hóa trên máy của thí sinh; S3 tải các phần bản ghi lên kho S3 riêng của tenant.
                   </p>
-                  {!recordingConfig.canChange && (
+                  {recordingConfigStatus === 'loading' && (
+                    <p className="text-xs text-slate-500">Đang tải quyền cấu hình của tenant…</p>
+                  )}
+                  {recordingConfigStatus === 'unavailable' && (
+                    <p className="text-xs text-amber-600 font-medium">Không tải được cấu hình ghi màn hình. Đang giữ an toàn ở chế độ No recording.</p>
+                  )}
+                  {recordingConfigStatus === 'ready' && !recordingConfig.canChange && (
                     <p className="text-xs text-amber-600 font-medium">Chỉ tenant admin đổi được cấu hình này.</p>
                   )}
-                  {recordingConfig.canChange && recordingConfig.allowed.length === 1 && (
+                  {recordingConfigStatus === 'ready' && recordingConfig.canChange && recordingConfig.allowed.length <= 1 && (
                     <p className="text-xs text-slate-500">
-                      Tenant chưa được cấp chế độ ghi màn hình nào. Liên hệ superadmin để bật ở trang quản lý tenant.
+                      Tenant này hiện chỉ được dùng No recording. Superadmin cần bật Local hoặc S3 ở trang quản lý tenant trước khi bạn có thể chọn.
                     </p>
                   )}
                   {formData.record_mode === 's3' && !recordingConfig.s3Configured && (
@@ -824,16 +833,27 @@ function BatchManagement() {
                 </div>
 
                 <div className="space-y-2">
-                  <label className="block text-sm font-bold text-slate-700">Identity verification</label>
+                  <label htmlFor="create-batch-identity-mode" className="block text-sm font-bold text-slate-700">Identity verification</label>
                   <select
+                    id="create-batch-identity-mode"
+                    aria-describedby="create-batch-identity-mode-help"
                     value={formData.identity_verification}
-                    disabled={!recordingConfig.canChange}
+                    disabled={!recordingConfig.canChange || recordingConfig.identityMode !== 'photo'}
                     onChange={e => setFormData(prev => ({ ...prev, identity_verification: e.target.value as 'off' | 'photo' }))}
                     className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-white disabled:opacity-60"
                   >
                     <option value="off">Off</option>
                     {recordingConfig.identityMode === 'photo' && <option value="photo">Manual photo review</option>}
                   </select>
+                  <p id="create-batch-identity-mode-help" className="text-xs text-slate-500">
+                    Khi bật, thí sinh phải gửi ảnh giấy tờ tùy thân và ảnh khuôn mặt hiện tại trước khi xem đề. Người có quyền sẽ duyệt hoặc từ chối thủ công; hệ thống không tự động nhận diện khuôn mặt.
+                  </p>
+                  {recordingConfigStatus === 'ready' && !recordingConfig.canChange && (
+                    <p className="text-xs text-amber-600 font-medium">Chỉ tenant admin đổi được cấu hình này.</p>
+                  )}
+                  {recordingConfigStatus === 'ready' && recordingConfig.canChange && recordingConfig.identityMode !== 'photo' && (
+                    <p className="text-xs text-slate-500">Tenant này chưa được superadmin bật xác minh ảnh. Dropdown được giữ ở Off.</p>
+                  )}
                   {formData.identity_verification === 'photo' && !recordingConfig.identityS3Configured && <p className="text-xs text-amber-600 font-medium">Identity S3 storage is not configured on this server.</p>}
                 </div>
               </div>
@@ -1225,6 +1245,11 @@ function BatchManagement() {
                         <Link to={`/admin/batches/${batch.id}/results`} className="inline-flex items-center px-3 py-1.5 bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 rounded-md text-xs font-bold transition-colors">
                           Results
                         </Link>
+                        {isTenantAdmin && batch.record_mode !== 'none' && !batch.practice_exam_id && (
+                          <Link to={`/admin/batches/${batch.id}/live`} className="inline-flex items-center px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-md text-xs font-bold transition-colors">
+                            Live
+                          </Link>
+                        )}
                         {editable && (
                           <>
                             <button

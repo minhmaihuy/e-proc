@@ -413,6 +413,15 @@ export const adminApi = {
   
   exportStudents: (batchId: number) =>
     api.get(`/admin/batches/${batchId}/students/export`, { responseType: 'blob' }),
+
+  getLiveStudents: (batchId: number) =>
+    api.get(`/admin/batches/${batchId}/live/students`),
+
+  createLiveSession: (batchId: number, studentId: number) =>
+    api.post(`/admin/batches/${batchId}/live/students/${studentId}/session`),
+
+  endLiveSession: (viewerSessionId: string, outcome: string) =>
+    api.post(`/admin/live/audit/${viewerSessionId}/end`, { outcome }),
   
   // --- Results endpoints ---
   getResults: (batchId: number) =>
@@ -475,6 +484,9 @@ export const studentApi = {
 
   startExam: (studentId: number) =>
     api.post<StartExamResponse>('/student/exam/start', { student_id: studentId }),
+
+  getLiveSession: () =>
+    api.post('/student/live/session'),
 
   // [C-4] Không còn truyền studentId - token tự động gắn qua interceptor
   getQuestions: () =>

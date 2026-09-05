@@ -12,6 +12,8 @@ import { authMiddleware, requireTenantDataAdmin, requireTenantUserManager } from
 import crypto from 'crypto';
 import { parseBlueprintCompat } from '../services/blueprint.js';
 import { resolveBatchRecordMode } from '../services/recordingPolicy.js';
+import { effectiveBatchRecordMode } from '../services/tenantEvidencePolicy.js';
+import { attemptHash, issueLiveSession } from '../services/liveMonitoring.js';
 import { createIdentityViewUrl, createRecordingViewUrl, isIdentityS3Configured, isS3Configured } from '../services/s3.js';
 import { resolveBatchIdentityMode } from '../services/identityPolicy.js';
 import { isEmailTemplate } from '../services/emailPolicy.js';
@@ -239,6 +241,100 @@ router.delete('/users/:id', requireTenantUserManager, async (req: Request, res: 
 // ẩn các trang /admin/* trên frontend không phải là ranh giới bảo mật. Bốn route
 // /users phía trên giữ requireTenantUserManager riêng vì chúng cần tenant_admin.
 router.use(requireTenantDataAdmin);
+
+// Live screen monitoring is opt-in and carries only WebRTC signaling through
+// Supabase. Media remains browser-to-browser (or through the configured TURN
+// relay). The old fork called its highest role `admin`; in this codebase that
+// authority is `tenant_admin`, so every route has an explicit server-side guard.
+router.get('/batches/:batchId/live/students', requireTenantUserManager, async (req: Request, res: Response) => {
+  const batchId = Number(req.params.batchId);
+  if (!Number.isInteger(batchId) || batchId < 1) return res.status(400).json({ error: 'Invalid batch id.' });
+
+  try {
+    const batch = (await db.query('SELECT id, record_mode, record_enabled, practice_exam_id FROM batches WHERE id = ?', [batchId])).rows[0];
+    if (!batch) return res.status(404).json({ error: 'Batch not found.' });
+    if (batch.practice_exam_id !== null && batch.practice_exam_id !== undefined) {
+      return res.status(409).json({ error: 'Live monitoring is available for regular exams only.' });
+    }
+    if (effectiveBatchRecordMode(batch.record_mode, batch.record_enabled, req.adminUser!.allowedRecordModes ?? ['none']) === 'none') {
+      return res.status(409).json({ error: 'Live monitoring requires an active recording mode for this batch.' });
+    }
+    const students = await db.query(`
+      SELECT id, email, status, exam_started_at
+      FROM students
+      WHERE batch_id = ? AND status = 'in_progress' AND active_jti IS NOT NULL
+      ORDER BY exam_started_at ASC, id ASC
+    `, [batchId]);
+    return res.json({ students: students.rows });
+  } catch (error) {
+    console.error('[live-monitor] could not load active candidates', error);
+    return res.status(500).json({ error: 'Could not load live candidates.' });
+  }
+});
+
+router.post('/batches/:batchId/live/students/:studentId/session', requireTenantUserManager, async (req: Request, res: Response) => {
+  const batchId = Number(req.params.batchId);
+  const studentId = Number(req.params.studentId);
+  if (!Number.isInteger(batchId) || batchId < 1 || !Number.isInteger(studentId) || studentId < 1) {
+    return res.status(400).json({ error: 'Invalid batch or student id.' });
+  }
+
+  try {
+    const activeAttempt = (await db.query(`
+      SELECT s.active_jti, b.record_mode, b.record_enabled, b.practice_exam_id
+      FROM students s JOIN batches b ON b.id = s.batch_id
+      WHERE s.id = ? AND s.batch_id = ? AND s.status = 'in_progress' AND s.active_jti IS NOT NULL
+    `, [studentId, batchId])).rows[0];
+    if (!activeAttempt) return res.status(409).json({ error: 'Candidate does not have an active exam attempt.' });
+    if (activeAttempt.practice_exam_id !== null && activeAttempt.practice_exam_id !== undefined) {
+      return res.status(409).json({ error: 'Live monitoring is available for regular exams only.' });
+    }
+    if (effectiveBatchRecordMode(activeAttempt.record_mode, activeAttempt.record_enabled, req.adminUser!.allowedRecordModes ?? ['none']) === 'none') {
+      return res.status(409).json({ error: 'Live monitoring requires an active recording mode for this batch.' });
+    }
+
+    const viewerSessionId = crypto.randomUUID();
+    const jti = String(activeAttempt.active_jti);
+    const config = await issueLiveSession({
+      actor: 'admin',
+      subject: `admin:${req.adminUser!.tenantSlug}:${req.adminUser!.id}:${viewerSessionId}`,
+      tenantSlug: req.adminUser!.tenantSlug!,
+      batchId,
+      studentId,
+      jti,
+    });
+    if (!config.enabled) return res.status(503).json({ error: 'Live monitoring is not configured.' });
+
+    await db.query(`
+      INSERT INTO live_monitor_audit
+        (viewer_session_id, admin_user_id, student_id, batch_id, attempt_jti_hash, outcome)
+      VALUES (?, ?, ?, ?, ?, 'connecting')
+    `, [viewerSessionId, req.adminUser!.id, studentId, batchId, attemptHash(jti)]);
+    return res.json({ ...config, viewerSessionId });
+  } catch (error) {
+    console.error('[live-monitor] could not create viewer session', error);
+    return res.status(500).json({ error: 'Could not create live viewing session.' });
+  }
+});
+
+router.post('/live/audit/:viewerSessionId/end', requireTenantUserManager, async (req: Request, res: Response) => {
+  const viewerSessionId = String(req.params.viewerSessionId || '');
+  const outcome = typeof req.body?.outcome === 'string'
+    && /^(connecting|connected_direct|connected_relay|failed|ended|timeout)$/.test(req.body.outcome)
+    ? req.body.outcome
+    : 'ended';
+  if (!/^[0-9a-f-]{36}$/i.test(viewerSessionId)) return res.status(400).json({ error: 'Invalid viewer session id.' });
+
+  try {
+    await db.query(`UPDATE live_monitor_audit
+      SET ended_at = CURRENT_TIMESTAMP, outcome = ?
+      WHERE viewer_session_id = ? AND admin_user_id = ?`, [outcome, viewerSessionId, req.adminUser!.id]);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('[live-monitor] could not close viewer session', error);
+    return res.status(500).json({ error: 'Could not close live viewing session.' });
+  }
+});
 
 // Client gửi UTC ISO string, server chỉ cần validate và normalize
 const toStorageTime = (isoStr: string): string => {
