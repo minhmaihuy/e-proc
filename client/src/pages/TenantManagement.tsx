@@ -441,7 +441,7 @@ function TenantManagement() {
                   <label className="field"><span>Repository</span><input value={form.repository_url} onChange={(event) => handleConfigChange('repository_url', event.target.value)} required /></label>
                   <label className="field"><span>Branch / tag</span><input value={form.repository_ref} onChange={(event) => handleConfigChange('repository_ref', event.target.value)} required /></label>
                   <label className="field"><span>Route53 zone ID</span><input value={form.route53_zone_id || ''} onChange={(event) => handleConfigChange('route53_zone_id', event.target.value)} /></label>
-                  <label className="field field-wide"><span>AWS Secrets Manager ARN</span><input type="password" autoComplete="off" placeholder="arn:aws:secretsmanager:..." value={form.secret_arn || ''} onChange={(event) => handleConfigChange('secret_arn', event.target.value)} /></label>
+                  <label className="field field-wide"><span>AWS Secrets Manager ARN</span><input type="password" autoComplete="off" placeholder="arn:aws:secretsmanager:..." value={form.secret_arn || ''} onChange={(event) => handleConfigChange('secret_arn', event.target.value)} /><small>Không bắt buộc khi lưu cấu hình draft, kể cả khi bật Record S3. Chỉ cần trước khi Approve hoặc chạy Terraform plan/apply.</small></label>
                 </div>
                 <div className="form-footer">
                   <p>Secrets remain in AWS Secrets Manager. Only the ARN is stored here.</p>

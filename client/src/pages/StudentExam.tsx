@@ -7,6 +7,7 @@ import {
   type StudentExamQuestion,
 } from '../services/api';
 import * as examRecorder from '../services/examRecorder';
+import { startLivePublisher, type LivePublisher } from '../services/livePublisher';
 import { getExamEnvironmentSnapshot } from '../services/examEnvironment';
 import { RapidInsertionDetector } from '../services/rapidInsertionDetector';
 import CodeEditor, { detectLanguage } from '../components/CodeEditor';
@@ -106,6 +107,7 @@ function StudentExam() {
   const submittingRef = useRef(false);
   const lastViolationTimeRef = useRef<number>(0);
   const rapidInsertionDetectorsRef = useRef(new Map<number, RapidInsertionDetector>());
+  const livePublisherRef = useRef<LivePublisher | null>(null);
   const currentQuestionIdRef = useRef<string | undefined>(undefined);
   const answersRef = useRef<{ [key: number]: string }>({});
   const navigate = useNavigate();
@@ -202,6 +204,36 @@ function StudentExam() {
   useEffect(() => {
     startedRef.current = started;
   }, [started]);
+
+  // An optional signaling channel is opened only after the regular exam and the
+  // already-approved recording capture are active. Live-monitor failure never
+  // interrupts an assessment or asks the candidate for a second screen share.
+  useEffect(() => {
+    if (!started || !recordEnabled || locked || submitting) {
+      const publisher = livePublisherRef.current;
+      livePublisherRef.current = null;
+      if (publisher) void publisher.stop();
+      return;
+    }
+
+    let cancelled = false;
+    void startLivePublisher()
+      .then((publisher) => {
+        if (cancelled) {
+          if (publisher) void publisher.stop();
+          return;
+        }
+        livePublisherRef.current = publisher;
+      })
+      .catch((error) => console.warn('[live-monitor] signaling unavailable', error));
+
+    return () => {
+      cancelled = true;
+      const publisher = livePublisherRef.current;
+      livePublisherRef.current = null;
+      if (publisher) void publisher.stop();
+    };
+  }, [locked, recordEnabled, started, submitting]);
 
   useEffect(() => {
     lockedRef.current = locked;

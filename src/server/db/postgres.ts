@@ -512,6 +512,21 @@ await client.query(`
   } catch (_) { /* already exists */ }
   console.log('[DB] admin_users ready');
 
+  // Audit metadata only: live WebRTC media never traverses or persists in this database.
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS live_monitor_audit (
+      viewer_session_id UUID PRIMARY KEY,
+      admin_user_id INTEGER NOT NULL REFERENCES admin_users(id) ON DELETE RESTRICT,
+      student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+      attempt_jti_hash CHAR(64) NOT NULL,
+      outcome VARCHAR(20) NOT NULL DEFAULT 'connecting',
+      started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      ended_at TIMESTAMP
+    )
+  `);
+  await client.query('CREATE INDEX IF NOT EXISTS idx_live_monitor_audit_student_started ON live_monitor_audit(student_id, started_at)');
+
   client.release();
   console.log('[DB] All PostgreSQL tables initialized');
 }
@@ -755,6 +770,24 @@ function initSqlite() {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    // Audit metadata only: the browser-to-browser WebRTC stream is never stored here.
+    sqliteDb.exec(`
+      CREATE TABLE IF NOT EXISTS live_monitor_audit (
+        viewer_session_id TEXT PRIMARY KEY,
+        admin_user_id INTEGER NOT NULL,
+        student_id INTEGER NOT NULL,
+        batch_id INTEGER NOT NULL,
+        attempt_jti_hash TEXT NOT NULL,
+        outcome TEXT NOT NULL DEFAULT 'connecting',
+        started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        ended_at DATETIME,
+        FOREIGN KEY (admin_user_id) REFERENCES admin_users(id) ON DELETE RESTRICT,
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+        FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
+      )
+    `);
+    sqliteDb.exec('CREATE INDEX IF NOT EXISTS idx_live_monitor_audit_student_started ON live_monitor_audit(student_id, started_at)');
 
     // Migration cho SQLite DB cũ: thêm cột nếu chưa có (SQLite không có IF NOT EXISTS cho ADD COLUMN)
     const batchCols = (sqliteDb.prepare("PRAGMA table_info(batches)").all() as { name: string }[]).map(c => c.name);

@@ -137,6 +137,20 @@ describe('BatchManagement Practice creation', () => {
     }));
   });
 
+  it('explains why default-only monitoring controls cannot be changed', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'Create New Batch' }));
+
+    expect(await screen.findByLabelText('Screen recording for this batch')).toBeDisabled();
+    expect(screen.getByLabelText('Identity verification')).toBeDisabled();
+    expect(screen.getByText(/Superadmin cần bật Local hoặc S3/)).toBeInTheDocument();
+    expect(screen.getByText(/ảnh giấy tờ tùy thân và ảnh khuôn mặt hiện tại/)).toBeInTheDocument();
+    expect(screen.getByText(/không tự động nhận diện khuôn mặt/)).toBeInTheDocument();
+    expect(screen.getByText(/Dropdown được giữ ở Off/)).toBeInTheDocument();
+  });
+
   it('disables the edit selector without tenant-admin permission and preserves a revoked stored mode', async () => {
     apiMocks.getRecordingConfig.mockResolvedValue({
       data: {

@@ -153,7 +153,7 @@ test('kiểm tra kết nối không làm thay đổi process.env đang chạy', 
 });
 
 test('danh sách khóa quản lý bao gồm các bí mật trọng yếu', () => {
-  for (const key of ['DATABASE_URL', 'JWT_SECRET', 'SESSION_SECRET']) {
+  for (const key of ['DATABASE_URL', 'JWT_SECRET', 'SESSION_SECRET', 'SUPABASE_REALTIME_PRIVATE_KEY_BASE64']) {
     assert.ok(MANAGED_SECRET_KEYS.includes(key), `${key} phải nằm trong danh sách quản lý`);
   }
   const { ignoredKeys } = classifySecretKeys({ NODE_ENV: 'production' });

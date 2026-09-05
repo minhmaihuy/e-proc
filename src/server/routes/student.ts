@@ -22,6 +22,7 @@ import {
   resolveTenantEvidencePolicy,
 } from '../services/tenantEvidencePolicy.js';
 import { getCurrentTenantConfig } from '../tenantContext.js';
+import { attemptHash, issueLiveSession } from '../services/liveMonitoring.js';
 
 dotenv.config();
 
@@ -452,6 +453,47 @@ router.post('/verify', verifyRateLimit, async (req: Request, res: Response) => {
   } catch (error: any) {
     if (sendExamGuardError(res, error)) return;
     res.status(500).json({ error: error.message });
+  }
+});
+
+// The signaling token is optional: a live-monitor configuration failure must never
+// block a candidate from completing an assessment. It is nevertheless bound to the
+// active student JWT attempt and an effective recording capability on every request.
+router.post('/live/session', studentAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { studentId, batchId, jti } = req.studentPayload!;
+    const activeAttempt = (await db.query(`
+      SELECT s.id, b.record_mode, b.record_enabled, b.practice_exam_id
+      FROM students s JOIN batches b ON b.id = s.batch_id
+      WHERE s.id = ? AND s.batch_id = ? AND s.status = 'in_progress' AND s.active_jti = ?
+    `, [studentId, batchId, jti])).rows[0];
+    if (!activeAttempt) return res.status(409).json({ error: 'Exam is not active.' });
+    if (activeAttempt.practice_exam_id !== null && activeAttempt.practice_exam_id !== undefined) {
+      return res.json({ enabled: false });
+    }
+
+    const tenantEvidence = await currentTenantEvidencePolicy();
+    if (effectiveBatchRecordMode(
+      activeAttempt.record_mode,
+      activeAttempt.record_enabled,
+      tenantEvidence.allowedRecordModes,
+    ) === 'none') {
+      return res.json({ enabled: false });
+    }
+
+    const tenantSlug = getCurrentTenantConfig().slug;
+    const config = await issueLiveSession({
+      actor: 'student',
+      subject: `student:${tenantSlug}:${studentId}:${attemptHash(jti).slice(0, 24)}`,
+      tenantSlug,
+      batchId,
+      studentId,
+      jti,
+    });
+    return res.json(config);
+  } catch (error) {
+    console.error('[live-monitor] could not create student signaling session', error);
+    return res.status(503).json({ error: 'Live monitoring is temporarily unavailable.' });
   }
 });
 
