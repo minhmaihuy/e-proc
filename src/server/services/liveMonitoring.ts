@@ -21,6 +21,7 @@ export interface LiveSessionConfig {
 
 const LIVE_TOKEN_TTL_SECONDS = 10 * 60;
 const TENANT_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const TURN_URL_PATTERN = /^turns?:[a-z0-9.-]+(?::\d{1,5})?(?:\?transport=(?:udp|tcp))?$/i;
 
 export function liveMonitoringEnabled(): boolean {
   // JWT_SECRET is already a mandatory startup invariant. The feature has no
@@ -51,6 +52,21 @@ function staticStunServers(): LiveIceServer[] {
   return [];
 }
 
+function selfHostedTurnServers(subject: string, expiresAt: number): LiveIceServer[] {
+  const secret = process.env.LIVE_TURN_SHARED_SECRET?.trim();
+  const urls = (process.env.LIVE_TURN_URLS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!secret || urls.length === 0 || urls.length > 4 || !urls.every((url) => TURN_URL_PATTERN.test(url))) return [];
+
+  // coturn's long-term credential mechanism accepts an expiry-prefixed username
+  // and an HMAC-SHA1 password. The shared secret never leaves the backend.
+  const username = `${expiresAt}:${subject.slice(0, 96)}`;
+  const credential = crypto.createHmac('sha1', secret).update(username).digest('base64');
+  return [{ urls, username, credential }];
+}
+
 export async function issueLiveSession(input: {
   actor: LiveActor;
   subject: string;
@@ -64,6 +80,8 @@ export async function issueLiveSession(input: {
 
   const topic = liveTopic(input.tenantSlug, input.batchId, input.studentId, input.jti);
   const now = Math.floor(Date.now() / 1000);
+  const expiresAt = now + LIVE_TOKEN_TTL_SECONDS;
+  const turnServers = selfHostedTurnServers(input.subject, expiresAt);
   const signalingToken = jwt.sign({
     iss: 'eproc-live-signaling',
     aud: 'eproc-live-signaling',
@@ -81,9 +99,9 @@ export async function issueLiveSession(input: {
     topic,
     signalingToken,
     signalingPath: '/api/live/signaling',
-    iceServers: staticStunServers(),
-    turnAvailable: false,
-    expiresAt: new Date((now + LIVE_TOKEN_TTL_SECONDS) * 1000).toISOString(),
+    iceServers: [...staticStunServers(), ...turnServers],
+    turnAvailable: turnServers.length > 0,
+    expiresAt: new Date(expiresAt * 1000).toISOString(),
   };
 }
 

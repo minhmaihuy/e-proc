@@ -30,6 +30,8 @@ export const MANAGED_SECRET_KEYS = Object.freeze([
   'SES_CONFIGURATION_SET',
   'SUPERADMIN_PASSWORD',
   'LIVE_MONITORING_ENABLED',
+  'LIVE_TURN_URLS',
+  'LIVE_TURN_SHARED_SECRET',
 ]);
 
 export const SECRET_ARN_PATTERN = /^arn:aws:secretsmanager:[a-z0-9-]+:\d{12}:secret:[A-Za-z0-9/_+=.@-]+$/;

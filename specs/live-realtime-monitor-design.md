@@ -29,9 +29,9 @@ own authenticated WebSocket signaling endpoint.
    rejected. Unknown capture surfaces fail closed, and this feature does not change
    evidence retention policy.
 7. Configuration names are allowlisted in managed secrets and tenant bootstrap. No
-   hosted broker, hosted STUN/TURN service, or external migration is required.
-   The initial no-third-party mode uses host ICE candidates only; a future relay
-   must be deployed and owned by the tenant/application.
+   hosted broker, hosted STUN/TURN service, or external migration is required. A
+   tenant-owned coturn relay may be configured with an expiring HMAC credential
+   issued by E-PROC; its shared secret never reaches a browser.
 
 ## Verification
 
