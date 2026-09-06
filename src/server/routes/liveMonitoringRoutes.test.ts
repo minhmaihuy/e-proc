@@ -36,3 +36,10 @@ test('self-hosted signaling requires an origin-checked short-lived token and nev
   assert.match(signalingSource, /tokenFromProtocols/);
   assert.doesNotMatch(signalingSource, /supabase|metered|open relay/i);
 });
+
+test('live session configuration can use only a tenant-owned coturn relay', () => {
+  const liveMonitoringSource = fs.readFileSync(path.resolve(process.cwd(), 'src/server/services/liveMonitoring.ts'), 'utf8');
+  assert.match(liveMonitoringSource, /LIVE_TURN_SHARED_SECRET/);
+  assert.match(liveMonitoringSource, /createHmac\('sha1'/);
+  assert.match(liveMonitoringSource, /TURN_URL_PATTERN/);
+});

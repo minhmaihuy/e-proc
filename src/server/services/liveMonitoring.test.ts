@@ -10,6 +10,8 @@ import {
 const LIVE_ENVIRONMENT_NAMES = [
   'LIVE_MONITORING_ENABLED',
   'JWT_SECRET',
+  'LIVE_TURN_URLS',
+  'LIVE_TURN_SHARED_SECRET',
 ] as const;
 
 async function withLiveEnvironment(
@@ -74,5 +76,26 @@ test('an enabled self-hosted session uses the existing server JWT secret only', 
     JWT_SECRET: 'self-hosted-signaling-secret',
   }, async () => {
     assert.equal(liveMonitoringEnabled(), true);
+  });
+});
+
+test('a self-hosted coturn relay receives an expiring HMAC credential without exposing its shared secret', async () => {
+  await withLiveEnvironment({
+    LIVE_MONITORING_ENABLED: 'true',
+    JWT_SECRET: 'self-hosted-signaling-secret',
+    LIVE_TURN_URLS: 'turn:turn.epoc.devfasttrack.cloud:3478?transport=udp,turns:turn.epoc.devfasttrack.cloud:5349?transport=tcp',
+    LIVE_TURN_SHARED_SECRET: 'turn-shared-secret-for-test',
+  }, async () => {
+    const session = await issueLiveSession({
+      actor: 'student', subject: 'student:42', tenantSlug: 'fsa-cls', batchId: 7, studentId: 42,
+      jti: '7a6bcac0-a243-4b9c-a801-a8d2e59a98cb',
+    });
+    assert.equal(session.turnAvailable, true);
+    assert.deepEqual(session.iceServers?.[0]?.urls, [
+      'turn:turn.epoc.devfasttrack.cloud:3478?transport=udp',
+      'turns:turn.epoc.devfasttrack.cloud:5349?transport=tcp',
+    ]);
+    assert.match(session.iceServers?.[0]?.username || '', /^\d+:student:42$/);
+    assert.notEqual(session.iceServers?.[0]?.credential, 'turn-shared-secret-for-test');
   });
 });
