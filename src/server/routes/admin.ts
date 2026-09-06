@@ -242,9 +242,8 @@ router.delete('/users/:id', requireTenantUserManager, async (req: Request, res: 
 // /users phía trên giữ requireTenantUserManager riêng vì chúng cần tenant_admin.
 router.use(requireTenantDataAdmin);
 
-// Live screen monitoring is opt-in and carries only WebRTC signaling through
-// Supabase. Media remains browser-to-browser (or through the configured TURN
-// relay). The old fork called its highest role `admin`; in this codebase that
+// Live screen monitoring is opt-in and carries WebRTC signaling only through the
+// application's same-origin WebSocket. Media remains browser-to-browser. The old fork called its highest role `admin`; in this codebase that
 // authority is `tenant_admin`, so every route has an explicit server-side guard.
 router.get('/batches/:batchId/live/students', requireTenantUserManager, async (req: Request, res: Response) => {
   const batchId = Number(req.params.batchId);
@@ -302,6 +301,7 @@ router.post('/batches/:batchId/live/students/:studentId/session', requireTenantU
       batchId,
       studentId,
       jti,
+      viewerSessionId,
     });
     if (!config.enabled) return res.status(503).json({ error: 'Live monitoring is not configured.' });
 

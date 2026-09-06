@@ -1,5 +1,4 @@
-import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
-import { closeLiveChannel, openLiveChannel, sendLiveSignal, type LiveSessionConfig, type LiveSignal } from './liveSignaling';
+import { closeLiveChannel, openLiveChannel, sendLiveSignal, type LiveChannel, type LiveSessionConfig, type LiveSignal } from './liveSignaling';
 
 export type LiveViewerStatus = 'connecting' | 'connected-direct' | 'connected-relay' | 'failed' | 'ended';
 
@@ -11,8 +10,7 @@ export async function startLiveViewer(
   config: LiveSessionConfig & { viewerSessionId: string },
   callbacks: { onStream(stream: MediaStream): void; onStatus(status: LiveViewerStatus): void },
 ): Promise<LiveViewer> {
-  let client: SupabaseClient | null = null;
-  let channel: RealtimeChannel | null = null;
+  let channel: LiveChannel | null = null;
   let peer: RTCPeerConnection | null = null;
   let stopped = false;
   let timeout: number | null = null;
@@ -26,7 +24,7 @@ export async function startLiveViewer(
       sendLiveSignal(channel, 'hangup', { sender: 'admin', viewerSessionId: config.viewerSessionId, target: config.viewerSessionId });
     }
     peer?.close();
-    await closeLiveChannel(client, channel);
+    await closeLiveChannel(channel);
     callbacks.onStatus(status);
   };
 
@@ -81,8 +79,7 @@ export async function startLiveViewer(
   };
 
   const opened = await openLiveChannel(config, (event, signal) => { void handleSignal(event, signal); });
-  client = opened.client;
-  channel = opened.channel;
+  channel = opened;
   callbacks.onStatus('connecting');
   sendLiveSignal(channel, 'watch-request', { sender: 'admin', viewerSessionId: config.viewerSessionId });
   timeout = window.setTimeout(() => { void close(true, 'failed'); }, 20_000);

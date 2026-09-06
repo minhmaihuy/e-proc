@@ -1,5 +1,7 @@
 import dotenv from 'dotenv';
+import http from 'node:http';
 import { AppSecretsError, isAppSecretsEnabled, loadAppSecrets } from './services/appSecrets.js';
+import { attachSelfHostedLiveSignaling } from './services/selfHostedLiveSignaling.js';
 
 dotenv.config();
 
@@ -28,7 +30,7 @@ async function bootstrap(): Promise<void> {
 
   const { default: app, initialization } = await import('./index.js');
   const PORT = parseInt(process.env.PORT || '3001');
-  let server: ReturnType<typeof app.listen> | null = null;
+  let server: http.Server | null = null;
 
   process.on('SIGINT', () => {
     console.log('\nShutting down...');
@@ -48,7 +50,10 @@ async function bootstrap(): Promise<void> {
     process.exit(1);
   }
 
-  server = app.listen(PORT, () => {
+  server = http.createServer(app);
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173').split(',').map((origin) => origin.trim()).filter(Boolean);
+  attachSelfHostedLiveSignaling(server, allowedOrigins);
+  server.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(`Health: http://localhost:${PORT}/api/health`);
     console.log(`API Base: http://localhost:${PORT}/api`);
