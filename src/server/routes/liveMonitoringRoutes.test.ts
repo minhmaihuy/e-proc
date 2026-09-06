@@ -5,6 +5,7 @@ import path from 'node:path';
 
 const adminSource = fs.readFileSync(path.resolve(process.cwd(), 'src/server/routes/admin.ts'), 'utf8');
 const studentSource = fs.readFileSync(path.resolve(process.cwd(), 'src/server/routes/student.ts'), 'utf8');
+const signalingSource = fs.readFileSync(path.resolve(process.cwd(), 'src/server/services/selfHostedLiveSignaling.ts'), 'utf8');
 
 test('live monitor administration is restricted to the current tenant administrator', () => {
   assert.match(adminSource, /router\.get\('\/batches\/:batchId\/live\/students',\s*requireTenantUserManager/);
@@ -25,4 +26,13 @@ test('student signaling is scoped to the JWT attempt and refuses an inactive or 
   assert.match(studentSource, /const \{ studentId, batchId, jti \} = req\.studentPayload!/);
   assert.match(studentSource, /active_jti = \?/);
   assert.match(studentSource, /effectiveBatchRecordMode\(/);
+});
+
+test('self-hosted signaling requires an origin-checked short-lived token and never imports a hosted broker', () => {
+  assert.match(signalingSource, /verifyLiveSignalingToken/);
+  assert.match(signalingSource, /isAllowedOrigin/);
+  assert.match(signalingSource, /MAX_MESSAGES_PER_WINDOW/);
+  assert.match(signalingSource, /const heartbeat = setInterval/);
+  assert.match(signalingSource, /tokenFromProtocols/);
+  assert.doesNotMatch(signalingSource, /supabase|metered|open relay/i);
 });

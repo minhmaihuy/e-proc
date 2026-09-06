@@ -1,9 +1,10 @@
-import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
 import { studentApi } from './api';
 import * as examRecorder from './examRecorder';
-import { closeLiveChannel, openLiveChannel, sendLiveSignal, type LiveSessionConfig, type LiveSignal, type LiveSignalEvent } from './liveSignaling';
+import { closeLiveChannel, openLiveChannel, sendLiveSignal, type LiveChannel, type LiveSessionConfig, type LiveSignal, type LiveSignalEvent } from './liveSignaling';
 
-const MAX_VIEWERS = 1;
+// Một thí sinh chỉ phục vụ một tenant_admin cùng lúc. Một admin vẫn có thể xem
+// nhiều thí sinh vì mỗi thí sinh dùng một topic WebRTC độc lập.
+const MAX_VIEWERS_PER_STUDENT = 1;
 
 export interface LivePublisher {
   stop(): Promise<void>;
@@ -14,8 +15,7 @@ export async function startLivePublisher(): Promise<LivePublisher | null> {
   const config = response.data as LiveSessionConfig;
   if (!config.enabled) return null;
 
-  let client: SupabaseClient | null = null;
-  let channel: RealtimeChannel | null = null;
+  let channel: LiveChannel | null = null;
   const peers = new Map<string, RTCPeerConnection>();
   let stopped = false;
 
@@ -45,7 +45,7 @@ export async function startLivePublisher(): Promise<LivePublisher | null> {
   const handleSignal = async (event: LiveSignalEvent, signal: LiveSignal) => {
     if (stopped || signal.sender !== 'admin') return;
     if (event === 'hangup' && signal.target) return closePeer(signal.target);
-    if (event !== 'watch-request' || peers.size >= MAX_VIEWERS || peers.has(signal.viewerSessionId)) return;
+    if (event !== 'watch-request' || peers.size >= MAX_VIEWERS_PER_STUDENT || peers.has(signal.viewerSessionId)) return;
 
     const capture = examRecorder.getCaptureStream();
     const track = capture?.getVideoTracks()[0];
@@ -86,8 +86,7 @@ export async function startLivePublisher(): Promise<LivePublisher | null> {
     }
     void handleSignal(event, signal);
   });
-  client = opened.client;
-  channel = opened.channel;
+  channel = opened;
 
   return {
     async stop() {
@@ -95,7 +94,7 @@ export async function startLivePublisher(): Promise<LivePublisher | null> {
       stopped = true;
       unsubscribeCapture();
       for (const viewerSessionId of [...peers.keys()]) closePeer(viewerSessionId, true);
-      await closeLiveChannel(client, channel);
+      await closeLiveChannel(channel);
     },
   };
 }

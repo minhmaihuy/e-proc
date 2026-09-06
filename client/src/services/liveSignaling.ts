@@ -1,5 +1,3 @@
-import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
-
 export interface LiveIceServer {
   urls: string | string[];
   username?: string;
@@ -9,9 +7,8 @@ export interface LiveIceServer {
 export interface LiveSessionConfig {
   enabled: boolean;
   topic?: string;
-  realtimeToken?: string;
-  supabaseUrl?: string;
-  supabasePublishableKey?: string;
+  signalingToken?: string;
+  signalingPath?: string;
   iceServers?: LiveIceServer[];
   turnAvailable?: boolean;
   expiresAt?: string;
@@ -30,53 +27,43 @@ const SIGNAL_EVENTS: LiveSignalEvent[] = ['watch-request', 'offer', 'answer', 'i
 const UUID_PATTERN = /^[0-9a-f-]{36}$/i;
 const MAX_SIGNAL_BYTES = 64 * 1024;
 
+export interface LiveChannel {
+  socket: WebSocket;
+}
+
 export async function openLiveChannel(
   config: LiveSessionConfig,
   onSignal: (event: LiveSignalEvent, signal: LiveSignal) => void,
-): Promise<{ client: SupabaseClient; channel: RealtimeChannel }> {
-  if (!config.enabled || !config.topic || !config.realtimeToken || !config.supabaseUrl || !config.supabasePublishableKey) {
+): Promise<LiveChannel> {
+  if (!config.enabled || !config.topic || !config.signalingToken) {
     throw new Error('Live monitoring is not configured.');
   }
-
-  const client = createClient(config.supabaseUrl, config.supabasePublishableKey, {
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  const endpoint = new URL(config.signalingPath || '/api/live/signaling', window.location.origin);
+  endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(endpoint, ['eproc-live', config.signalingToken]);
+  socket.addEventListener('message', (message) => {
+    if (typeof message.data !== 'string' || message.data.length > MAX_SIGNAL_BYTES) return;
+    try {
+      const value = JSON.parse(message.data) as { event?: LiveSignalEvent; signal?: unknown };
+      if (SIGNAL_EVENTS.includes(value.event as LiveSignalEvent) && isLiveSignal(value.signal)) onSignal(value.event!, value.signal);
+    } catch { /* Invalid server payload must not affect the assessment. */ }
   });
-  client.realtime.setAuth(config.realtimeToken);
-  const channel = client.channel(config.topic, { config: { private: true } });
-  for (const event of SIGNAL_EVENTS) {
-    channel.on('broadcast', { event }, ({ payload }) => {
-      if (isLiveSignal(payload)) onSignal(event, payload);
-    });
-  }
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const timeout = window.setTimeout(() => reject(new Error('Signaling connection timed out.')), 12_000);
-      channel.subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          window.clearTimeout(timeout);
-          resolve();
-        }
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-          window.clearTimeout(timeout);
-          reject(new Error(`Signaling channel ${status.toLowerCase()}.`));
-        }
-      });
-    });
-    return { client, channel };
-  } catch (error) {
-    await client.removeChannel(channel);
-    throw error;
-  }
+  await new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error('Signaling connection timed out.')), 12_000);
+    socket.addEventListener('open', () => { window.clearTimeout(timeout); resolve(); }, { once: true });
+    socket.addEventListener('error', () => { window.clearTimeout(timeout); reject(new Error('Signaling connection failed.')); }, { once: true });
+    socket.addEventListener('close', () => { window.clearTimeout(timeout); reject(new Error('Signaling connection closed.')); }, { once: true });
+  });
+  return { socket };
 }
 
-export function sendLiveSignal(channel: RealtimeChannel, event: LiveSignalEvent, signal: LiveSignal): void {
+export function sendLiveSignal(channel: LiveChannel, event: LiveSignalEvent, signal: LiveSignal): void {
   if (!isLiveSignal(signal) || JSON.stringify(signal).length > MAX_SIGNAL_BYTES) return;
-  void channel.send({ type: 'broadcast', event, payload: signal });
+  if (channel.socket.readyState === WebSocket.OPEN) channel.socket.send(JSON.stringify({ event, signal }));
 }
 
-export async function closeLiveChannel(client: SupabaseClient | null, channel: RealtimeChannel | null): Promise<void> {
-  if (client && channel) await client.removeChannel(channel);
+export async function closeLiveChannel(channel: LiveChannel | null): Promise<void> {
+  if (channel && channel.socket.readyState < WebSocket.CLOSING) channel.socket.close(1000, 'Ended');
 }
 
 export function isLiveSignal(value: unknown): value is LiveSignal {
