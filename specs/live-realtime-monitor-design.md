@@ -31,7 +31,9 @@ own authenticated WebSocket signaling endpoint.
 7. Configuration names are allowlisted in managed secrets and tenant bootstrap. No
    hosted broker, hosted STUN/TURN service, or external migration is required. A
    tenant-owned coturn relay may be configured with an expiring HMAC credential
-   issued by E-PROC; its shared secret never reaches a browser.
+   issued by E-PROC; its shared secret never reaches a browser. Deployment
+   configures the root-owned relay only from the protected host environment,
+   checks TLS before enabling `turns:`, and leaves PM2 unchanged on relay failure.
 
 ## Verification
 
