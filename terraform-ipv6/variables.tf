@@ -22,6 +22,41 @@ variable "app_subdomain" {
   default     = "epoc"
 }
 
+variable "turn_subdomain" {
+  description = "Leftmost label for the tenant-owned TURN relay (turn + app_subdomain + domain_name)"
+  type        = string
+  default     = "turn"
+
+  validation {
+    condition     = can(regex("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$", var.turn_subdomain))
+    error_message = "turn_subdomain must be one lowercase DNS label."
+  }
+}
+
+variable "live_turn_enabled" {
+  description = "Enable the self-hosted coturn relay and its narrowly scoped ingress rules"
+  type        = bool
+  default     = false
+}
+
+variable "live_turn_tls_enabled" {
+  description = "Advertise turns: only after a publicly trusted certificate exists for the TURN hostname"
+  type        = bool
+  default     = false
+}
+
+variable "live_turn_shared_secret" {
+  description = "coturn REST shared secret; required only when live_turn_enabled is true"
+  type        = string
+  sensitive   = true
+  default     = ""
+
+  validation {
+    condition     = !can(regex("[\"\\\\]", var.live_turn_shared_secret))
+    error_message = "live_turn_shared_secret must not contain a double quote or backslash."
+  }
+}
+
 # --- EC2 ---
 variable "instance_type" {
   description = "EC2 instance type"

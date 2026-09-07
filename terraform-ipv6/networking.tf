@@ -118,6 +118,50 @@ resource "aws_security_group" "eaudit_sg" {
     ipv6_cidr_blocks = ["::/0"]
   }
 
+  dynamic "ingress" {
+    for_each = var.live_turn_enabled ? ["tcp"] : []
+    content {
+      description      = "Self-hosted TURN TCP over IPv6"
+      from_port        = 3478
+      to_port          = 3478
+      protocol         = "tcp"
+      ipv6_cidr_blocks = ["::/0"]
+    }
+  }
+
+  dynamic "ingress" {
+    for_each = var.live_turn_enabled ? ["udp"] : []
+    content {
+      description      = "Self-hosted TURN UDP over IPv6"
+      from_port        = 3478
+      to_port          = 3478
+      protocol         = "udp"
+      ipv6_cidr_blocks = ["::/0"]
+    }
+  }
+
+  dynamic "ingress" {
+    for_each = var.live_turn_enabled && var.live_turn_tls_enabled ? ["turns"] : []
+    content {
+      description      = "Self-hosted TURNS TCP over IPv6"
+      from_port        = 5349
+      to_port          = 5349
+      protocol         = "tcp"
+      ipv6_cidr_blocks = ["::/0"]
+    }
+  }
+
+  dynamic "ingress" {
+    for_each = var.live_turn_enabled ? ["relay"] : []
+    content {
+      description      = "Self-hosted TURN UDP relay range over IPv6"
+      from_port        = 49152
+      to_port          = 49200
+      protocol         = "udp"
+      ipv6_cidr_blocks = ["::/0"]
+    }
+  }
+
   # Outbound Rules (Allow all IPv6 outbound, e.g. downloading dependencies)
   egress {
     description      = "All outbound IPv6"

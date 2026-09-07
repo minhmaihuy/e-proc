@@ -85,14 +85,14 @@ fi
 umask 077
 {
   printf '%s\n' '# Managed by /opt/eaudit/app/deploy/scripts/configure-coturn.sh'
-  printf '%s\n' 'listening-port=3478' 'tls-listening-port=5349' 'fingerprint'
+  printf '%s\n' 'listening-port=3478' 'fingerprint'
   printf '%s\n' 'use-auth-secret' "static-auth-secret=$TURN_SECRET"
   printf '%s\n' "realm=$TURN_HOST" 'no-loopback-peers' 'no-multicast-peers'
   printf '%s\n' 'no-cli' 'no-tlsv1' 'no-tlsv1_1' 'min-port=49152' 'max-port=49200'
   [ -n "$TURN_LISTENING_IP" ] && printf '%s\n' "listening-ip=$TURN_LISTENING_IP"
   [ -n "$TURN_RELAY_IP" ] && printf '%s\n' "relay-ip=$TURN_RELAY_IP"
   if [[ ",$TURN_URLS," == *"turns:$TURN_HOST:"* ]]; then
-    printf '%s\n' "cert=$CERT_FILE" "pkey=$KEY_FILE"
+    printf '%s\n' 'tls-listening-port=5349' "cert=$CERT_FILE" "pkey=$KEY_FILE"
   fi
 } > "$TURN_CONFIG"
 chmod 600 "$TURN_CONFIG"
@@ -102,7 +102,7 @@ chmod 600 "$TURN_CONFIG"
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
   ufw allow 3478/tcp
   ufw allow 3478/udp
-  ufw allow 5349/tcp
+  [[ ",$TURN_URLS," == *"turns:$TURN_HOST:"* ]] && ufw allow 5349/tcp
   ufw allow 49152:49200/udp
 fi
 
