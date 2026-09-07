@@ -86,6 +86,19 @@ echo ""
 echo ">>> Pulling latest code..."
 git pull --ff-only origin main
 
+# coturn is a root-owned system service. Run its reconciler only when TURN is
+# configured; invoking this deploy script through sudo gives the deploy user a
+# non-interactive sudo ticket after the deliberate root-to-app-user handoff.
+if grep -Eq '^LIVE_TURN_URLS=.+$' "$CANONICAL_ENV"; then
+  echo ""
+  echo ">>> Reconciling self-hosted coturn relay..."
+  if ! sudo -n bash "$APP_DIR/deploy/scripts/configure-coturn.sh" "$CANONICAL_ENV"; then
+    echo "!!! coturn configuration failed; application process was left unchanged." >&2
+    echo "!!! Run this deploy command through sudo after checking TURN DNS, TLS, and AWS security-group rules." >&2
+    exit 1
+  fi
+fi
+
 # Stop before npm can silently omit Node-incompatible optional native packages.
 node scripts/verify-node-version.mjs
 
@@ -131,12 +144,13 @@ echo ""
 echo ">>> Waiting for app to start..."
 sleep 5
 
-if ! HEALTH=$(curl --fail --silent --show-error --max-time 10 http://localhost:3001/api/health); then
+if HEALTH="$(curl --fail --silent --show-error --max-time 10 http://localhost:3001/api/health)"; then
+  echo "    Health: $HEALTH"
+else
   echo "!!! Health check failed. Recent bounded PM2 logs follow:" >&2
   pm2 logs eaudit --lines 50 --nostream || true
   exit 1
 fi
-echo "    Health: $HEALTH"
 
 echo ""
 echo "============================================"
