@@ -184,6 +184,10 @@ resource "aws_instance" "eaudit" {
     node_env        = var.node_env
     app_port        = var.app_port
     domain_name     = var.app_subdomain != "" ? "${var.app_subdomain}.${var.domain_name}" : var.domain_name
+    turn_domain     = var.app_subdomain != "" ? "${var.turn_subdomain}.${var.app_subdomain}.${var.domain_name}" : "${var.turn_subdomain}.${var.domain_name}"
+    live_turn_enabled = var.live_turn_enabled
+    live_turn_tls_enabled = var.live_turn_tls_enabled
+    live_turn_shared_secret = var.live_turn_shared_secret
     www_domain_name = "" # No WWW subdomain for subdomain setups
     s3_bucket       = aws_s3_bucket.backup.id
     aws_region      = var.aws_region
@@ -202,5 +206,10 @@ resource "aws_instance" "eaudit" {
 
   lifecycle {
     ignore_changes = [ami]
+
+    precondition {
+      condition     = !var.live_turn_enabled || length(trimspace(var.live_turn_shared_secret)) >= 32
+      error_message = "live_turn_shared_secret must be at least 32 characters when live_turn_enabled is true."
+    }
   }
 }

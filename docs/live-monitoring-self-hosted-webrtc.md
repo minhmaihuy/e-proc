@@ -60,6 +60,14 @@ third-party key is required. Restart the backend after changing the flag.
 `LIVE_TURN_HOST` to a separate DNS-only relay hostname, and point its AAAA/A
 record directly to the relay VM. A normal Cloudflare proxy cannot carry TURN UDP.
 
+For the current IPv6 Terraform deployment, the project persists this hostname as
+`turn_subdomain` and derives `turn.<app_subdomain>.<domain_name>`—therefore
+`turn.epoc.devfasttrack.cloud` with the checked-in example values. Set
+`live_turn_enabled=true` plus the shared secret only in ignored
+`terraform.tfvars`; set `live_turn_tls_enabled=true` only after the public TLS
+certificate is present. Terraform opens the relay ports only while enabled; it
+does not create the Cloudflare DNS record.
+
 The deployment script configures `use-auth-secret` with the same
 `LIVE_TURN_SHARED_SECRET`, a TLS certificate valid for the relay hostname, a
 bounded relay port range, and no anonymous/static users:

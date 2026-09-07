@@ -208,6 +208,15 @@ FSA_TENANT_ADMIN_PASSWORD="${fsa_tenant_admin_password}"
 
 USE_SQLITE=false
 ALLOWED_ORIGINS=https://${domain_name}
+%{ if live_turn_enabled }
+
+# Tenant-owned TURN relay. The hostname is stored here so E-PROC and coturn
+# always agree; the shared secret is owner-only with the rest of this file.
+LIVE_MONITORING_ENABLED=true
+LIVE_TURN_HOST=${turn_domain}
+LIVE_TURN_SHARED_SECRET="${live_turn_shared_secret}"
+LIVE_TURN_URLS=turn:${turn_domain}:3478?transport=udp,turn:${turn_domain}:3478?transport=tcp%{ if live_turn_tls_enabled },turns:${turn_domain}:5349?transport=tcp%{ endif }
+%{ endif }
 ENVEOF
 chown ubuntu:ubuntu /opt/eaudit/.env
 chmod 600 /opt/eaudit/.env
@@ -523,6 +532,14 @@ echo "    Cron jobs configured"
 echo ">>> Configuring firewall..."
 ufw allow OpenSSH
 ufw allow 'Nginx Full'
+%{ if live_turn_enabled }
+ufw allow 3478/tcp
+ufw allow 3478/udp
+%{ if live_turn_tls_enabled }
+ufw allow 5349/tcp
+%{ endif }
+ufw allow 49152:49200/udp
+%{ endif }
 ufw --force enable
 
 # =============================================================================

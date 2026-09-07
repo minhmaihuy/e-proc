@@ -17,6 +17,11 @@ output "app_url" {
   value       = "https://${var.app_subdomain != "" ? "${var.app_subdomain}.${var.domain_name}" : var.domain_name}"
 }
 
+output "turn_domain" {
+  description = "DNS-only hostname for the tenant-owned coturn relay"
+  value       = var.app_subdomain != "" ? "${var.turn_subdomain}.${var.app_subdomain}.${var.domain_name}" : "${var.turn_subdomain}.${var.domain_name}"
+}
+
 # --- RDS ---
 output "rds_endpoint" {
   description = "RDS PostgreSQL endpoint (host:port)"
@@ -55,6 +60,7 @@ output "connectivity_guide" {
     │    - Add an AAAA record pointing 'epoc' to:                            │
     │      ${aws_instance.eaudit.ipv6_addresses[0]}                          │
     │    - Enable Cloudflare SSL/TLS Proxy and set to "Full" or "Full(strict)"│
+    │    - Add DNS-only AAAA '${var.app_subdomain != "" ? "${var.turn_subdomain}.${var.app_subdomain}" : var.turn_subdomain}' for TURN to the same IPv6 address. │
     └────────────────────────────────────────────────────────────────────────┘
   EOT
 }

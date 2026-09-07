@@ -34,6 +34,9 @@ own authenticated WebSocket signaling endpoint.
    issued by E-PROC; its shared secret never reaches a browser. Deployment
    configures the root-owned relay only from the protected host environment,
    checks TLS before enabling `turns:`, and leaves PM2 unchanged on relay failure.
+   The IPv6 Terraform deployment persists the relay FQDN as
+   `turn.<app_subdomain>.<domain_name>`, writes only opt-in relay configuration,
+   and limits relay ingress to the required port ranges.
 
 ## Verification
 

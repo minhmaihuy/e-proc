@@ -12,6 +12,13 @@ aws_region = "ap-southeast-1"
 # Domain
 domain_name   = "devfasttrack.cloud"
 app_subdomain = "epoc" # Final FSA-CLS URL: https://epoc.devfasttrack.cloud
+# TURN hostname persisted by Terraform: turn.epoc.devfasttrack.cloud.
+# Create this AAAA record in Cloudflare as DNS-only (gray cloud).
+turn_subdomain = "turn"
+live_turn_enabled = false
+# Set true only after a public certificate exists for the TURN hostname.
+live_turn_tls_enabled = false
+# live_turn_shared_secret = "<set-locally-and-match-coturn>"
 
 # EC2
 instance_type         = "t3.micro"
