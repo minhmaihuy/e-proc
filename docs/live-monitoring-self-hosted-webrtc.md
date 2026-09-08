@@ -55,8 +55,10 @@ third-party key is required. Restart the backend after changing the flag.
 
 `deploy/scripts/configure-coturn.sh` installs and configures coturn during
 `sudo /opt/eaudit/deploy.sh` when both `LIVE_TURN_URLS` and
-`LIVE_TURN_SHARED_SECRET` exist in `/opt/eaudit/.env`. It writes the root-owned
-`/etc/turnserver.conf`; do not commit this file or the secret. Set
+`LIVE_TURN_SHARED_SECRET` exist in `/opt/eaudit/.env`. It writes the
+secret-bearing `/etc/turnserver.conf` as `root:turnserver` mode `640`, so the
+coturn systemd account can read it while other host users cannot. Do not commit
+this file or the secret. Set
 `LIVE_TURN_HOST` to a separate DNS-only relay hostname, and point its AAAA/A
 record directly to the relay VM. A normal Cloudflare proxy cannot carry TURN UDP.
 

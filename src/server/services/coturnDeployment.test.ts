@@ -30,7 +30,9 @@ test('coturn deployment uses protected credentials and rejects unsafe relay stat
   assert.match(coturnScript, /min-port=49152/);
   assert.match(coturnScript, /max-port=49200/);
   assert.match(coturnScript, /turns: is configured but its TLS certificate\/key are not readable/);
-  assert.match(coturnScript, /chmod 600 "\$TURN_CONFIG"/);
+  assert.match(coturnScript, /chown root:turnserver "\$TURN_CONFIG"/);
+  assert.match(coturnScript, /chmod 640 "\$TURN_CONFIG"/);
+  assert.doesNotMatch(coturnScript, /chmod 600 "\$TURN_CONFIG"/);
   assert.match(coturnScript, /systemctl is-active --quiet coturn/);
   assert.doesNotMatch(coturnScript, /echo .*TURN_SECRET/);
 });

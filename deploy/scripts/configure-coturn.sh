@@ -95,7 +95,12 @@ umask 077
     printf '%s\n' 'tls-listening-port=5349' "cert=$CERT_FILE" "pkey=$KEY_FILE"
   fi
 } > "$TURN_CONFIG"
-chmod 600 "$TURN_CONFIG"
+# The unit runs the daemon as `turnserver`, so root-only mode would make
+# turnserver silently fall back to its defaults (no HMAC auth/TLS listener).
+# Keep the shared secret private while granting that service account read-only
+# access through its dedicated group.
+chown root:turnserver "$TURN_CONFIG"
+chmod 640 "$TURN_CONFIG"
 
 # Security groups remain authoritative at AWS. Mirror the necessary rules in
 # UFW only when the host administrator has explicitly enabled it.

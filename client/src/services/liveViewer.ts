@@ -16,10 +16,17 @@ export async function startLiveViewer(
   let timeout: number | null = null;
   const pendingCandidates: RTCIceCandidateInit[] = [];
 
+  const clearConnectionTimeout = () => {
+    if (timeout !== null) {
+      window.clearTimeout(timeout);
+      timeout = null;
+    }
+  };
+
   const close = async (notify: boolean, status: LiveViewerStatus) => {
     if (stopped) return;
     stopped = true;
-    if (timeout !== null) window.clearTimeout(timeout);
+    clearConnectionTimeout();
     if (notify && channel) {
       sendLiveSignal(channel, 'hangup', { sender: 'admin', viewerSessionId: config.viewerSessionId, target: config.viewerSessionId });
     }
@@ -62,7 +69,10 @@ export async function startLiveViewer(
       });
     };
     peer.onconnectionstatechange = () => {
-      if (peer?.connectionState === 'connected') void classifyTransport();
+      if (peer?.connectionState === 'connected') {
+        clearConnectionTimeout();
+        void classifyTransport();
+      }
       if (peer?.connectionState === 'failed') void close(true, 'failed');
     };
     try {
