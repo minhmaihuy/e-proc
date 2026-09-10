@@ -40,6 +40,7 @@ import {
 
 type BatchRecordMode = 'none' | 'local' | 's3';
 type BatchIdentityMode = 'off' | 'photo';
+type BatchLiveMonitorMode = 'off' | 'self_hosted' | 'supabase';
 type RecordingConfigStatus = 'loading' | 'ready' | 'unavailable';
 
 const RECORD_MODE_OPTIONS: readonly { value: BatchRecordMode; label: string }[] = [
@@ -48,12 +49,22 @@ const RECORD_MODE_OPTIONS: readonly { value: BatchRecordMode; label: string }[] 
   { value: 's3', label: 'Record S3 (Save to AWS S3)' },
 ];
 
+const LIVE_MONITOR_MODE_OPTIONS: readonly { value: BatchLiveMonitorMode; label: string }[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'self_hosted', label: 'Self-hosted signaling + coturn' },
+  { value: 'supabase', label: 'Supabase Realtime + Metered TURN' },
+];
+
 function recordModeLabel(mode: BatchRecordMode): string {
   return RECORD_MODE_OPTIONS.find((option) => option.value === mode)?.label || mode;
 }
 
 function isBatchRecordMode(value: unknown): value is BatchRecordMode {
   return RECORD_MODE_OPTIONS.some((option) => option.value === value);
+}
+
+function isBatchLiveMonitorMode(value: unknown): value is BatchLiveMonitorMode {
+  return LIVE_MONITOR_MODE_OPTIONS.some((option) => option.value === value);
 }
 
 function isBatchIdentityMode(value: unknown): value is BatchIdentityMode {
@@ -99,6 +110,7 @@ function BatchManagement() {
     blueprint: [] as BlueprintItem[],
     blueprintByType: [] as BlueprintItemByType[],
     record_mode: 'none' as BatchRecordMode,
+    live_monitor_mode: 'off' as BatchLiveMonitorMode,
     exam_type: 'essay' as 'essay' | 'quiz',
     identity_verification: 'off' as 'off' | 'photo',
     practice_exam_id: null as number | null,
@@ -199,6 +211,14 @@ function BatchManagement() {
     loadTypeStats();
     loadModuleTypeStats();
   }, []);
+
+  // Live monitoring reuses the approved screen recording stream and never runs
+  // for Practice. Keep the submitted state coherent before the backend enforces it.
+  useEffect(() => {
+    if ((formData.record_mode === 'none' || batchSource === 'practice') && formData.live_monitor_mode !== 'off') {
+      setFormData((previous) => ({ ...previous, live_monitor_mode: 'off' }));
+    }
+  }, [batchSource, formData.live_monitor_mode, formData.record_mode]);
 
 
   useEffect(() => {
@@ -417,6 +437,7 @@ function BatchManagement() {
       end_time: utcToLocalInput(batch.end_time),
       blueprint: moduleItems,
       blueprintByType: typeItems,
+      live_monitor_mode: isBatchLiveMonitorMode(batch.live_monitor_mode) ? batch.live_monitor_mode : 'off',
     });
   };
 
@@ -450,6 +471,7 @@ function BatchManagement() {
         duration: editingBatch.duration,
         blueprint: blueprintPayload,
         record_mode: editingBatch.record_mode || 'none',
+        live_monitor_mode: isBatchLiveMonitorMode(editingBatch.live_monitor_mode) ? editingBatch.live_monitor_mode : 'off',
         exam_type: editingBatch.exam_type === 'quiz' ? 'quiz' : 'essay',
         identity_verification: editingBatch.identity_verification || 'off',
       });
@@ -484,12 +506,13 @@ function BatchManagement() {
           duration: formData.duration,
           practice_exam_id: formData.practice_exam_id,
           record_mode: formData.record_mode,
+          live_monitor_mode: 'off',
           exam_type: formData.exam_type,
           identity_verification: formData.identity_verification,
         });
         const practiceBatchId = res.data.id;
         setShowForm(false);
-        setFormData({ name: '', start_time: '', end_time: '', duration: 30, blueprint: [], blueprintByType: [], record_mode: 'none', exam_type: 'essay', identity_verification: 'off', practice_exam_id: null });
+        setFormData({ name: '', start_time: '', end_time: '', duration: 30, blueprint: [], blueprintByType: [], record_mode: 'none', live_monitor_mode: 'off', exam_type: 'essay', identity_verification: 'off', practice_exam_id: null });
         setBatchSource('question_bank');
         loadBatches();
         // Mời học viên ngay, giống hệt nhánh ngân hàng câu hỏi: một đợt thi chưa có
@@ -538,13 +561,14 @@ function BatchManagement() {
         duration: formData.duration,
         blueprint: blueprintPayload,
         record_mode: formData.record_mode,
+        live_monitor_mode: formData.live_monitor_mode,
         exam_type: formData.exam_type,
         identity_verification: formData.identity_verification,
       });
       console.log('[BatchManagement] Response:', res.data);
       const batchId = res.data.id;
       setShowForm(false);
-      setFormData({ name: '', start_time: '', end_time: '', duration: 30, blueprint: [], blueprintByType: [], record_mode: 'none', exam_type: 'essay', identity_verification: 'off', practice_exam_id: null });
+      setFormData({ name: '', start_time: '', end_time: '', duration: 30, blueprint: [], blueprintByType: [], record_mode: 'none', live_monitor_mode: 'off', exam_type: 'essay', identity_verification: 'off', practice_exam_id: null });
       setBlueprintMode('module');
       loadBatches();
       setSelectedBatchId(batchId);
@@ -658,6 +682,9 @@ function BatchManagement() {
   const editingRecordModeRevoked = Boolean(
     editingBatch && !recordingConfig.allowed.includes(editingRecordMode),
   );
+  const editingLiveMonitorMode: BatchLiveMonitorMode = isBatchLiveMonitorMode(editingBatch?.live_monitor_mode)
+    ? editingBatch.live_monitor_mode
+    : 'off';
   const editingIdentityMode: BatchIdentityMode = isBatchIdentityMode(editingBatch?.identity_verification)
     ? editingBatch.identity_verification
     : 'off';
@@ -801,7 +828,10 @@ function BatchManagement() {
                     aria-describedby="create-batch-record-mode-help"
                     value={formData.record_mode}
                     disabled={!recordingConfig.canChange || recordingConfig.allowed.length <= 1}
-                    onChange={e => setFormData(prev => ({ ...prev, record_mode: e.target.value as BatchRecordMode }))}
+                    onChange={e => setFormData(prev => {
+                      const recordMode = e.target.value as BatchRecordMode;
+                      return { ...prev, record_mode: recordMode, live_monitor_mode: recordMode === 'none' ? 'off' : prev.live_monitor_mode };
+                    })}
                     className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:bg-slate-100"
                   >
                     {RECORD_MODE_OPTIONS
@@ -830,6 +860,28 @@ function BatchManagement() {
                       ⚠ Máy chủ chưa cấu hình S3 — video sẽ không tải lên được.
                     </p>
                   )}
+                </div>
+
+                <div className="space-y-2">
+                  <label htmlFor="create-batch-live-monitor-mode" className="block text-sm font-bold text-slate-700">
+                    Live screen monitor transport
+                  </label>
+                  <select
+                    id="create-batch-live-monitor-mode"
+                    aria-describedby="create-batch-live-monitor-mode-help"
+                    value={formData.live_monitor_mode}
+                    disabled={!recordingConfig.canChange || formData.record_mode === 'none' || batchSource === 'practice'}
+                    onChange={e => setFormData(prev => ({ ...prev, live_monitor_mode: e.target.value as BatchLiveMonitorMode }))}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:bg-slate-100"
+                  >
+                    {LIVE_MONITOR_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                  <p id="create-batch-live-monitor-mode-help" className="text-xs text-slate-500">
+                    Chỉ tenant admin chọn cho từng đợt thi thường có ghi màn hình. Video luôn đi trực tiếp giữa browser; Supabase chỉ chuyển signaling và Metered chỉ cấp TURN.
+                  </p>
+                  {!recordingConfig.canChange && <p className="text-xs text-amber-600 font-medium">Chỉ tenant admin đổi được cấu hình này.</p>}
+                  {formData.record_mode === 'none' && <p className="text-xs text-slate-500">Bật Local hoặc S3 trước khi chọn Live monitor.</p>}
+                  {batchSource === 'practice' && <p className="text-xs text-slate-500">Practice không hỗ trợ Live monitor.</p>}
                 </div>
 
                 <div className="space-y-2">
@@ -1245,7 +1297,7 @@ function BatchManagement() {
                         <Link to={`/admin/batches/${batch.id}/results`} className="inline-flex items-center px-3 py-1.5 bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 rounded-md text-xs font-bold transition-colors">
                           Results
                         </Link>
-                        {isTenantAdmin && batch.record_mode !== 'none' && !batch.practice_exam_id && (
+                        {isTenantAdmin && batch.record_mode !== 'none' && batch.live_monitor_mode !== 'off' && !batch.practice_exam_id && (
                           <Link to={`/admin/batches/${batch.id}/live`} className="inline-flex items-center px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-md text-xs font-bold transition-colors">
                             Live
                           </Link>
@@ -1424,7 +1476,10 @@ function BatchManagement() {
                   aria-describedby="edit-batch-record-mode-help"
                   value={editingRecordMode}
                   disabled={!recordingConfig.canChange}
-                  onChange={e => setEditingBatch({ ...editingBatch, record_mode: e.target.value as BatchRecordMode })}
+                  onChange={e => {
+                    const recordMode = e.target.value as BatchRecordMode;
+                    setEditingBatch({ ...editingBatch, record_mode: recordMode, live_monitor_mode: recordMode === 'none' ? 'off' : editingLiveMonitorMode });
+                  }}
                   className="px-4 py-2.5 rounded-xl border border-slate-300 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none text-slate-900 min-w-[300px] disabled:bg-slate-50 disabled:text-slate-500"
                 >
                   {editingRecordModeRevoked && (
@@ -1449,8 +1504,27 @@ function BatchManagement() {
                 {!recordingConfig.canChange && (
                   <p className="mt-2 text-sm text-amber-600 font-medium">Only tenant admin accounts can change this batch setting.</p>
                 )}
-              </div>
-              <div>
+                </div>
+                <div>
+                  <label htmlFor="edit-batch-live-monitor-mode" className="block text-sm font-bold text-slate-700 mb-1">
+                    Live screen monitor transport
+                  </label>
+                  <select
+                    id="edit-batch-live-monitor-mode"
+                    aria-describedby="edit-batch-live-monitor-mode-help"
+                    value={editingLiveMonitorMode}
+                    disabled={!recordingConfig.canChange || editingRecordMode === 'none' || Boolean(editingBatch.practice_exam_id)}
+                    onChange={e => setEditingBatch({ ...editingBatch, live_monitor_mode: e.target.value as BatchLiveMonitorMode })}
+                    className="px-4 py-2.5 rounded-xl border border-slate-300 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none text-slate-900 min-w-[300px] disabled:bg-slate-50 disabled:text-slate-500"
+                  >
+                    {LIVE_MONITOR_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                  <p id="edit-batch-live-monitor-mode-help" className="mt-2 text-xs text-slate-500">
+                    Transport không thể đổi khi có thí sinh đang làm bài, để hai phía không dùng hai signaling provider khác nhau.
+                  </p>
+                  {!recordingConfig.canChange && <p className="mt-2 text-sm text-amber-600 font-medium">Only tenant admin accounts can change this batch setting.</p>}
+                </div>
+                <div>
                 <label htmlFor="edit-batch-identity-mode" className="block text-sm font-bold text-slate-700 mb-1">
                   Identity verification for this batch
                 </label>

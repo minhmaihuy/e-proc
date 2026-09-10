@@ -23,6 +23,7 @@ import {
 } from '../services/tenantEvidencePolicy.js';
 import { getCurrentTenantConfig } from '../tenantContext.js';
 import { attemptHash, issueLiveSession } from '../services/liveMonitoring.js';
+import { isLiveMonitorMode } from '../services/liveMonitorMode.js';
 
 dotenv.config();
 
@@ -463,7 +464,7 @@ router.post('/live/session', studentAuthMiddleware, async (req: Request, res: Re
   try {
     const { studentId, batchId, jti } = req.studentPayload!;
     const activeAttempt = (await db.query(`
-      SELECT s.id, b.record_mode, b.record_enabled, b.practice_exam_id
+      SELECT s.id, b.record_mode, b.record_enabled, b.live_monitor_mode, b.practice_exam_id
       FROM students s JOIN batches b ON b.id = s.batch_id
       WHERE s.id = ? AND s.batch_id = ? AND s.status = 'in_progress' AND s.active_jti = ?
     `, [studentId, batchId, jti])).rows[0];
@@ -480,10 +481,14 @@ router.post('/live/session', studentAuthMiddleware, async (req: Request, res: Re
     ) === 'none') {
       return res.json({ enabled: false });
     }
+    if (!isLiveMonitorMode(activeAttempt.live_monitor_mode) || activeAttempt.live_monitor_mode === 'off') {
+      return res.json({ enabled: false });
+    }
 
     const tenantSlug = getCurrentTenantConfig().slug;
     const config = await issueLiveSession({
       actor: 'student',
+      mode: activeAttempt.live_monitor_mode,
       subject: `student:${tenantSlug}:${studentId}:${attemptHash(jti).slice(0, 24)}`,
       tenantSlug,
       batchId,

@@ -1,52 +1,54 @@
-# Live realtime monitor design
+# Live WebRTC Monitor Design
 
 ## Goal
 
-Add opt-in live screen monitoring from the referenced upstream feature without
-merging its older fork lineage. A tenant administrator may view all active regular
-exam candidates in a batch concurrently through WebRTC; the application hosts its
-own authenticated WebSocket signaling endpoint.
+Let a matching `tenant_admin` select the live-monitor signaling/TURN transport
+per regular recorded batch without changing the existing self-hosted behavior.
+The choices are `off`, `self_hosted`, and the previously implemented
+`supabase` (Supabase Realtime signaling plus Metered TURN credentials). WebRTC
+media remains peer-to-peer and no media or signaling payload is persisted by
+E-PROC.
 
 ## Requirements
 
-1. A current-tenant `tenant_admin` can list active candidates and initiate/end a
-   viewing session for every active candidate in the batch concurrently. A regular
-   `admin` and `superadmin` are rejected server-side.
-2. The candidate session endpoint derives student id, batch id, and attempt id from
-   the student JWT and requires an in-progress attempt plus effective recording.
-3. The feature is disabled unless `LIVE_MONITORING_ENABLED=true`; it uses the
-   existing application `JWT_SECRET` and same-origin WSS in HTTPS deployments. A
-   configuration or signaling failure never blocks the exam.
-4. Topics are unique by trusted tenant slug, batch, candidate, and a hashed attempt
-   identifier. Short-lived HS256 signaling tokens have a dedicated issuer/audience,
-   are sent only in `Sec-WebSocket-Protocol`, and expire in ten minutes. The server
-   validates Origin, scopes forwarding to the exact topic, rate-limits messages,
-   and replaces duplicate actor connections.
-5. WebRTC media/SDP/ICE data must not enter any E-PROC database or operational log.
-   Only viewer audit metadata belongs in the assessment data-plane.
-6. Practice batches are excluded on the API and UI. Both effective `local` and
-   `s3` recording reuse the already-approved Entire Screen capture; `none` is
-   rejected. Unknown capture surfaces fail closed, and this feature does not change
-   evidence retention policy.
-7. Configuration names are allowlisted in managed secrets and tenant bootstrap. No
-   hosted broker, hosted STUN/TURN service, or external migration is required. A
-   tenant-owned coturn relay may be configured with an expiring HMAC credential
-   issued by E-PROC; its shared secret never reaches a browser. Deployment
-   configures the root-owned relay only from the protected host environment,
-   checks TLS before enabling `turns:`, and leaves PM2 unchanged on relay failure.
-   The generated configuration contains the relay shared secret, so it is owned
-   by `root:turnserver` with mode `640`: the coturn systemd account can read it
-   without exposing it to other host users.
-   The IPv6 Terraform deployment persists the relay FQDN as
-   `turn.<app_subdomain>.<domain_name>`, writes only opt-in relay configuration,
-   and limits relay ingress to the required port ranges.
+1. `batches.live_monitor_mode` is a server-authoritative enum. Existing recorded
+   rows migrate to `self_hosted` to preserve their behavior; ineligible
+   unrecorded rows and newly created batches default to `off`.
+2. Only a matching `tenant_admin` may set or change the mode. A regular `admin`
+   may continue editing a batch it owns but cannot change its stored transport.
+3. A non-`off` mode is valid only for a regular batch with an effective `local`
+   or `s3` recording mode. Practice and unrecorded batches reject it.
+4. The create/edit UI presents the three choices, disables non-`off` choices
+   when recording is unavailable, and hides the Live action for `off`/Practice
+   batches. UI controls are not the authorization boundary.
+5. Student and admin session routes read `live_monitor_mode` from the same
+   active batch record and issue only that provider's configuration. They keep
+   deriving student/batch/attempt identity from trusted JWT/database state.
+6. Changing the provider while any candidate has an `in_progress` attempt is
+   rejected. This prevents the publisher and viewer from joining different
+   signaling providers for one attempt.
+7. `self_hosted` keeps same-origin WSS, opaque tenant/batch/student/hashed-JTI
+   topics, ten-minute HS256 tokens sent in `Sec-WebSocket-Protocol`, and optional
+   tenant-owned coturn HMAC credentials. Origin, topic, actor, rate-limit, and
+   heartbeat validation remain mandatory.
+8. `supabase` uses the historic private Supabase Realtime channel contract:
+   E-PROC issues a ten-minute ES256 token scoped to the opaque topic and supplies
+   only Supabase URL/publishable key to the browser. Metered relay credentials are
+   fetched server-side only over HTTPS from a validated `.metered.live` hostname.
+   The Supabase private key and Metered API key are never returned or logged.
+9. An unavailable provider returns a disabled session / a bounded admin error;
+   it never prevents an exam from starting, continuing, or being submitted.
+10. `live_monitor_audit` remains assessment-plane metadata only. Neither mode
+    may write video, audio, SDP, ICE, token, provider credential, or signaling
+    payload to E-PROC's assessment/control/log planes.
 
 ## Verification
 
-- Unit test disabled configuration, token algorithm/claims/expiry, opaque tenant
-  topic, and self-hosted token verification.
-- Source regression test pins tenant-admin route guards, active-attempt query,
-  recording policy check, scoped audit update, JWT-bound student endpoint, Origin
-  validation, WebSocket heartbeat, rate limit, and native-client signaling.
-- Run backend and frontend type checks, tenant test suite, frontend tests/build,
-  docs parity check, diff check, and the project harness against this design.
+- Unit-test mode validation/authorization fallback and self-hosted/Supabase
+  session token configuration.
+- Source-test tenant-admin guards, active attempt/effective recording checks,
+  mode propagation, provider-change lock, and audit ownership.
+- Verify both SQLite and PostgreSQL schema initialization/backfill paths.
+- Run backend/frontend type checks, focused tests, `npm run test:tenant`,
+  `npm run docs:check`, frontend build, diff check, and the project harness
+  against `specs/per-batch-live-transport.spec.md`.

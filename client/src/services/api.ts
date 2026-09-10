@@ -14,6 +14,7 @@ export interface CreateBatchRequest {
   blueprint?: unknown;
   practice_exam_id?: number;
   record_mode: 'none' | 'local' | 's3';
+  live_monitor_mode: 'off' | 'self_hosted' | 'supabase';
   exam_type: 'essay' | 'quiz';
   identity_verification: 'off' | 'photo';
 }
