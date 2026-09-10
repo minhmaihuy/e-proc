@@ -17,3 +17,16 @@ test('tenant bootstrap preserves both explicitly selectable live-monitor provide
     assert.match(bootstrap, new RegExp(`"${name}"`), `${name} must reach the application env`);
   }
 });
+
+test('Supabase private-channel policy scopes broadcast access to the signed attempt claims', () => {
+  const policy = fs.readFileSync(
+    path.resolve(process.cwd(), 'migrations/20260905_live_monitoring_supabase.sql'),
+    'utf8',
+  );
+  assert.match(policy, /on realtime\.messages/);
+  assert.match(policy, /realtime\.messages\.extension = 'broadcast'/);
+  assert.match(policy, /realtime\.topic\(\) = \(current_setting\('request\.jwt\.claims', true\)::jsonb ->> 'live_topic'\)/);
+  assert.match(policy, /live_actor'\) in \('student', 'admin'\)/);
+  assert.match(policy, /for select to authenticated/);
+  assert.match(policy, /for insert to authenticated/);
+});
