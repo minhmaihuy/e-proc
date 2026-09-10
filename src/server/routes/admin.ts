@@ -14,6 +14,7 @@ import { parseBlueprintCompat } from '../services/blueprint.js';
 import { resolveBatchRecordMode } from '../services/recordingPolicy.js';
 import { effectiveBatchRecordMode } from '../services/tenantEvidencePolicy.js';
 import { attemptHash, issueLiveSession } from '../services/liveMonitoring.js';
+import { isLiveMonitorMode, resolveBatchLiveMonitorMode } from '../services/liveMonitorMode.js';
 import { createIdentityViewUrl, createRecordingViewUrl, isIdentityS3Configured, isS3Configured } from '../services/s3.js';
 import { resolveBatchIdentityMode } from '../services/identityPolicy.js';
 import { isEmailTemplate } from '../services/emailPolicy.js';
@@ -242,21 +243,25 @@ router.delete('/users/:id', requireTenantUserManager, async (req: Request, res: 
 // /users phía trên giữ requireTenantUserManager riêng vì chúng cần tenant_admin.
 router.use(requireTenantDataAdmin);
 
-// Live screen monitoring is opt-in and carries WebRTC signaling only through the
-// application's same-origin WebSocket. Media remains browser-to-browser. The old fork called its highest role `admin`; in this codebase that
-// authority is `tenant_admin`, so every route has an explicit server-side guard.
+// Live screen monitoring is opt-in per regular batch. The batch decides whether
+// its signaling is self-hosted or Supabase; media remains browser-to-browser.
+// The old fork called its highest role `admin`; in this codebase that authority
+// is `tenant_admin`, so every route has an explicit server-side guard.
 router.get('/batches/:batchId/live/students', requireTenantUserManager, async (req: Request, res: Response) => {
   const batchId = Number(req.params.batchId);
   if (!Number.isInteger(batchId) || batchId < 1) return res.status(400).json({ error: 'Invalid batch id.' });
 
   try {
-    const batch = (await db.query('SELECT id, record_mode, record_enabled, practice_exam_id FROM batches WHERE id = ?', [batchId])).rows[0];
+    const batch = (await db.query('SELECT id, record_mode, record_enabled, live_monitor_mode, practice_exam_id FROM batches WHERE id = ?', [batchId])).rows[0];
     if (!batch) return res.status(404).json({ error: 'Batch not found.' });
     if (batch.practice_exam_id !== null && batch.practice_exam_id !== undefined) {
       return res.status(409).json({ error: 'Live monitoring is available for regular exams only.' });
     }
     if (effectiveBatchRecordMode(batch.record_mode, batch.record_enabled, req.adminUser!.allowedRecordModes ?? ['none']) === 'none') {
       return res.status(409).json({ error: 'Live monitoring requires an active recording mode for this batch.' });
+    }
+    if (!isLiveMonitorMode(batch.live_monitor_mode) || batch.live_monitor_mode === 'off') {
+      return res.status(409).json({ error: 'Live monitoring is disabled for this batch.' });
     }
     const students = await db.query(`
       SELECT id, email, status, exam_started_at
@@ -280,7 +285,7 @@ router.post('/batches/:batchId/live/students/:studentId/session', requireTenantU
 
   try {
     const activeAttempt = (await db.query(`
-      SELECT s.active_jti, b.record_mode, b.record_enabled, b.practice_exam_id
+      SELECT s.active_jti, b.record_mode, b.record_enabled, b.live_monitor_mode, b.practice_exam_id
       FROM students s JOIN batches b ON b.id = s.batch_id
       WHERE s.id = ? AND s.batch_id = ? AND s.status = 'in_progress' AND s.active_jti IS NOT NULL
     `, [studentId, batchId])).rows[0];
@@ -291,11 +296,15 @@ router.post('/batches/:batchId/live/students/:studentId/session', requireTenantU
     if (effectiveBatchRecordMode(activeAttempt.record_mode, activeAttempt.record_enabled, req.adminUser!.allowedRecordModes ?? ['none']) === 'none') {
       return res.status(409).json({ error: 'Live monitoring requires an active recording mode for this batch.' });
     }
+    if (!isLiveMonitorMode(activeAttempt.live_monitor_mode) || activeAttempt.live_monitor_mode === 'off') {
+      return res.status(409).json({ error: 'Live monitoring is disabled for this batch.' });
+    }
 
     const viewerSessionId = crypto.randomUUID();
     const jti = String(activeAttempt.active_jti);
     const config = await issueLiveSession({
       actor: 'admin',
+      mode: activeAttempt.live_monitor_mode,
       subject: `admin:${req.adminUser!.tenantSlug}:${req.adminUser!.id}:${viewerSessionId}`,
       tenantSlug: req.adminUser!.tenantSlug!,
       batchId,
@@ -1088,8 +1097,8 @@ router.delete('/practice/:id', async (req: Request, res: Response) => {
 
 router.post('/batches', async (req: Request, res: Response) => {
   try {
-    const { name, start_time, end_time, duration, blueprint, practice_exam_id, record_mode, exam_type, identity_verification } = req.body;
-    console.log('[CreateBatch] Input:', { name, start_time, end_time, duration, blueprint, exam_type, record_mode });
+    const { name, start_time, end_time, duration, blueprint, practice_exam_id, record_mode, live_monitor_mode, exam_type, identity_verification } = req.body;
+    console.log('[CreateBatch] Input:', { name, start_time, end_time, duration, blueprint, exam_type, record_mode, live_monitor_mode });
     const examType = exam_type === 'quiz' ? 'quiz' : 'essay';
 
     if (!name || !start_time || !end_time || !duration) {
@@ -1134,6 +1143,20 @@ router.post('/batches', async (req: Request, res: Response) => {
     const recordMode = recordDecision.mode;
     const recordFlag = recordMode === 's3' ? 1 : 0;
 
+    const liveMonitorDecision = resolveBatchLiveMonitorMode({
+      requested: live_monitor_mode,
+      fallback: 'off',
+      canChange: req.adminUser?.role === 'tenant_admin',
+    });
+    if (liveMonitorDecision.rejected) return res.status(403).json({ error: liveMonitorDecision.reason });
+    if (isPractice && liveMonitorDecision.mode !== 'off') {
+      return res.status(400).json({ error: 'Live monitoring is available for regular exams only.' });
+    }
+    if (recordMode === 'none' && liveMonitorDecision.mode !== 'off') {
+      return res.status(400).json({ error: 'Live monitoring requires an active recording mode for this batch.' });
+    }
+    const liveMonitorMode = liveMonitorDecision.mode;
+
     const identityDecision = resolveBatchIdentityMode({
       requested: identity_verification,
       tenantMode: req.adminUser?.identityVerification ?? 'off',
@@ -1149,16 +1172,16 @@ router.post('/batches', async (req: Request, res: Response) => {
     let result;
     if (USE_SQLITE) {
       result = await db.query(`
-        INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, exam_type, identity_verification, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, live_monitor_mode, exam_type, identity_verification, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING id
-      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, recordFlag, recordMode, examType, identityMode, createdBy]);
+      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, recordFlag, recordMode, liveMonitorMode, examType, identityMode, createdBy]);
     } else {
       result = await db.query(`
-        INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, exam_type, identity_verification, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO batches (name, start_time, end_time, duration, blueprint, practice_exam_id, record_enabled, record_mode, live_monitor_mode, exam_type, identity_verification, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING id
-      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, !!recordFlag, recordMode, examType, identityMode, createdBy]);
+      `, [name, startUTC, endUTC, duration, blueprintJson, practiceExamId, !!recordFlag, recordMode, liveMonitorMode, examType, identityMode, createdBy]);
     }
     const batchId = Number(result.rows?.[0]?.id ?? result.lastInsertRowid);
     if (!Number.isInteger(batchId) || batchId < 1) {
@@ -1255,7 +1278,7 @@ router.get('/batches/:id', async (req: Request, res: Response) => {
 router.put('/batches/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, start_time, end_time, duration, blueprint, practice_exam_id, record_mode, exam_type, identity_verification } = req.body;
+    const { name, start_time, end_time, duration, blueprint, practice_exam_id, record_mode, live_monitor_mode, exam_type, identity_verification } = req.body;
     const examType = exam_type === 'quiz' ? 'quiz' : 'essay';
     const isPractice = practice_exam_id !== undefined && practice_exam_id !== null && practice_exam_id !== '';
     const practiceExamId = isPractice ? parseInt(practice_exam_id) : null;
@@ -1275,7 +1298,8 @@ router.put('/batches/:id', async (req: Request, res: Response) => {
     // Chế độ ghi màn hình: chỉ tenant_admin đổi được, và chỉ trong allowlist của tenant.
     // Vai trò khác (hoặc mode bị từ chối) → giữ nguyên giá trị đang lưu, không hạ về
     // 'none' vì như vậy sẽ âm thầm tắt ghi màn hình của một đợt thi đang cấu hình sẵn.
-    const currentRecord = await db.query('SELECT record_mode, identity_verification FROM batches WHERE id = ?', [parseInt(id)]);
+    const currentRecord = await db.query('SELECT record_mode, identity_verification, live_monitor_mode, practice_exam_id FROM batches WHERE id = ?', [parseInt(id)]);
+    if (!currentRecord.rows[0]) return res.status(404).json({ error: 'Batch not found' });
     const existingMode = currentRecord.rows[0]?.record_mode || 'none';
     const recordDecision = resolveBatchRecordMode({
       requested: record_mode,
@@ -1288,6 +1312,33 @@ router.put('/batches/:id', async (req: Request, res: Response) => {
     }
     const recordMode = recordDecision.mode;
     const recordFlag = recordMode === 's3' ? 1 : 0;
+    const existingLiveMonitorMode = isLiveMonitorMode(currentRecord.rows[0].live_monitor_mode)
+      ? currentRecord.rows[0].live_monitor_mode
+      : 'off';
+    const liveMonitorDecision = resolveBatchLiveMonitorMode({
+      requested: live_monitor_mode,
+      fallback: existingLiveMonitorMode,
+      canChange: req.adminUser?.role === 'tenant_admin',
+    });
+    if (liveMonitorDecision.rejected) return res.status(403).json({ error: liveMonitorDecision.reason });
+    const isExistingPractice = currentRecord.rows[0].practice_exam_id !== null
+      && currentRecord.rows[0].practice_exam_id !== undefined;
+    if ((isPractice || isExistingPractice) && liveMonitorDecision.mode !== 'off') {
+      return res.status(400).json({ error: 'Live monitoring is available for regular exams only.' });
+    }
+    if (recordMode === 'none' && liveMonitorDecision.mode !== 'off') {
+      return res.status(400).json({ error: 'Live monitoring requires an active recording mode for this batch.' });
+    }
+    if (liveMonitorDecision.mode !== existingLiveMonitorMode) {
+      const activeAttempt = await db.query(
+        "SELECT 1 FROM students WHERE batch_id = ? AND status = 'in_progress' LIMIT 1",
+        [parseInt(id)],
+      );
+      if (activeAttempt.rows[0]) {
+        return res.status(409).json({ error: 'Cannot change live monitoring mode while a candidate has an active exam.' });
+      }
+    }
+    const liveMonitorMode = liveMonitorDecision.mode;
     const identityDecision = resolveBatchIdentityMode({
       requested: identity_verification,
       tenantMode: req.adminUser?.identityVerification ?? 'off',
@@ -1299,14 +1350,14 @@ router.put('/batches/:id', async (req: Request, res: Response) => {
 
     if (USE_SQLITE) {
       await db.query(`
-        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, practice_exam_id = ?, record_enabled = ?, record_mode = ?, exam_type = ?, identity_verification = ?
+        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, practice_exam_id = ?, record_enabled = ?, record_mode = ?, live_monitor_mode = ?, exam_type = ?, identity_verification = ?
         WHERE id = ?
-      `, [name, startUTC, endUTC, duration, isPractice ? null : JSON.stringify(blueprint), practiceExamId, recordFlag, recordMode, examType, identityMode, parseInt(id)]);
+      `, [name, startUTC, endUTC, duration, isPractice ? null : JSON.stringify(blueprint), practiceExamId, recordFlag, recordMode, liveMonitorMode, examType, identityMode, parseInt(id)]);
     } else {
       await db.query(`
-        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, practice_exam_id = ?, record_enabled = ?, record_mode = ?, exam_type = ?, identity_verification = ?
+        UPDATE batches SET name = ?, start_time = ?, end_time = ?, duration = ?, blueprint = ?, practice_exam_id = ?, record_enabled = ?, record_mode = ?, live_monitor_mode = ?, exam_type = ?, identity_verification = ?
         WHERE id = ?
-      `, [name, startUTC, endUTC, duration, isPractice ? null : JSON.stringify(blueprint), practiceExamId, !!recordFlag, recordMode, examType, identityMode, parseInt(id)]);
+      `, [name, startUTC, endUTC, duration, isPractice ? null : JSON.stringify(blueprint), practiceExamId, !!recordFlag, recordMode, liveMonitorMode, examType, identityMode, parseInt(id)]);
     }
 
     res.json({ success: true });

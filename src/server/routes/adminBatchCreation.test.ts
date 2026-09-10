@@ -42,12 +42,21 @@ test('batch create and update enforce tenant recording allowlist and tenant_admi
       `${name} phải trả 403 khi mode vượt allowlist`);
   }
 
+  for (const [name, route] of [['create', createRoute], ['update', updateRoute]] as const) {
+    assert.match(route, /resolveBatchLiveMonitorMode\(\{/, `${name} phải quyết định live monitor mode ở backend`);
+    assert.match(route, /requested: live_monitor_mode/, `${name} phải coi live_monitor_mode từ client là yêu cầu`);
+    assert.match(route, /canChange: req\.adminUser\?\.role === 'tenant_admin'/,
+      `${name} chỉ cho tenant_admin quyết định live monitor mode theo batch`);
+  }
+
   assert.match(createRoute, /fallback: 'none'/,
     'batch mới phải rơi về none khi client không có quyền hoặc không gửi mode hợp lệ');
-  assert.match(updateRoute, /SELECT record_mode, identity_verification FROM batches WHERE id = \?/,
+  assert.match(updateRoute, /SELECT record_mode, identity_verification, live_monitor_mode, practice_exam_id FROM batches WHERE id = \?/,
     'update phải đọc mode hiện tại trước khi quyết định');
   assert.match(updateRoute, /fallback: existingMode/,
     'update không được âm thầm tắt recording đã lưu');
+  assert.match(updateRoute, /Cannot change live monitoring mode while a candidate has an active exam/,
+    'không được cho hai phía của attempt dùng hai signaling provider khác nhau');
 });
 
 test('recording capability endpoint is read-only and trusts authenticated tenant context', () => {

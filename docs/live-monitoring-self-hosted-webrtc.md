@@ -1,6 +1,8 @@
 # Live realtime monitor (self-hosted WebRTC signaling)
 
-This optional feature lets a matching-tenant `tenant_admin` view all active
+This document covers the `self_hosted` transport. Each batch can instead choose
+`off` or the legacy `supabase` transport documented in
+[live-monitoring-transports.md](live-monitoring-transports.md). This optional feature lets a matching-tenant `tenant_admin` view all active
 **regular** exam candidates in one batch at the same time. It reuses the already-approved Entire
 Screen capture for either `local` or `s3` recording. It is unavailable for
 Practice batches.
@@ -49,7 +51,8 @@ LIVE_TURN_RELAY_IP=<public-ipv6-or-ipv4>
 ```
 
 `JWT_SECRET` is already required by every E-PROC backend instance; no new
-third-party key is required. Restart the backend after changing the flag.
+third-party key is required for this mode. Restart the backend after changing
+the flag.
 
 ## Self-hosted coturn relay
 

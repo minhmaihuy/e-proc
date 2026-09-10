@@ -18,6 +18,8 @@ test('live monitor routes bind a viewer to an active recorded attempt and to its
   assert.match(adminSource, /effectiveBatchRecordMode\(/);
   assert.match(adminSource, /status = 'in_progress' AND active_jti IS NOT NULL/);
   assert.match(adminSource, /attemptHash\(jti\)/);
+  assert.match(adminSource, /live_monitor_mode/);
+  assert.match(adminSource, /mode: activeAttempt\.live_monitor_mode/);
   assert.match(adminSource, /WHERE viewer_session_id = \? AND admin_user_id = \?/);
 });
 
@@ -28,7 +30,7 @@ test('student signaling is scoped to the JWT attempt and refuses an inactive or 
   assert.match(studentSource, /effectiveBatchRecordMode\(/);
 });
 
-test('self-hosted signaling requires an origin-checked short-lived token and never imports a hosted broker', () => {
+test('self-hosted signaling requires an origin-checked short-lived token', () => {
   assert.match(signalingSource, /verifyLiveSignalingToken/);
   assert.match(signalingSource, /isAllowedOrigin/);
   assert.match(signalingSource, /MAX_MESSAGES_PER_WINDOW/);
@@ -37,9 +39,11 @@ test('self-hosted signaling requires an origin-checked short-lived token and nev
   assert.doesNotMatch(signalingSource, /supabase|metered|open relay/i);
 });
 
-test('live session configuration can use only a tenant-owned coturn relay', () => {
+test('self-hosted session configuration uses coturn while the selected legacy transport is explicit', () => {
   const liveMonitoringSource = fs.readFileSync(path.resolve(process.cwd(), 'src/server/services/liveMonitoring.ts'), 'utf8');
   assert.match(liveMonitoringSource, /LIVE_TURN_SHARED_SECRET/);
   assert.match(liveMonitoringSource, /createHmac\('sha1'/);
   assert.match(liveMonitoringSource, /TURN_URL_PATTERN/);
+  assert.match(liveMonitoringSource, /mode === 'supabase'/);
+  assert.match(liveMonitoringSource, /OPEN_RELAY_CREDENTIALS_URL/);
 });

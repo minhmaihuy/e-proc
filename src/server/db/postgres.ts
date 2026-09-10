@@ -222,6 +222,7 @@ await client.query(`
       blueprint JSONB,
       record_enabled BOOLEAN DEFAULT false,
       record_mode VARCHAR(16) DEFAULT 'none',
+      live_monitor_mode VARCHAR(24) NOT NULL DEFAULT 'off',
       identity_verification VARCHAR(16) NOT NULL DEFAULT 'off',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -236,6 +237,14 @@ await client.query(`
     await client.query("ALTER TABLE batches ADD COLUMN IF NOT EXISTS record_mode VARCHAR(16) DEFAULT 'none'");
     await client.query("UPDATE batches SET record_mode = 's3' WHERE record_enabled = true AND (record_mode IS NULL OR record_mode = 'none')");
   } catch (_) { /* already exists */ }
+  // Existing recorded batches predate the per-batch switch and keep their prior
+  // self-hosted behavior. Unrecorded batches were never eligible, so migrate them
+  // to the safer off value. Newly created batches default to off.
+  await client.query('ALTER TABLE batches ADD COLUMN IF NOT EXISTS live_monitor_mode VARCHAR(24)');
+  await client.query("UPDATE batches SET live_monitor_mode = 'self_hosted' WHERE live_monitor_mode IS NULL AND (record_mode IN ('local', 's3') OR record_enabled = true)");
+  await client.query("UPDATE batches SET live_monitor_mode = 'off' WHERE live_monitor_mode IS NULL");
+  await client.query("ALTER TABLE batches ALTER COLUMN live_monitor_mode SET DEFAULT 'off'");
+  await client.query('ALTER TABLE batches ALTER COLUMN live_monitor_mode SET NOT NULL');
   await client.query("ALTER TABLE batches ADD COLUMN IF NOT EXISTS identity_verification VARCHAR(16) NOT NULL DEFAULT 'off'");
   // Migration: loại đề (essay = tự luận/coding, quiz = trắc nghiệm). Batch cũ mặc định 'essay'.
   try {
@@ -571,6 +580,7 @@ function initSqlite() {
         blueprint TEXT,
         record_enabled INTEGER DEFAULT 0,
         record_mode TEXT DEFAULT 'none',
+        live_monitor_mode TEXT NOT NULL DEFAULT 'off',
         identity_verification TEXT NOT NULL DEFAULT 'off',
         practice_exam_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -801,6 +811,12 @@ function initSqlite() {
       sqliteDb.exec("ALTER TABLE batches ADD COLUMN record_mode TEXT DEFAULT 'none'");
       // Backfill: batch cũ có record_enabled=1 → 's3'
       sqliteDb.exec("UPDATE batches SET record_mode = 's3' WHERE record_enabled = 1 AND (record_mode IS NULL OR record_mode = 'none')");
+    }
+    // Preserve the current self-hosted behavior only for legacy recorded rows;
+    // fresh schemas use the safer off default declared above.
+    if (!batchCols.includes('live_monitor_mode')) {
+      sqliteDb.exec("ALTER TABLE batches ADD COLUMN live_monitor_mode TEXT NOT NULL DEFAULT 'self_hosted'");
+      sqliteDb.exec("UPDATE batches SET live_monitor_mode = 'off' WHERE record_mode IS NULL OR (record_mode = 'none' AND COALESCE(record_enabled, 0) = 0)");
     }
     ensureIdentitySchemaSqlite(sqliteDb);
     if (!batchCols.includes('created_by')) {
