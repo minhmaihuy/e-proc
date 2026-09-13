@@ -16,6 +16,13 @@ export interface QuestionGroupSummary {
   canDelete: boolean;
 }
 
+export interface QuizImportFilters {
+  selectedModule: '';
+  selectedQuestionGroup: '';
+  selectedCategory: 'quiz';
+  currentPage: 1;
+}
+
 /** Matches the API's grouped bulk-delete key format. */
 export function questionDeletionKey(question: QuestionIdentity): string {
   return `${String(question.id)}${QUESTION_DELETE_KEY_SEPARATOR}${question.question_group ?? ''}`;
@@ -29,6 +36,16 @@ export function selectedQuestionGroupAfterRefresh(
   return selectedQuestionGroup && !availableQuestionGroups.includes(selectedQuestionGroup)
     ? ''
     : selectedQuestionGroup;
+}
+
+/** Makes a successful Quiz import immediately visible, regardless of stale filters. */
+export function quizImportFiltersAfterSuccess(): QuizImportFilters {
+  return {
+    selectedModule: '',
+    selectedQuestionGroup: '',
+    selectedCategory: 'quiz',
+    currentPage: 1,
+  };
 }
 
 /** Mirrors the server's all-rows ownership rule for a group delete control. */

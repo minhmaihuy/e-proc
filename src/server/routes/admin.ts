@@ -508,7 +508,7 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
       const module = colIndex['Topic'] !== undefined ? row[colIndex['Topic']] : (colIndex['Module'] !== undefined ? row[colIndex['Module']] : row[3]);
       const question = colIndex['Question Sample'] !== undefined ? row[colIndex['Question Sample']] : row[4];
       // Bộ đề: chấp nhận vài tên cột thường gặp; thiếu thì lưu chuỗi rỗng.
-      const questionGroupCol = colIndex['QuestionGroup'] ?? colIndex['Question Set'] ?? colIndex['Bộ đề'];
+      const questionGroupCol = colIndex['QuestionGroup'] ?? colIndex['Question Group'] ?? colIndex['Question Set'] ?? colIndex['Bộ đề'];
       const questionGroup = (questionGroupCol !== undefined ? row[questionGroupCol]?.toString().trim() : '') || '';
       
       const rubricMustHave = row[rubricMustHaveCol]?.toString() || '';
@@ -619,6 +619,17 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
       if (col) colIndex[col.toString().trim()] = i;
     });
 
+    // Quiz sets use the composite (id, question_group) identity. Unlike the
+    // legacy essay importer, accepting a missing group here silently creates
+    // ambiguous blank-group questions that cannot be separated in the UI.
+    const questionGroupHeaders = ['QuestionGroup', 'Question Group', 'Question Set', 'Bộ đề'];
+    const questionGroupHeader = questionGroupHeaders.find((name) => colIndex[name] !== undefined);
+    if (!questionGroupHeader) {
+      return res.status(400).json({
+        error: 'Invalid quiz template: QuestionGroup column is required.',
+      });
+    }
+
     const OPTION_KEYS = ['A', 'B', 'C', 'D', 'E', 'F'];
     const validLevels = ['Easy', 'Medium', 'Hard'];
     const validTypes = ['SingleChoice', 'MultipleChoice'];
@@ -639,12 +650,14 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
       const level = get(row, 'Level')?.toString().trim();
       const module = (get(row, 'Topic') ?? get(row, 'Module'))?.toString();
       const question = get(row, 'Question Sample')?.toString();
-      // Cùng quy ước tên cột với import tự luận.
-      const questionGroup = (
-        get(row, 'QuestionGroup') ?? get(row, 'Question Set') ?? get(row, 'Bộ đề')
-      )?.toString().trim() || '';
+      const questionGroup = get(row, questionGroupHeader)?.toString().trim() || '';
 
       if (!id || !type || !level || !module || !question) {
+        skipped++;
+        continue;
+      }
+      if (!questionGroup) {
+        errors.push(`ID ${id}: QuestionGroup is required`);
         skipped++;
         continue;
       }
