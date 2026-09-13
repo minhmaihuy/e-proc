@@ -117,8 +117,15 @@ test('import nhận database CSV một dòng header mà không bỏ mất câu �
   const source = readSource('src', 'server', 'routes', 'admin.ts');
   assert.equal(
     [...source.matchAll(/codepage: 65001/g)].length,
+    1,
+    'hàm đọc chung phải giữ codepage UTF-8 cho cả import tự luận và quiz',
+  );
+  assert.match(source, /function readUploadedWorkbook\(buffer: Buffer\)/);
+  assert.match(source, /buffer\[0\] === 0xef[\s\S]{0,80}buffer\.subarray\(3\)/);
+  assert.equal(
+    [...source.matchAll(/readUploadedWorkbook\(req\.file\.buffer\)/g)].length,
     2,
-    'cả import tự luận và quiz phải đọc CSV UTF-8 để không làm hỏng tiếng Việt',
+    'cả import tự luận và Quiz phải loại UTF-8 BOM trước khi SheetJS đọc header',
   );
   assert.match(source, /normalizedHeader\.includes\('question_sample'\)/);
   assert.match(source, /const dataStartRow = isDatabaseCsv \? 1 : 2/);

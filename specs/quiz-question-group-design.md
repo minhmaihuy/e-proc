@@ -9,6 +9,8 @@ admin can immediately see successfully imported Quiz rows.
 ## Requirements
 
 - The Question Bank file picker accepts `.csv`, `.xlsx`, and `.xls` for Quiz imports.
+- CSV parsing removes an optional UTF-8 BOM before SheetJS reads its first header, so a valid
+  BOM-prefixed `ID` column is never treated as an unnamed column.
 - The canonical Quiz header order is `ID, Type, Level, Topic, QuestionGroup, Question Sample,
   Option A` through `Option F`, `Correct, Score`.
 - `QuestionGroup` is mandatory for Quiz imports. The backend accepts the compatible aliases
@@ -21,7 +23,7 @@ admin can immediately see successfully imported Quiz rows.
 
 ## Verification
 
-- Source-lock the Quiz header/value validation and composite upsert identity.
+- Source-lock the shared BOM removal, Quiz header/value validation, and composite upsert identity.
 - Unit-test the post-import filter state.
 - Validate a representative CSV has a `QuestionGroup` header and a non-empty value for every data
   row, then run backend/frontend type checks, relevant tests, documentation sync, and the harness.
