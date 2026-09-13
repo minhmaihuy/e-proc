@@ -20,11 +20,12 @@ import { resolveBatchIdentityMode } from '../services/identityPolicy.js';
 import { isEmailTemplate } from '../services/emailPolicy.js';
 import { enqueueEmail, isEmailProviderConfigured, isEmailRecipient } from '../services/emailDelivery.js';
 import {
-  QuestionDeletionSelector,
+  isQuestionDeletionAuthorized,
   parseQuestionDeletionSelector,
   questionDeletionKey,
   removedQuestionGroups,
 } from '../services/questionDeletion.js';
+import type { QuestionDeletionSelector } from '../services/questionDeletion.js';
 
 dotenv.config();
 
@@ -978,13 +979,7 @@ async function deleteQuestionSelectors(
   actor: Request['adminUser'],
 ): Promise<QuestionDeletionResult> {
   const matchedRows = await loadQuestionRowsForDeletion(selectors);
-  const isRegularAdmin = actor?.role === 'admin';
-  const hasForbiddenRow = isRegularAdmin && (
-    matchedRows.length === 0
-    || matchedRows.some((row) => String(row.uploaded_by) !== String(actor.id))
-  );
-
-  if (hasForbiddenRow) {
+  if (!isQuestionDeletionAuthorized(matchedRows, actor)) {
     return { authorized: false, deleted: 0, removedQuestionGroups: [] };
   }
 
@@ -1020,6 +1015,37 @@ async function deleteQuestionSelectors(
   };
 }
 
+/** Delete every current-tenant question in one named, non-empty derived group. */
+async function deleteQuestionGroup(
+  questionGroup: string,
+  actor: Request['adminUser'],
+): Promise<QuestionDeletionResult> {
+  const matched = await db.query(
+    "SELECT id, COALESCE(question_group, '') AS question_group, uploaded_by FROM question_bank WHERE COALESCE(question_group, '') = ?",
+    [questionGroup],
+  );
+  const matchedRows = matched.rows as QuestionRowForDeletion[];
+  if (!isQuestionDeletionAuthorized(matchedRows, actor)) {
+    return { authorized: false, deleted: 0, removedQuestionGroups: [] };
+  }
+
+  const deletion = await db.query(
+    "DELETE FROM question_bank WHERE COALESCE(question_group, '') = ?",
+    [questionGroup],
+  );
+  const remaining = await db.query(
+    "SELECT question_group FROM question_bank WHERE COALESCE(question_group, '') = ? LIMIT 1",
+    [questionGroup],
+  );
+  const deleted = deletion.rowCount ?? 0;
+
+  return {
+    authorized: true,
+    deleted,
+    removedQuestionGroups: deleted > 0 && remaining.rows.length === 0 ? [questionGroup] : [],
+  };
+}
+
 router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
   try {
     const { ids } = req.body;
@@ -1042,6 +1068,24 @@ router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
     res.json({ success: true, deleted: result.deleted, removedQuestionGroups: result.removedQuestionGroups });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/questions/question-groups/:group', async (req: Request, res: Response) => {
+  try {
+    const questionGroup = req.params.group;
+    if (!questionGroup) {
+      return res.status(400).json({ error: 'Question group is required' });
+    }
+
+    const result = await deleteQuestionGroup(questionGroup, req.adminUser);
+    if (!result.authorized) {
+      return res.status(403).json({ error: 'Forbidden: You can only delete question groups you uploaded' });
+    }
+
+    return res.json({ success: true, deleted: result.deleted, removedQuestionGroups: result.removedQuestionGroups });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
   }
 });
 

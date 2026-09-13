@@ -5,13 +5,13 @@ import { adminApi } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import AdminNav from '../components/AdminNav';
 import { Database, ArrowLeft, Trash2, Search, Filter, FileQuestion, ChevronLeft, ChevronRight } from 'lucide-react';
-import { questionDeletionKey, selectedQuestionGroupAfterRefresh } from './questionBank/questionIdentity';
+import { questionDeletionKey, questionGroupSummary, selectedQuestionGroupAfterRefresh } from './questionBank/questionIdentity';
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
 type PageSize = typeof PAGE_SIZE_OPTIONS[number];
 
 function QuestionBank() {
-  const { isAdmin, userId } = useAuth();
+  const { isAdmin, isTenantAdmin, userId } = useAuth();
   const [questions, setQuestions] = useState<any[]>([]);
   const [modules, setModules] = useState<string[]>([]);
   const [file, setFile] = useState<File | null>(null);
@@ -32,6 +32,7 @@ function QuestionBank() {
   // Bulk delete
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [deletingQuestionGroup, setDeletingQuestionGroup] = useState<string | null>(null);
 
   useEffect(() => {
     loadQuestions();
@@ -118,6 +119,25 @@ function QuestionBank() {
     }
   };
 
+  const handleQuestionGroupChange = (questionGroup: string) => {
+    setSelectedQuestionGroup(questionGroup);
+    setCurrentPage(1);
+    setSelectedIds(new Set());
+  };
+
+  const handleDeleteQuestionGroup = async (questionGroup: string, questionCount: number) => {
+    if (!confirm(`Delete question group "${questionGroup}" and all ${questionCount} question(s)?`)) return;
+
+    setDeletingQuestionGroup(questionGroup);
+    try {
+      await adminApi.deleteQuestionGroup(questionGroup);
+      await refreshQuestionBank();
+    } catch (error: any) {
+      alert('Error: ' + (error.response?.data?.error || error.message));
+    }
+    setDeletingQuestionGroup(null);
+  };
+
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
     if (!confirm(`Delete ${selectedIds.size} selected question(s)?`)) return;
@@ -165,6 +185,10 @@ function QuestionBank() {
   );
   const allPageSelected = selectablePageIds.length > 0 && selectablePageIds.every(id => selectedIds.has(id));
   const somePageSelected = selectablePageIds.some(id => selectedIds.has(id));
+  const questionGroupSummaries = useMemo(
+    () => questionGroups.map((group) => questionGroupSummary(group, questions, isTenantAdmin, userId)),
+    [questionGroups, questions, isTenantAdmin, userId],
+  );
 
   // ── Handlers ─────────────────────────────────────────────────────────────
   const handleModuleChange = (mod: string) => {
@@ -299,7 +323,7 @@ function QuestionBank() {
               </label>
               <select
                 value={selectedQuestionGroup}
-                onChange={e => { setSelectedQuestionGroup(e.target.value); setCurrentPage(1); setSelectedIds(new Set()); }}
+                onChange={e => handleQuestionGroupChange(e.target.value)}
                 className="block w-48 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 text-sm focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">Tất cả bộ đề</option>
@@ -338,6 +362,40 @@ function QuestionBank() {
             </select>
           </div>
         </div>
+
+        {questionGroupSummaries.length > 0 && (
+          <div className="p-4 border-b border-slate-100 bg-slate-50/50">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <h4 className="font-semibold text-slate-800 m-0 border-none pb-0">Danh sách bộ đề</h4>
+              <span className="text-xs text-slate-500">Xóa bộ đề sẽ xóa toàn bộ câu hỏi thuộc bộ đó.</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+              {questionGroupSummaries.map((group) => (
+                <div key={group.name} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                  <button
+                    type="button"
+                    onClick={() => handleQuestionGroupChange(group.name)}
+                    className="min-w-0 flex-1 text-left hover:text-blue-700"
+                    title={`Lọc câu hỏi của bộ đề ${group.name}`}
+                  >
+                    <span className="block truncate text-sm font-medium text-slate-800">{group.name}</span>
+                    <span className="text-xs text-slate-500">{group.questionCount} câu hỏi</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteQuestionGroup(group.name, group.questionCount)}
+                    disabled={!group.canDelete || deletingQuestionGroup !== null}
+                    className="inline-flex items-center justify-center rounded p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-30"
+                    title={group.canDelete ? `Xóa bộ đề ${group.name}` : 'Bạn chỉ có thể xóa bộ đề gồm các câu hỏi do mình tải lên'}
+                    aria-label={`Xóa bộ đề ${group.name}`}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Table */}
         <div className="overflow-x-auto">

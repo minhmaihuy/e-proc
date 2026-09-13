@@ -386,6 +386,9 @@ export const adminApi = {
   // keys dạng "id|||group" (xem questionIdentity.ts trong QuestionBank)
   deleteQuestions: (ids: string[]) =>
     api.post<QuestionDeletionResponse>('/admin/questions/bulk-delete', { ids }),
+
+  deleteQuestionGroup: (questionGroup: string) =>
+    api.delete<QuestionDeletionResponse>(`/admin/questions/question-groups/${encodeURIComponent(questionGroup)}`),
   
   // --- Batch endpoints ---
   createBatch: (data: CreateBatchRequest) =>

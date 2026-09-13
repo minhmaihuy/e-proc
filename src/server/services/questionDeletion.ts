@@ -10,6 +10,15 @@ export interface QuestionDeletionSelector {
   questionGroup?: string;
 }
 
+export interface QuestionDeletionActor {
+  id?: string | number;
+  role?: string;
+}
+
+export interface QuestionDeletionOwnershipRow {
+  uploaded_by: string | number | null;
+}
+
 export function parseQuestionDeletionSelector(raw: unknown): QuestionDeletionSelector {
   const key = String(raw);
   const separatorIndex = key.indexOf(QUESTION_DELETE_KEY_SEPARATOR);
@@ -31,6 +40,18 @@ export function parseQuestionDeletionSelector(raw: unknown): QuestionDeletionSel
 
 export function questionDeletionKey(id: string | number, questionGroup: string | null | undefined): string {
   return `${String(id)}${QUESTION_DELETE_KEY_SEPARATOR}${questionGroup ?? ''}`;
+}
+
+/** A regular admin must own every selected row before an all-or-nothing delete. */
+export function isQuestionDeletionAuthorized(
+  rows: readonly QuestionDeletionOwnershipRow[],
+  actor: QuestionDeletionActor | undefined,
+): boolean {
+  if (actor?.role !== 'admin') {
+    return true;
+  }
+
+  return rows.length > 0 && rows.every((row) => String(row.uploaded_by) === String(actor.id));
 }
 
 /**

@@ -137,13 +137,8 @@ test('ràng buộc sở hữu áp lên giáo viên, không áp lên tenant_admin
   );
   assert.match(
     source,
-    /const isRegularAdmin = actor\?\.role === 'admin'/,
+    /isQuestionDeletionAuthorized\(matchedRows, actor\)/,
     'delete question phải tập trung ràng buộc ownership cho vai trò admin',
-  );
-  assert.match(
-    source,
-    /matchedRows\.some\(\(row\) => String\(row\.uploaded_by\) !== String\(actor\.id\)\)/,
-    'delete question phải kiểm tra mọi hàng khớp trước khi xóa',
   );
 });
 
