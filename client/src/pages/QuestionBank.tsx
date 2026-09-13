@@ -5,7 +5,12 @@ import { adminApi } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import AdminNav from '../components/AdminNav';
 import { Database, ArrowLeft, Trash2, Search, Filter, FileQuestion, ChevronLeft, ChevronRight } from 'lucide-react';
-import { questionDeletionKey, questionGroupSummary, selectedQuestionGroupAfterRefresh } from './questionBank/questionIdentity';
+import {
+  questionDeletionKey,
+  questionGroupSummary,
+  quizImportFiltersAfterSuccess,
+  selectedQuestionGroupAfterRefresh,
+} from './questionBank/questionIdentity';
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
 type PageSize = typeof PAGE_SIZE_OPTIONS[number];
@@ -99,6 +104,14 @@ function QuestionBank() {
         setIsError(true);
       }
       setMessage(msg);
+      if (mode === 'quiz') {
+        const quizFilters = quizImportFiltersAfterSuccess();
+        setSelectedModule(quizFilters.selectedModule);
+        setSelectedQuestionGroup(quizFilters.selectedQuestionGroup);
+        setSelectedCategory(quizFilters.selectedCategory);
+        setCurrentPage(quizFilters.currentPage);
+        setSelectedIds(new Set());
+      }
       await refreshQuestionBank();
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';

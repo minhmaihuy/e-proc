@@ -100,6 +100,19 @@ test('import đọc cột bộ đề từ Excel, nếu không thì mọi câu đ
   assert.match(source, /QuestionGroup/, 'không đọc cột QuestionGroup thì khóa kép trở nên vô nghĩa');
 });
 
+test('Quiz import bắt buộc QuestionGroup để không ghi câu vào group rỗng', () => {
+  const source = readSource('src', 'server', 'routes', 'admin.ts');
+  const quizImport = source.slice(
+    source.indexOf("router.post('/questions/quiz/import'"),
+    source.indexOf("router.get('/questions'"),
+  );
+
+  assert.match(quizImport, /const questionGroupHeaders = \['QuestionGroup'/);
+  assert.match(quizImport, /QuestionGroup column is required/);
+  assert.match(quizImport, /const questionGroup = get\(row, questionGroupHeader\)/);
+  assert.match(quizImport, /if \(!questionGroup\)[\s\S]{0,160}QuestionGroup is required/);
+});
+
 test('import nhận database CSV một dòng header mà không bỏ mất câu đầu tiên', () => {
   const source = readSource('src', 'server', 'routes', 'admin.ts');
   assert.equal(

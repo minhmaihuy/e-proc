@@ -32,7 +32,7 @@ function ImportCard({
       <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/50 px-6 py-4">
         <h3 className="m-0 flex items-center gap-2 border-none pb-0 font-bold text-slate-900">
           <Upload size={18} className="text-slate-500" />
-          Import Questions from Excel
+          Import Questions from Excel or CSV
         </h3>
       </div>
 
@@ -42,8 +42,8 @@ function ImportCard({
             <input
               ref={fileInputRef}
               type="file"
-              accept=".xlsx,.xls"
-              aria-label="Chọn file Excel"
+              accept=".xlsx,.xls,.csv"
+              aria-label="Chọn file Excel hoặc CSV"
               onChange={(event) => onFileChange(event.target.files?.[0] || null)}
               className="block w-full cursor-pointer rounded-lg border border-slate-200 bg-slate-50 text-sm text-slate-500 file:mr-4 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2.5 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
             />
@@ -73,7 +73,8 @@ function ImportCard({
           <p className="m-0 flex items-center gap-1.5 text-xs text-slate-500">
             <AlertCircle size={14} className="text-slate-400" />
             <span className="font-semibold text-slate-700">Quiz template:</span> ID | Type
-            (SingleChoice/MultipleChoice) | Level | Topic | Question Sample | Option A…F | Correct | Score
+            (SingleChoice/MultipleChoice) | Level | Topic | QuestionGroup (required) | Question Sample |
+            Option A…F | Correct | Score
           </p>
         </div>
 
