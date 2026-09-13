@@ -24,6 +24,13 @@ export interface CreateBatchResponse {
   id: number;
 }
 
+export interface QuestionDeletionResponse {
+  success: true;
+  deleted: number;
+  /** Named groups that no longer have any question-bank rows after this request. */
+  removedQuestionGroups: string[];
+}
+
 export interface StudentExamQuestion {
   id: string;
   question_order: number;
@@ -374,11 +381,11 @@ export const adminApi = {
   // Câu hỏi được định danh bằng cặp (id, question_group) — hai bộ đề khác nhau được
   // phép dùng chung mã ID, nên xóa phải nêu rõ group.
   deleteQuestion: (id: string, questionGroup: string = '') =>
-    api.delete(`/admin/questions/${encodeURIComponent(id)}`, { params: { group: questionGroup } }),
+    api.delete<QuestionDeletionResponse>(`/admin/questions/${encodeURIComponent(id)}`, { params: { group: questionGroup } }),
 
-  // keys dạng "id|||group" (xem questionKey() trong QuestionBank.tsx)
+  // keys dạng "id|||group" (xem questionIdentity.ts trong QuestionBank)
   deleteQuestions: (ids: string[]) =>
-    api.post('/admin/questions/bulk-delete', { ids }),
+    api.post<QuestionDeletionResponse>('/admin/questions/bulk-delete', { ids }),
   
   // --- Batch endpoints ---
   createBatch: (data: CreateBatchRequest) =>

@@ -19,6 +19,12 @@ import { createIdentityViewUrl, createRecordingViewUrl, isIdentityS3Configured, 
 import { resolveBatchIdentityMode } from '../services/identityPolicy.js';
 import { isEmailTemplate } from '../services/emailPolicy.js';
 import { enqueueEmail, isEmailProviderConfigured, isEmailRecipient } from '../services/emailDelivery.js';
+import {
+  QuestionDeletionSelector,
+  parseQuestionDeletionSelector,
+  questionDeletionKey,
+  removedQuestionGroups,
+} from '../services/questionDeletion.js';
 
 dotenv.config();
 
@@ -927,6 +933,93 @@ router.get('/questions/module-type-stats', async (req: Request, res: Response) =
   }
 });
 
+interface QuestionRowForDeletion {
+  id: string;
+  question_group: string;
+  uploaded_by: number | string | null;
+}
+
+interface QuestionDeletionResult {
+  authorized: boolean;
+  deleted: number;
+  removedQuestionGroups: string[];
+}
+
+async function loadQuestionRowsForDeletion(
+  selectors: readonly QuestionDeletionSelector[],
+): Promise<QuestionRowForDeletion[]> {
+  const rows = new Map<string, QuestionRowForDeletion>();
+
+  for (const selector of selectors) {
+    const result = selector.questionGroup === undefined
+      ? await db.query(
+        "SELECT id, COALESCE(question_group, '') AS question_group, uploaded_by FROM question_bank WHERE id = ?",
+        [selector.id],
+      )
+      : await db.query(
+        "SELECT id, COALESCE(question_group, '') AS question_group, uploaded_by FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
+        [selector.id, selector.questionGroup],
+      );
+
+    for (const row of result.rows as QuestionRowForDeletion[]) {
+      rows.set(questionDeletionKey(row.id, row.question_group), row);
+    }
+  }
+
+  return [...rows.values()];
+}
+
+/**
+ * Deleting the last question is the only way a derived group disappears. Ownership
+ * is checked for every matched composite row before any mutation occurs.
+ */
+async function deleteQuestionSelectors(
+  selectors: readonly QuestionDeletionSelector[],
+  actor: Request['adminUser'],
+): Promise<QuestionDeletionResult> {
+  const matchedRows = await loadQuestionRowsForDeletion(selectors);
+  const isRegularAdmin = actor?.role === 'admin';
+  const hasForbiddenRow = isRegularAdmin && (
+    matchedRows.length === 0
+    || matchedRows.some((row) => String(row.uploaded_by) !== String(actor.id))
+  );
+
+  if (hasForbiddenRow) {
+    return { authorized: false, deleted: 0, removedQuestionGroups: [] };
+  }
+
+  let deleted = 0;
+  for (const selector of selectors) {
+    const result = selector.questionGroup === undefined
+      ? await db.query('DELETE FROM question_bank WHERE id = ?', [selector.id])
+      : await db.query(
+        "DELETE FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
+        [selector.id, selector.questionGroup],
+      );
+    deleted += result.rowCount ?? 0;
+  }
+
+  const affectedGroups = [...new Set(
+    matchedRows.map((row) => row.question_group).filter((group) => group !== ''),
+  )];
+  const remainingGroups: string[] = [];
+  for (const group of affectedGroups) {
+    const result = await db.query(
+      "SELECT question_group FROM question_bank WHERE COALESCE(question_group, '') = ? LIMIT 1",
+      [group],
+    );
+    if (result.rows.length > 0) {
+      remainingGroups.push(group);
+    }
+  }
+
+  return {
+    authorized: true,
+    deleted,
+    removedQuestionGroups: removedQuestionGroups(affectedGroups, remainingGroups),
+  };
+}
+
 router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
   try {
     const { ids } = req.body;
@@ -934,54 +1027,19 @@ router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'No question IDs provided' });
     }
 
-    // Giáo viên/cộng tác viên (`admin`) chỉ xóa được câu hỏi do mình tải lên;
-    // `tenant_admin` quản lý toàn tenant nên không bị ràng buộc này.
-    if (req.adminUser?.role === 'admin') {
-      const userId = req.adminUser?.id;
-      if (USE_SQLITE) {
-        const placeholders = ids.map(() => '?').join(', ');
-        const owned = await db.query(
-          `SELECT id FROM question_bank WHERE id IN (${placeholders}) AND uploaded_by = ?`,
-          [...ids, userId]
-        );
-        const ownedIds = new Set(owned.rows.map((r: any) => r.id));
-        const forbidden = ids.filter(id => !ownedIds.has(id));
-        if (forbidden.length > 0) {
-          return res.status(403).json({ error: 'Forbidden: You can only delete questions you uploaded' });
-        }
-      } else {
-        const owned = await db.query(
-          `SELECT id FROM question_bank WHERE id = ANY($1::text[]) AND uploaded_by = $2`,
-          [ids, userId]
-        );
-        const ownedIds = new Set(owned.rows.map((r: any) => r.id));
-        const forbidden = ids.filter(id => !ownedIds.has(id));
-        if (forbidden.length > 0) {
-          return res.status(403).json({ error: 'Forbidden: You can only delete questions you uploaded' });
-        }
-      }
+    let selectors: QuestionDeletionSelector[];
+    try {
+      selectors = ids.map(parseQuestionDeletionSelector);
+    } catch (error: any) {
+      return res.status(400).json({ error: error.message });
     }
 
-    // Câu hỏi định danh bằng CẶP (id, question_group) → client gửi "id|||group".
-    // Chuỗi không có "|||" là định dạng cũ (chỉ id): xóa mọi bộ đề mang id đó, giữ
-    // nguyên hành vi trước đây cho client cũ.
-    let deleted = 0;
-    for (const raw of ids) {
-      const key = String(raw);
-      const sep = key.indexOf('|||');
-      if (sep === -1) {
-        const r = await db.query('DELETE FROM question_bank WHERE id = ?', [key]);
-        deleted += r.rowCount ?? 0;
-      } else {
-        const r = await db.query(
-          "DELETE FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
-          [key.slice(0, sep), key.slice(sep + 3)],
-        );
-        deleted += r.rowCount ?? 0;
-      }
+    const result = await deleteQuestionSelectors(selectors, req.adminUser);
+    if (!result.authorized) {
+      return res.status(403).json({ error: 'Forbidden: You can only delete questions you uploaded' });
     }
 
-    res.json({ success: true, deleted });
+    res.json({ success: true, deleted: result.deleted, removedQuestionGroups: result.removedQuestionGroups });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -990,26 +1048,18 @@ router.post('/questions/bulk-delete', async (req: Request, res: Response) => {
 router.delete('/questions/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    // Giáo viên/cộng tác viên (`admin`) chỉ xóa được câu hỏi do mình tải lên;
-    // `tenant_admin` quản lý toàn tenant nên không bị ràng buộc này.
-    if (req.adminUser?.role === 'admin') {
-      const own = await db.query('SELECT uploaded_by FROM question_bank WHERE id = ?', [id]);
-      if (!own.rows[0] || own.rows[0].uploaded_by !== req.adminUser?.id) {
-        return res.status(403).json({ error: 'Forbidden: You can only delete questions you uploaded' });
-      }
-    }
     // ?group=<question_group> giới hạn đúng bộ đề; không truyền thì xóa mọi bộ đề
     // mang mã này (hành vi cũ, giữ cho client cũ).
     const group = req.query.group;
-    if (group !== undefined) {
-      await db.query(
-        "DELETE FROM question_bank WHERE id = ? AND COALESCE(question_group, '') = ?",
-        [id, String(group)],
-      );
-    } else {
-      await db.query('DELETE FROM question_bank WHERE id = ?', [id]);
+    const result = await deleteQuestionSelectors(
+      [{ id, ...(group === undefined ? {} : { questionGroup: String(group) }) }],
+      req.adminUser,
+    );
+    if (!result.authorized) {
+      return res.status(403).json({ error: 'Forbidden: You can only delete questions you uploaded' });
     }
-    res.json({ success: true });
+
+    res.json({ success: true, deleted: result.deleted, removedQuestionGroups: result.removedQuestionGroups });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
