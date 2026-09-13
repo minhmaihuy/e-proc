@@ -36,6 +36,21 @@ console.log('[Admin] USE_SQLITE:', USE_SQLITE, 'NODE_ENV:', process.env.NODE_ENV
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
+/**
+ * SheetJS treats the first CSV header as blank when a UTF-8 BOM is present.
+ * Strip only that transport marker before parsing; XLS/XLSX bytes are untouched.
+ */
+function readUploadedWorkbook(buffer: Buffer): XLSX.WorkBook {
+  const payload = buffer.length >= 3
+    && buffer[0] === 0xef
+    && buffer[1] === 0xbb
+    && buffer[2] === 0xbf
+    ? buffer.subarray(3)
+    : buffer;
+
+  return XLSX.read(payload, { type: 'buffer', codepage: 65001 });
+}
+
 // =============================================
 // PROTECTED ROUTES — Require JWT từ đây trở xuống
 // =============================================
@@ -440,10 +455,9 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    // Database CSV exports are UTF-8 without necessarily carrying a BOM. Without
-    // an explicit codepage SheetJS may decode Vietnamese text as Windows-1252.
-    // Excel workbooks ignore this option, so the existing template remains valid.
-    const workbook = XLSX.read(req.file.buffer, { type: 'buffer', codepage: 65001 });
+    // CSV may include a UTF-8 BOM. The parser strips it before SheetJS sees the
+    // first header, then keeps the explicit codepage for Vietnamese content.
+    const workbook = readUploadedWorkbook(req.file.buffer);
     const sheetName = workbook.SheetNames[0];
     const rawData = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1 }) as any[][];
     
@@ -595,8 +609,9 @@ router.post('/questions/import', upload.single('file'), async (req: Request, res
 });
 
 // Import ngân hàng câu hỏi QUIZ (SingleChoice / MultipleChoice) từ Excel.
-// Template MỚI (header 1 dòng): ID | Type | Level | Topic | Question Sample |
-//   Option A | Option B | Option C | Option D | Option E | Option F | Correct | Score
+// Template MỚI (header 1 dòng): ID | Type | Level | Topic | QuestionGroup |
+//   Question Sample | Option A | Option B | Option C | Option D | Option E |
+//   Option F | Correct | Score
 // Correct: chữ cái (A) cho single; nhiều chữ cách nhau phẩy (A,C,D) cho multiple.
 // Score: điểm câu (mặc định 1). Option để trống → câu ít lựa chọn hơn.
 router.post('/questions/quiz/import', upload.single('file'), async (req: Request, res: Response) => {
@@ -605,7 +620,7 @@ router.post('/questions/quiz/import', upload.single('file'), async (req: Request
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const workbook = XLSX.read(req.file.buffer, { type: 'buffer', codepage: 65001 });
+    const workbook = readUploadedWorkbook(req.file.buffer);
     const sheetName = workbook.SheetNames[0];
     const rawData = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1 }) as any[][];
 
