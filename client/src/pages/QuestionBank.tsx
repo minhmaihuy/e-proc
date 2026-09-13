@@ -5,6 +5,7 @@ import { adminApi } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import AdminNav from '../components/AdminNav';
 import { Database, ArrowLeft, Trash2, Search, Filter, FileQuestion, ChevronLeft, ChevronRight } from 'lucide-react';
+import { questionDeletionKey, selectedQuestionGroupAfterRefresh } from './questionBank/questionIdentity';
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
 type PageSize = typeof PAGE_SIZE_OPTIONS[number];
@@ -38,6 +39,15 @@ function QuestionBank() {
     loadQuestionGroups();
   }, []);
 
+  useEffect(() => {
+    const nextQuestionGroup = selectedQuestionGroupAfterRefresh(selectedQuestionGroup, questionGroups);
+    if (nextQuestionGroup !== selectedQuestionGroup) {
+      setSelectedQuestionGroup(nextQuestionGroup);
+      setCurrentPage(1);
+      setSelectedIds(new Set());
+    }
+  }, [questionGroups, selectedQuestionGroup]);
+
   const loadQuestions = async () => {
     try {
       const res = await adminApi.getQuestions();
@@ -66,6 +76,10 @@ function QuestionBank() {
     }
   };
 
+  const refreshQuestionBank = async () => {
+    await Promise.all([loadQuestions(), loadModules(), loadQuestionGroups()]);
+  };
+
   const handleImport = async (mode: 'essay' | 'quiz' = 'essay') => {
     if (!file) return;
     setLoading(true);
@@ -84,9 +98,7 @@ function QuestionBank() {
         setIsError(true);
       }
       setMessage(msg);
-      loadQuestions();
-      loadModules();
-      loadQuestionGroups();
+      await refreshQuestionBank();
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (error: any) {
@@ -96,11 +108,11 @@ function QuestionBank() {
     setLoading(false);
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (question: any) => {
     if (!confirm('Delete this question?')) return;
     try {
-      await adminApi.deleteQuestion(id);
-      loadQuestions();
+      await adminApi.deleteQuestion(String(question.id), question.question_group ?? '');
+      await refreshQuestionBank();
     } catch (error) {
       console.error(error);
     }
@@ -112,7 +124,7 @@ function QuestionBank() {
     setBulkDeleting(true);
     try {
       await adminApi.deleteQuestions(Array.from(selectedIds));
-      loadQuestions();
+      await refreshQuestionBank();
       setSelectedIds(new Set());
     } catch (error: any) {
       alert('Error: ' + (error.response?.data?.error || error.message));
@@ -148,7 +160,7 @@ function QuestionBank() {
 
   // Chỉ những question mod có quyền select (mình upload hoặc admin)
   const selectablePageIds = useMemo(() =>
-    paginated.filter((q: any) => isSelectable(q)).map((q: any) => q.id as string),
+    paginated.filter((q: any) => isSelectable(q)).map((q: any) => questionDeletionKey(q)),
     [paginated, isAdmin, userId]
   );
   const allPageSelected = selectablePageIds.length > 0 && selectablePageIds.every(id => selectedIds.has(id));
@@ -167,11 +179,11 @@ function QuestionBank() {
     setSelectedIds(new Set());
   };
 
-  const toggleSelectId = (id: string, q: any) => {
+  const toggleSelectId = (key: string, q: any) => {
     if (!isSelectable(q)) return; // mod không được chọn question người khác
     setSelectedIds(prev => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
   };
@@ -355,18 +367,19 @@ function QuestionBank() {
               {paginated.map((q: any) => {
                 const deletable = canDeleteQuestion(q);
                 const selectable = isSelectable(q);
-                const isSelected = selectedIds.has(q.id);
+                const key = questionDeletionKey(q);
+                const isSelected = selectedIds.has(key);
                 
                 return (
                   <tr
-                    key={q.id}
+                    key={key}
                     className={`transition-colors ${isSelected ? 'bg-indigo-50/50' : 'hover:bg-slate-50/50'}`}
                   >
                     <td className="px-4 py-3 text-center">
                       <input
                         type="checkbox"
                         checked={isSelected}
-                        onChange={() => toggleSelectId(q.id, q)}
+                        onChange={() => toggleSelectId(key, q)}
                         disabled={!selectable}
                         className="w-4 h-4 text-blue-600 bg-slate-100 border-slate-300 rounded focus:ring-blue-500 disabled:opacity-30 cursor-pointer"
                       />
@@ -402,7 +415,7 @@ function QuestionBank() {
                     <td className="px-4 py-3 text-right">
                       {deletable ? (
                         <button
-                          onClick={() => handleDelete(q.id)}
+                          onClick={() => handleDelete(q)}
                           className="inline-flex items-center justify-center p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
                           title="Delete question"
                         >

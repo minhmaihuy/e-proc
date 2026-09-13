@@ -152,3 +152,12 @@ test('blueprint chọn câu theo cặp (module, bộ đề), không chỉ theo m
   assert.match(admin, /questionGroup !== undefined/, 'group rỗng không được bị coi như thiếu group');
   assert.match(admin, /typeof item\.question_group === 'string'/, 'phải tương thích blueprint cũ');
 });
+
+test('question deletion checks every composite row before mutating and reports exhausted groups', () => {
+  const admin = readSource('src', 'server', 'routes', 'admin.ts');
+  assert.match(admin, /async function deleteQuestionSelectors\(/);
+  assert.match(admin, /loadQuestionRowsForDeletion\(selectors\)/);
+  assert.match(admin, /matchedRows\.some\(\(row\) => String\(row\.uploaded_by\) !== String\(actor\.id\)\)/);
+  assert.match(admin, /removedQuestionGroups: removedQuestionGroups\(affectedGroups, remainingGroups\)/);
+  assert.match(admin, /parseQuestionDeletionSelector/);
+});
