@@ -153,11 +153,24 @@ test('blueprint chọn câu theo cặp (module, bộ đề), không chỉ theo m
   assert.match(admin, /typeof item\.question_group === 'string'/, 'phải tương thích blueprint cũ');
 });
 
-test('question deletion checks every composite row before mutating and reports exhausted groups', () => {
+test('question deletion validates every row before mutating and reports exhausted groups', () => {
   const admin = readSource('src', 'server', 'routes', 'admin.ts');
   assert.match(admin, /async function deleteQuestionSelectors\(/);
   assert.match(admin, /loadQuestionRowsForDeletion\(selectors\)/);
-  assert.match(admin, /matchedRows\.some\(\(row\) => String\(row\.uploaded_by\) !== String\(actor\.id\)\)/);
+  assert.match(admin, /isQuestionDeletionAuthorized\(matchedRows, actor\)/);
   assert.match(admin, /removedQuestionGroups: removedQuestionGroups\(affectedGroups, remainingGroups\)/);
   assert.match(admin, /parseQuestionDeletionSelector/);
+});
+
+test('whole-group delete runs before generic question-id delete and retains server ownership checks', () => {
+  const admin = readSource('src', 'server', 'routes', 'admin.ts');
+  const groupRoute = admin.indexOf("router.delete('/questions/question-groups/:group'");
+  const genericRoute = admin.indexOf("router.delete('/questions/:id'");
+
+  assert.ok(groupRoute >= 0, 'thiếu route xóa trọn bộ đề');
+  assert.ok(groupRoute < genericRoute, 'route group phải đứng trước route :id tổng quát');
+  assert.match(admin, /async function deleteQuestionGroup\(/);
+  assert.match(admin, /if \(!questionGroup\)[\s\S]{0,120}status\(400\)/);
+  assert.match(admin, /isQuestionDeletionAuthorized\(matchedRows, actor\)/);
+  assert.match(admin, /deleteQuestionGroup\(questionGroup, req\.adminUser\)/);
 });

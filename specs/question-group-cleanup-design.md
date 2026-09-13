@@ -23,16 +23,25 @@ identity `(id, question_group)`.
   to the unfiltered view and returns to page one.
 - Checkbox selection and React row keys use the same composite identity as deletion,
   so two groups may safely reuse an id.
+- The Question Bank displays every non-empty group with its current question count and
+  lets an authorized user delete the whole group after explicit confirmation. The
+  operation deletes only `question_bank` rows in that group; a regular `admin` may
+  proceed only when every row is theirs, while a `tenant_admin` may manage any
+  current-tenant group.
 
 ## Non-goals
 
 - No schema migration or physical group-delete endpoint is introduced: removing the
-  last question is the only valid way to remove a derived group.
+  last question is the only valid way to remove a derived group. The group-delete
+  API is a convenience operation that performs those row deletes after one
+  all-or-nothing ownership validation; it does not persist group metadata.
 - Deleting an id without a group remains the backwards-compatible legacy behavior.
 
 ## Verification
 
 - Unit-test key parsing and removal detection, including a duplicate id in two
   groups, a non-final delete, and the id-only compatibility case.
+- Unit-test group-wide ownership authorization and source-lock the dedicated group
+  delete route before the generic question-id route.
 - Unit-test the client identity/filter helper and run backend/frontend type-checks,
   tenant regression tests, full build, and the repository harness.
